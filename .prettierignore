@@ -1,0 +1,8 @@
+node_modules
+dist
+build
+coverage
+.husky/_
+.vitest-tmp
+pnpm-lock.yaml
+*.min.js

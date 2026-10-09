@@ -1,0 +1,9 @@
+{
+  "name": "@family-trip/client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "家庭出行计划 · 客户端（Taro 4.x + React + TS，首发编译微信小程序，H5 预留）",
+  "type": "module",
+  "note": "客户端代码（14 个业务域）随技术方案 v1.4 关系型栈收口后接入，本批仅占位。详见 README.md。",
+  "scripts": {}
+}

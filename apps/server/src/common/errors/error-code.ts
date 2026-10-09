@@ -1,0 +1,103 @@
+/**
+ * 统一错误码与响应信封
+ * ---------------------------------------------------------------------------
+ * 响应结构：`{ code: 0, message: 'ok', data: {...}, meta: {...} }`
+ * 错误码：4xxxx 客户端错误，5xxxx 服务端错误
+ *
+ * 🔴 5005 TX_QUOTA_EXCEEDED：跨表事务超限。
+ * 已退化为「单笔事务 + reconcile」，因此该错误码在服务侧可捕获并降级，
+ * 但仍保留在码表里 —— 对客户端语义不变。
+ */
+
+export const ErrorCode = {
+  OK: 0,
+
+  // ── 4xxxx 客户端 ───────────────────────────────────────────
+  BAD_REQUEST: 4000,
+  VALIDATION_FAILED: 4001,
+  UNAUTHORIZED: 4010,
+  TOKEN_EXPIRED: 4011,
+  FORBIDDEN: 4030,
+  /** 越权与资源不存在**返回逐字节一致的 404，防 ID 枚举 */
+  NOT_FOUND: 4040,
+  VERSION_CONFLICT: 4090,
+  IDEMPOTENT_IN_PROGRESS: 4091,
+  RATE_LIMITED: 4290,
+  PAYLOAD_TOO_LARGE: 4130,
+
+  // ── 5xxxx 服务端 ───────────────────────────────────────────
+  INTERNAL_ERROR: 5000,
+  CRYPTO_ERROR: 5001,
+  DECRYPT_FORMAT_ERROR: 5002,
+  DB_ERROR: 5003,
+  /** 跨表事务超限，已退化为单笔事务 + reconcile */
+  TX_QUOTA_EXCEEDED: 5005,
+  FX_SOURCE_MISCONFIGURED: 5006,
+  KMS_ERROR: 5007,
+} as const;
+
+export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
+
+const HTTP_STATUS: Record<number, number> = {
+  [ErrorCode.OK]: 200,
+  [ErrorCode.BAD_REQUEST]: 400,
+  [ErrorCode.VALIDATION_FAILED]: 422,
+  [ErrorCode.UNAUTHORIZED]: 401,
+  [ErrorCode.TOKEN_EXPIRED]: 401,
+  [ErrorCode.FORBIDDEN]: 403,
+  [ErrorCode.NOT_FOUND]: 404,
+  [ErrorCode.VERSION_CONFLICT]: 409,
+  [ErrorCode.IDEMPOTENT_IN_PROGRESS]: 409,
+  [ErrorCode.PAYLOAD_TOO_LARGE]: 413,
+  [ErrorCode.RATE_LIMITED]: 429,
+  [ErrorCode.INTERNAL_ERROR]: 500,
+  [ErrorCode.CRYPTO_ERROR]: 500,
+  [ErrorCode.DECRYPT_FORMAT_ERROR]: 500,
+  [ErrorCode.DB_ERROR]: 500,
+  [ErrorCode.TX_QUOTA_EXCEEDED]: 500,
+  [ErrorCode.FX_SOURCE_MISCONFIGURED]: 500,
+  [ErrorCode.KMS_ERROR]: 500,
+};
+
+export function httpStatusOf(code: number): number {
+  return HTTP_STATUS[code] ?? 500;
+}
+
+export class AppError extends Error {
+  constructor(
+    readonly code: ErrorCodeValue,
+    message: string,
+    readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = 'AppError';
+  }
+
+  get httpStatus(): number {
+    return httpStatusOf(this.code);
+  }
+}
+
+export const badRequest = (msg: string, details?: unknown): AppError =>
+  new AppError(ErrorCode.BAD_REQUEST, msg, details);
+export const validationFailed = (details: unknown): AppError =>
+  new AppError(ErrorCode.VALIDATION_FAILED, '参数校验失败', details);
+export const unauthorized = (msg = '未登录或凭证失效'): AppError =>
+  new AppError(ErrorCode.UNAUTHORIZED, msg);
+export const forbidden = (msg = '无权访问'): AppError => new AppError(ErrorCode.FORBIDDEN, msg);
+export const notFound = (): AppError => new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+export const versionConflict = (): AppError =>
+  new AppError(ErrorCode.VERSION_CONFLICT, '内容已更新，请刷新');
+export const decryptFormatError = (msg: string): AppError =>
+  new AppError(ErrorCode.DECRYPT_FORMAT_ERROR, msg);
+
+/**
+ * 🔴 越权与资源不存在必须**逐字节一致**（TP-02C D8）。
+ *
+ * 客户端无法通过状态码 / body / 结构差异反推资源是否存在，
+ * 从而阻断 ID 枚举。此函数是「404 的唯一出口」——
+ * 权限层与数据层都调它，禁止各自手写404。
+ */
+export function notFoundIndistinguishable(): AppError {
+  return new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+}

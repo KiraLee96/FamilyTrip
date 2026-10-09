@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+# 派发单 §2.1：ESLint + Prettier 纳入 pre-commit（仅校验暂存文件，失败则阻断提交）
+# 直连 workspace bin，避免 pnpm exec 在部分环境下触发 prepare/install 副作用。
+# 在 pnpm 管理的仓库中，node_modules/.bin/lint-staged 即为工作区可执行入口。
+node_modules/.bin/lint-staged

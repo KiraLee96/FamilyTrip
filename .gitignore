@@ -1,0 +1,33 @@
+node_modules/
+dist/
+build/
+coverage/
+.turbo/
+*.tsbuildinfo
+
+# 环境变量：禁止提交任何真实密钥
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Prisma
+apps/server/prisma/*.db
+apps/server/prisma/*.db-journal
+
+# 编辑器
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+
+# 日志
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 测试缓存（vitest 临时目录）
+.vitest-tmp/
+
+# husky 内部引导文件（由 pnpm install 的 prepare 重新生成，无需提交）
+.husky/_/

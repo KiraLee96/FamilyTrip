@@ -1,0 +1,17 @@
+// 家庭出行计划 · Prisma 配置（关系型栈 MySQL 8.4.3 + Prisma 6.19.3）
+//
+// ⚠️ v1.4 关系型栈收口中（rBepc7）：在 v1.4 出稿前**不建任何表**。
+// 本文件仅放置 datasource + generator 骨架；所有 model 在 v1.4 确定
+// 字段类型 / 外键 / 索引后补入，避免现在建表后大面积返工。
+//
+// 依据：派发单 DISPATCH-M1-CODE-2026-10-09 §一.1.2、§五。
+// 加密列口径（VARBINARY + 密文头 15B + AAD 含表标识）见 §3.1 / §七红线。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
