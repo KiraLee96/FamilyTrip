@@ -25,7 +25,59 @@ import { rowKeyOf, toDisplayString } from './row-key.js';
 /** 单行记录（snake_case 由驱动负责映射；此层统一用 camelCase 作为契约） */
 export type Row = Record<string, unknown>;
 
-/** where 条件：等值匹配（含 null）；`in` 用数组表达 */
+/**
+ * 区间/集合比较操作符 —— where 的**显式**方言。
+ *
+ * 🔴 为什么是显式白名单而非「透传任意对象」：
+ *    若允许任意对象透传，`{ OR: [...] }` 这类**逻辑操作符**会被驱动误当成
+ *    「名为 OR 的列 = 某值」，查询恒空且不报错 —— 典型的静默错值。
+ *    显式枚举可让「漏实现」变成**编译期/运行期错误**而不是错误结果。
+ *
+ * 目前只开放同步游标所需的 `gt` 与 `in`：
+ *   · `gt`  —— 复合游标 `(changedAt, id)` 的严格大于语义（E1–E6）
+ *   · `in`  —— 可见范围限定（familyIds / tripIds），替代全表扫描
+ * 需要新操作符时**显式**在此登记，并在两个驱动里同步实现。
+ */
+export interface WhereOperators<T = unknown> {
+  gt?: T;
+  gte?: T;
+  lt?: T;
+  lte?: T;
+  in?: T[];
+  not?: T | null;
+}
+
+/** 判定「是不是操作符对象」（非 Date、非数组、非 null 的普通对象） */
+export function isWhereOperators(value: unknown): value is WhereOperators {
+  if (value === null || typeof value !== 'object') return false;
+  if (Array.isArray(value) || value instanceof Date) return false;
+  // 只认显式登记的键，其它一律判为「非法方言」并交由驱动报错
+  return Object.keys(value).some((k) => k in OPERATOR_KEYS);
+}
+
+const OPERATOR_KEYS: Record<string, true> = { gt: true, gte: true, lt: true, lte: true, in: true, not: true };
+
+/** 单个字段的条件：标量（等值）、操作符对象、或 IN 数组 */
+export type WhereValue = string | number | bigint | boolean | Date | null | undefined | WhereOperators | unknown[];
+
+/**
+ * where 条件。
+ *
+ * 支持形态（**这就是全部**，驱动不得静默扩展）：
+ *   · `{ field: scalar }`         —— 等值（含 `null`）
+ *   · `{ field: [a, b] }`         —— IN
+ *   · `{ field: { gt: x } }`      —— 区间比较（显式操作符）
+ *   · `{ OR: [ {...}, {...} ] }`  —— 逻辑或（同步游标需要）
+ *   · `{ AND: [ {...}, {...} ] }` —— 逻辑与
+ *
+ * 🔴 为什么值类型是 `unknown` 而不是收紧成 `ScalarLike`：
+ *    域代码大量写 `{ tripId: row['tripId'] }`，而 `row[k]` 天然是 `unknown`
+ *    （`Row = Record<string, unknown>`）。若把值类型收紧，会强迫 14 个域
+ *    到处加类型断言 —— 收益只是编译期更严，代价是噪声断言反而**掩盖**真正的
+ *    类型问题。运行期的保护由驱动承担：非法形态（未登记操作符 / 未知对象）
+ *    一律抛错，见 `PrismaTableDriver.toPrismaWhere`。
+ *    即：**边界处运行期强校验 > 全域编译期弱约束**。
+ */
 export type Where = Record<string, unknown>;
 
 export type OrderBy = Array<Record<string, 'asc' | 'desc'>>;
@@ -85,16 +137,62 @@ function keyOf(row: Row): string {
   return rowKeyOf(row);
 }
 
+/**
+ * 内存版 where 匹配 —— 必须与 `PrismaTableDriver` 的翻译**逐条语义对齐**。
+ *
+ * 对齐清单（改一处必须改另一处）：
+ *   · `{ f: null }`            → `f IS NULL`
+ *   · `{ f: scalar }`          → `f = scalar`
+ *   · `{ f: [..] }`            → `f IN (..)`；空数组恒假
+ *   · `{ f: {gt:x} }`          → `f > x`（可组合 gte/lt/lte/not）
+ *   · `{ OR: [..] }`           → 逻辑或（空数组恒假，与 SQL 一致）
+ *   · `{ AND: [..] }`          → 逻辑与（空数组恒真，与 SQL 一致）
+ */
 function matches(row: Row, where: Where | undefined): boolean {
   if (where === undefined) return true;
   for (const [k, v] of Object.entries(where)) {
+    // ── 逻辑组合 ────────────────────────────────────────
+    if (k === 'OR' || k === 'AND') {
+      const clauses = (Array.isArray(v) ? v : []) as Where[];
+      // SQL 语义：OR 空集恒假、AND 空集恒真
+      if (clauses.length === 0) {
+        if (k === 'OR') return false;
+        continue;
+      }
+      const ok = clauses.map((clause) => matches(row, clause));
+      if (k === 'OR' && !ok.some(Boolean)) return false;
+      if (k === 'AND' && !ok.every(Boolean)) return false;
+      continue;
+    }
+
     const actual = row[k] ?? null;
+
+    // ── IN（数组） ──────────────────────────────────────
     if (Array.isArray(v)) {
       if (!v.some((x) => deepEqual(x, actual))) return false;
       continue;
     }
+
+    // ── 区间操作符 ──────────────────────────────────────
+    if (isWhereOperators(v)) {
+      if (!matchOperators(actual, v)) return false;
+      continue;
+    }
+
+    // ── 标量等值（含 null） ──────────────────────────────
     if (!deepEqual(v ?? null, actual)) return false;
   }
+  return true;
+}
+
+/** 区间操作符匹配；`not` 与其余条件同时满足（SQL 的 AND 组合） */
+function matchOperators(actual: unknown, ops: WhereOperators): boolean {
+  if (ops.gt !== undefined && !(compareValue(actual, ops.gt) > 0)) return false;
+  if (ops.gte !== undefined && !(compareValue(actual, ops.gte) >= 0)) return false;
+  if (ops.lt !== undefined && !(compareValue(actual, ops.lt) < 0)) return false;
+  if (ops.lte !== undefined && !(compareValue(actual, ops.lte) <= 0)) return false;
+  if (ops.in !== undefined && !ops.in.some((x) => deepEqual(x, actual))) return false;
+  if (ops.not !== undefined && deepEqual(ops.not, actual)) return false;
   return true;
 }
 

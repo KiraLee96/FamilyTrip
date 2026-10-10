@@ -4,11 +4,16 @@
  * 唯一把「基础设施」和「业务域」装配到一起的地方。
  *
  * 装配顺序（顺序有依赖，不可乱）：
- *   ① MemoryTableDriver        —— 数据驱动（生产替换为 PrismaTableDriver）
+ *   ① 数据驱动                —— `options.driver` 显式注入；缺省用内存实现
  *   ② createChainDeps          —— 8 段链所需 7 个函数
  *   ③ createDomainContext      —— 域级读 / 写 / 软删句柄
  *   ④ 各 create<Domain>()      —— 14 个域的 routes + service
  *   ⑤ createDispatcher(routes) —— 汇总所有路由
+ *
+ * ⚠️ `buildApp` 是**纯同步装配函数**，不做 I/O。生产入口
+ *    （`main.ts`）负责先经 `resolveAppDriver()` 选取驱动再注入 ——
+ *    驱动选取含「生产无 DATABASE_URL 拒绝启动」的 fail-fast，
+ *    那是异步且需要读环境的，放在入口而非此处。
  *
  * 🔴 为什么域只依赖接口：
  *   `TableDriver` / `TxClient` 都是接口。换成 Prisma 适配器时，
@@ -56,7 +61,12 @@ export interface WechatCodeExchanger {
 }
 
 export interface BuildAppOptions {
-  /** 数据驱动；缺省用内存驱动（无 MySQL / Prisma 也能跑通全链路） */
+  /**
+   * 数据驱动；缺省用内存驱动（无 MySQL / Prisma 也能跑通全链路）。
+   *
+   * 🔴 生产入口必须显式注入 Prisma 驱动，见 `common/db/resolve-driver.ts`
+   *    （它在缺 `DATABASE_URL` 的生产环境下会拒绝启动，避免静默跑内存库）。
+   */
   driver?: TableDriver & DriverTxRunner;
   /** access token 密钥（生产从 KMS / 环境变量注入） */
   tokenSecret?: string;
@@ -92,6 +102,29 @@ export interface BuiltApp {
 export const DEFAULT_DEV_SECRET = 'dev-only-secret-change-me';
 
 /**
+ * 进程级驱动登记位。
+ *
+ * 🔴 为什么需要它（而不是让 NestJS 工厂直接 `buildApp({ driver })`）：
+ *    `CompositionModule` 用的是 `useFactory: () => buildApp()`，工厂签名不带
+ *    参数，容器也不该知道驱动细节。而驱动选取是**异步**的（要读环境 + 惰性
+ *    加载 Prisma）。所以采用「入口先登记、工厂再取用」的两步式。
+ *
+ * ⚠️ 只在**进程启动时**写一次；测试里刻意不用它（测试直接 `buildApp({driver})`），
+ *    以免用例之间通过全局状态互相污染。
+ */
+let registeredDriver: (TableDriver & DriverTxRunner) | undefined;
+
+/** 由生产入口（`main.ts`）调用，登记进程级驱动 */
+export function installAppDriver(driver: TableDriver & DriverTxRunner): void {
+  registeredDriver = driver;
+}
+
+/** 仅供测试清理全局状态 */
+export function clearInstalledAppDriver(): void {
+  registeredDriver = undefined;
+}
+
+/**
  * 装配整个后端。
  *
  * ⛔ 不做任何 I/O（不连库、不拉汇率）—— 只构造对象图。
@@ -117,7 +150,7 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
     });
   }
 
-  const driver = options.driver ?? new MemoryTableDriver();
+  const driver = options.driver ?? registeredDriver ?? new MemoryTableDriver();
   const tokenSecret = options.tokenSecret ?? DEFAULT_DEV_SECRET;
   const retentionDays = options.auditRetentionDays ?? 365;
 

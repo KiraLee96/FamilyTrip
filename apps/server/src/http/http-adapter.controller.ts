@@ -19,7 +19,8 @@ import { All, Controller, Inject, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import type { RawRequest } from '../common/middleware/dispatcher.js';
 import type { BuiltApp } from '../composition-root.js';
-import { APP_TOKEN } from '../app.module.js';
+// 令牌定义在叶子模块（不是 app.module）以避免循环依赖，详见 app-token.ts
+import { APP_TOKEN } from './app-token.js';
 
 /** 路由前缀（与客户端 baseURL 对齐） */
 export const API_PREFIX = 'api';
