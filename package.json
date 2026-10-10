@@ -17,7 +17,8 @@
     "test": "pnpm -r --filter \"./apps/**\" run test",
     "verify": "pnpm run lint && pnpm run typecheck && pnpm run test",
     "dev:server": "pnpm --filter @family-trip/server run dev",
-    "dev:client": "pnpm --filter @family-trip/client run dev:weapp",
+    "dev:client": "pnpm --filter @family-trip/client run dev:h5",
+    "build:client": "pnpm --filter @family-trip/client run build",
     "prepare": "husky"
   },
   "devDependencies": {

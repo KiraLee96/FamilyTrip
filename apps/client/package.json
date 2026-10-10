@@ -2,8 +2,28 @@
   "name": "@family-trip/client",
   "version": "0.1.0",
   "private": true,
-  "description": "家庭出行计划 · 客户端（Taro 4.x + React + TS，首发编译微信小程序，H5 预留）",
+  "description": "家庭出行计划 · 客户端 H5 原型（Vite + React + TS；验证界面与交互，后续迁移 Taro 4.x 编译微信小程序）",
   "type": "module",
-  "note": "客户端代码（14 个业务域）随技术方案 v1.4 关系型栈收口后接入，本批仅占位。详见 README.md。",
-  "scripts": {}
+  "note": "本批为 H5 可跑通原型：真实契约形状 + Mock 数据层，用于快速验证界面雏形。Taro 小程序工程待技术方案 v1.4 收口后接入。",
+  "scripts": {
+    "dev": "vite",
+    "dev:h5": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.5"
+  }
 }
