@@ -1,11 +1,19 @@
-// 家庭出行计划 · Prisma 配置（关系型栈 MySQL 8.4.3 + Prisma 6.19.3）
+// 家庭出行计划 · Prisma Schema（v1.4 数据模型定稿）
+// ============================================================================
+// 承接：磐石石（架构/后端）｜ 依据：待修改与待确认问题总清单 A 组（A1–A26）
+//      + 技术方案 v1.3/v1.4（M2 关系型栈）+ TP-02C（加密/权限）+ N11 增补
 //
-// ⚠️ v1.4 关系型栈收口中（rBepc7）：在 v1.4 出稿前**不建任何表**。
-// 本文件仅放置 datasource + generator 骨架；所有 model 在 v1.4 确定
-// 字段类型 / 外键 / 索引后补入，避免现在建表后大面积返工。
+// 全库规范（不得违反）：
+//   · 软删除：每张业务表带 `deletedAt`，唯一键一律为 `(业务键..., deletedAt)` 复合键
+//   · 时间戳：`createdAt` / `updatedAt`（DATETIME(3)），时间以 DB 为源
+//   · 主键：雪花 ID BIGINT（应用侧生成，非自增）
+//   · 金额：DECIMAL(18,4) 展示口径；落库以「最小单位整数 BIGINT」为准（见 amount.ts）
+//   · 汇率：DECIMAL(18,8)
+//   · 加密列：VARBINARY（容量见 cipher-format.ts ColumnCapacity）
+//   · 乐观锁：`version` INT（受保护行见 E7/E8）
 //
-// 依据：派发单 DISPATCH-M1-CODE-2026-10-09 §一.1.2、§五。
-// 加密列口径（VARBINARY + 密文头 15B + AAD 含表标识）见 §3.1 / §七红线。
+// ⚠️ 本文件由 DDL 脚本 A 组 26 项 1:1 映射而来，任何结构调整须回改 DDL 并复核。
+// ============================================================================
 
 generator client {
   provider = "prisma-client-js"
@@ -14,4 +22,771 @@ generator client {
 datasource db {
   provider = "mysql"
   url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// 一、身份与家庭域（auth / family）
+// ============================================================================
+
+/// A14/A15：uk_phone(NULL) + home_timezone；openid/unionid 复合唯一键含 deletedAt
+model User {
+  id           BigInt @id
+  openid       String @db.VarChar(64)
+  unionid      String? @db.VarChar(64)
+  phone        String? @db.VarChar(20)
+  nickname     String @db.VarChar(64)
+  avatarUrl    String? @db.VarChar(512)
+  /// C13：用户常驻地时区快照（提醒基准时区）
+  homeTimezone String @default("Asia/Shanghai") @map("home_timezone") @db.VarChar(32)
+  /// per-user DEK 版本（C-1 密文头 key_ver）
+  dekVersion   Int    @default(1) @map("dek_version")
+  status       String @default("ACTIVE") @db.VarChar(16)
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  /// 软删除：注销后保留骨架（B6 历史只读）
+  deletedAt    DateTime? @map("deleted_at") @db.DateTime(3)
+
+  families      FamilyMember[]
+  createdFamilies Family[]   @relation("FamilyOwner")
+  managedFamilyMembers FamilyMember[] @relation("FamilyMemberManagedBy")
+  wishVotes     WishVote[]
+  tripsLed      Trip[]       @relation("TripLeader")
+  createdTrips  Trip[]       @relation("TripCreator")
+  tripMembers   TripMember[]
+  managedMembers TripMember[] @relation("TripMemberManagedBy")
+  wishCreated   Wish[]
+  bookings      Booking[]
+  checklistItems TripChecklistItem[] @relation("ChecklistItemCreator")
+  checklistOwned TripChecklistItem[] @relation("ChecklistItemOwner")
+  items         Item[]
+  outfits       Outfit[]
+  notifySubscriptions NotifySubscription[]
+  reminderTasks ReminderTask[] @relation("ReminderReceiver")
+  createdReminders ReminderTask[] @relation("ReminderCreator")
+  mediaAssets   MediaAsset[]
+  expenses      Expense[]
+
+  @@unique([openid, deletedAt], name: "uk_openid")
+  @@unique([unionid, deletedAt], name: "uk_unionid")
+  @@unique([phone], name: "uk_phone")
+  @@index([createdAt], name: "idx_users_created_at")
+  @@map("user")
+}
+
+/// A16：invite_code 复合唯一键含 deletedAt
+model Family {
+  id         BigInt @id
+  name       String @db.VarChar(64)
+  ownerId    BigInt @map("owner_id")
+  /// 邀请码（6–8 位大写字母数字）
+  inviteCode String @map("invite_code") @db.VarChar(16)
+  /// C13：家庭基准时区（默认取创建者常驻地）
+  timezone   String @default("Asia/Shanghai") @db.VarChar(32)
+  status     String @default("ACTIVE") @db.VarChar(16)
+  createdAt  DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt  DateTime? @map("deleted_at") @db.DateTime(3)
+
+  owner    User           @relation("FamilyOwner", fields: [ownerId], references: [id])
+  members  FamilyMember[]
+  wishes   Wish[]
+  trips    Trip[]
+  holidays Holiday[]
+  itemLib  Item[]
+  outfits  Outfit[]
+  expenses Expense[]
+  memoryArchives MemoryArchive[]
+  mediaAssets MediaAsset[]
+
+  @@unique([inviteCode, deletedAt], name: "uk_invite_code")
+  @@index([ownerId], name: "idx_family_owner")
+  @@map("family")
+}
+
+/// A12：uk_family_user（含 deletedAt）+ 存活索引
+/// A23：is_virtual 双语义 —— 虚拟成员无 user_id，代管人走 managedBy（由 Repository 强制封装 WHERE）
+model FamilyMember {
+  id        BigInt @id
+  familyId  BigInt @map("family_id")
+  /// 虚拟成员时为空（A23 双语义）
+  userId    BigInt? @map("user_id")
+  role      String @default("MEMBER") @db.VarChar(16)
+  /// 虚拟成员：无微信账号，仅由 managedBy 代管
+  isVirtual Boolean @default(false) @map("is_virtual")
+  /// 代管人（虚拟成员必有；真实成员为 NULL）
+  managedBy BigInt? @map("managed_by")
+  displayName String @map("display_name") @db.VarChar(64)
+  joinedAt  DateTime @default(now()) @map("joined_at") @db.DateTime(3)
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+
+  family Family @relation(fields: [familyId], references: [id])
+  user   User?  @relation(fields: [userId], references: [id])
+  managedByUser User? @relation("FamilyMemberManagedBy", fields: [managedBy], references: [id])
+
+  @@unique([familyId, userId, deletedAt], name: "uk_family_user")
+  @@index([userId, deletedAt], name: "idx_user_alive")
+  @@index([familyId, deletedAt], name: "idx_family_alive")
+  @@index([managedBy], name: "idx_fm_managed_by")
+  @@map("family_member")
+}
+
+// ============================================================================
+// 二、心愿域（wish）
+// ============================================================================
+
+/// A25：vote_count_synced_at（可选对账时间戳）
+model Wish {
+  id          BigInt @id
+  familyId    BigInt @map("family_id")
+  tripId      BigInt? @map("trip_id")
+  createdBy   BigInt @map("created_by")
+  title       String @db.VarChar(128)
+  description String? @db.Text
+  /// WANT / PLANNED / DONE / DROPPED
+  status      String @default("WANT") @db.VarChar(16)
+  voteCount   Int    @default(0) @map("vote_count")
+  /// A25：票数对账时间戳（对账补偿用，非实时口径）
+  voteCountSyncedAt DateTime? @map("vote_count_synced_at") @db.DateTime(3)
+  priority    Int    @default(0)
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt   DateTime? @map("deleted_at") @db.DateTime(3)
+
+  family Family    @relation(fields: [familyId], references: [id])
+  creator User     @relation(fields: [createdBy], references: [id])
+  votes  WishVote[]
+
+  @@index([familyId, status, deletedAt], name: "idx_wish_family_status")
+  @@index([createdBy], name: "idx_wish_creator")
+  @@map("wish")
+}
+
+/// A17：软删取消投票 —— uk_wish_user 含 deletedAt
+model WishVote {
+  id        BigInt @id
+  wishId    BigInt @map("wish_id")
+  userId    BigInt @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  /// 取消投票走软删（保证审计可回溯 + 唯一键可重建）
+  deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+
+  wish Wish @relation(fields: [wishId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([wishId, userId, deletedAt], name: "uk_wish_user")
+  @@index([userId, deletedAt], name: "idx_wish_vote_user")
+  @@map("wish_vote")
+}
+
+// ============================================================================
+// 三、出行域（trip）
+// ============================================================================
+
+/// A18：version 乐观锁（保护 actual_json）+ idx_updated
+/// A5：trip_history 保留最近 1 个历史版本（见 TripHistory）
+model Trip {
+  id           BigInt @id
+  familyId     BigInt @map("family_id")
+  createdBy    BigInt @map("created_by")
+  /// 主导者（退位规则见 E8：防「主导者数=0」）
+  leaderId     BigInt? @map("leader_id")
+  title        String @db.VarChar(128)
+  /// DRAFT / PLANNED / ONGOING / FINISHED / CANCELLED
+  status       String @default("DRAFT") @db.VarChar(16)
+  startDate    DateTime? @map("start_date") @db.Date
+  endDate      DateTime? @map("end_date") @db.Date
+  /// C13/T-5：日期字段与时区解耦 —— 日期为「当地日期」，不改 UTC
+  timezone     String @default("Asia/Shanghai") @db.VarChar(32)
+  /// A24：目的地（一期保留表 trip_destination；此处存冗余快照）
+  destinationsJson Json? @map("destinations_json")
+  /// 行程实际内容（结构化 JSON；并发写保护见 E7/E8 行锁增量）
+  actualJson   Json? @map("actual_json")
+  /// A18：乐观锁版本号（保护 actual_json 并发写）
+  version      Int    @default(0)
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt    DateTime? @map("deleted_at") @db.DateTime(3)
+
+  family    Family  @relation(fields: [familyId], references: [id])
+  creator   User    @relation("TripCreator", fields: [createdBy], references: [id])
+  leader    User?   @relation("TripLeader", fields: [leaderId], references: [id])
+  members   TripMember[]
+  destinations TripDestination[]
+  itineraries ItineraryItem[]
+  bookings  Booking[]
+  checklists TripChecklistItem[]
+  expenses  Expense[]
+  reminderTasks ReminderTask[]
+  mediaAssets MediaAsset[]
+  histories TripHistory[]
+  memories  MemoryArchive[]
+
+  @@index([familyId, status, deletedAt], name: "idx_trip_family_status")
+  @@index([leaderId], name: "idx_trip_leader")
+  @@index([updatedAt], name: "idx_trip_updated")
+  @@map("trip")
+}
+
+/// A11：managed_by / left_at / access_level + uk_trip_user + 外部成员索引
+/// B5：虚拟成员在 trip_member 中以 managedBy 表达用户身份（修复权限断链）
+model TripMember {
+  id          BigInt @id
+  tripId      BigInt @map("trip_id")
+  /// 外部成员（无 user）时为空
+  userId      BigInt? @map("user_id")
+  /// 外部/虚拟成员代管人（B5/D6：修复代管断链）
+  managedBy   BigInt? @map("managed_by")
+  /// 出行内角色：LEADER / MEMBER
+  role        String @default("MEMBER") @db.VarChar(16)
+  /// 是否外部成员（无微信账号）
+  isExternal  Boolean @default(false) @map("is_external")
+  /// A11：ACTIVE / HISTORICAL_READONLY（退出后转只读）
+  accessLevel String @default("ACTIVE") @map("access_level") @db.VarChar(16)
+  displayName String @map("display_name") @db.VarChar(64)
+  joinedAt    DateTime @default(now()) @map("joined_at") @db.DateTime(3)
+  /// A11：退出时间（非空即已退出）
+  leftAt      DateTime? @map("left_at") @db.DateTime(3)
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt   DateTime? @map("deleted_at") @db.DateTime(3)
+
+  trip      Trip  @relation(fields: [tripId], references: [id])
+  user      User? @relation(fields: [userId], references: [id])
+  managedByUser User? @relation("TripMemberManagedBy", fields: [managedBy], references: [id])
+
+  @@unique([tripId, userId, deletedAt], name: "uk_trip_user")
+  @@index([tripId, isExternal], name: "idx_trip_external")
+  @@index([managedBy], name: "idx_managed_by")
+  @@index([userId, accessLevel], name: "idx_tm_user_level")
+  @@map("trip_member")
+}
+
+/// A10：补 updated_at。A24：一期保留（二期评估合并进 trip.destinations_json）
+model TripDestination {
+  id        BigInt @id
+  tripId    BigInt @map("trip_id")
+  name      String @db.VarChar(128)
+  sort      Int    @default(0)
+  extraJson Json?  @map("extra_json")
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+
+  trip Trip @relation(fields: [tripId], references: [id])
+
+  @@index([tripId, sort], name: "idx_dest_trip")
+  @@map("trip_destination")
+}
+
+/// A5：trip 域历史版本（保留最近 1 个版本，B1/R3 历史只读）
+model TripHistory {
+  hid          BigInt @id
+  tripId       BigInt @map("trip_id")
+  /// trip 整行快照（JSON）
+  snapshotJson Json   @map("snapshot_json")
+  changedBy    BigInt @map("changed_by")
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  trip Trip @relation(fields: [tripId], references: [id])
+
+  @@index([tripId], name: "idx_trip_history_trip")
+  @@map("trip_history")
+}
+
+// ============================================================================
+// 四、行程与预订域（itinerary / booking）
+// ============================================================================
+
+/// A9：idx_updated。A21：rate_source / rate_by（手动覆盖审计）
+/// B2：补 deleted_at（与全库软删原则对齐）
+model ItineraryItem {
+  id         BigInt @id
+  tripId     BigInt @map("trip_id")
+  createdBy  BigInt @map("created_by")
+  title      String @db.VarChar(128)
+  /// 日程日期（当地日期，T-5 与时区解耦）
+  date       DateTime? @db.Date
+  startTime  DateTime? @map("start_time") @db.DateTime(3)
+  endTime    DateTime? @map("end_time") @db.DateTime(3)
+  location   String? @db.VarChar(256)
+  note       String? @db.Text
+  sort       Int    @default(0)
+  /// A21：AUTO / MANUAL（汇率来源）
+  rateSource String @default("AUTO") @map("rate_source") @db.VarChar(8)
+  /// A21：手动覆盖汇率操作人（审计）
+  rateBy     BigInt? @map("rate_by")
+  createdAt  DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt  DateTime? @map("deleted_at") @db.DateTime(3)
+
+  trip Trip @relation(fields: [tripId], references: [id])
+
+  @@index([tripId, date, sort], name: "idx_itinerary_trip_date")
+  @@index([updatedAt], name: "idx_itinerary_updated")
+  @@map("itinerary_item")
+}
+
+/// A8：加 deleted_at + idx_created_by
+/// A21：rate_source / rate_by。A22：order_link_enc 扩容至 VARBINARY(2048)
+/// A20：评估项 —— 一期保留单表，高频查询字段已提升为真实列
+model Booking {
+  id         BigInt @id
+  tripId     BigInt @map("trip_id")
+  createdBy  BigInt @map("created_by")
+  /// TRANSPORT / HOTEL / TICKET / OTHER
+  type       String @default("OTHER") @db.VarChar(16)
+  title      String @db.VarChar(128)
+  /// 高频查询字段（A20 提升为真实列，避免拆表）
+  orderNo    String? @map("order_no") @db.VarChar(128)
+  orderLink  String? @map("order_link") @db.VarChar(512)
+  /// 🔴 加密列：订单号密文（VARBINARY(1024)）
+  orderNoEnc   Bytes? @map("order_no_enc") @db.VarBinary(1024)
+  /// 🔴 加密列：订单链接密文（A22 扩容 2048）
+  orderLinkEnc Bytes? @map("order_link_enc") @db.VarBinary(2048)
+  /// 🔴 加密列：联系人密文（VARBINARY(1024)）
+  contactEnc   Bytes? @map("contact_enc") @db.VarBinary(1024)
+  /// 🔴 盲索引：sha256(低基数字段+主键)，仅等值检索（VARBINARY(32)）
+  orderNoBlind Bytes? @map("order_no_blind") @db.VarBinary(32)
+  /// 金额（基准币最小单位整数，逐笔固化；SUM 汇总见 C9/F2）
+  amountBase BigInt? @map("amount_base")
+  currency   String @default("CNY") @db.VarChar(8)
+  /// A21：AUTO / MANUAL
+  rateSource String @default("AUTO") @map("rate_source") @db.VarChar(8)
+  rateBy     BigInt? @map("rate_by")
+  status     String @default("PENDING") @db.VarChar(16)
+  createdAt  DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt  DateTime? @map("deleted_at") @db.DateTime(3)
+
+  trip    Trip @relation(fields: [tripId], references: [id])
+  creator User @relation(fields: [createdBy], references: [id])
+
+  @@index([tripId, type, deletedAt], name: "idx_booking_trip_type")
+  @@index([createdBy], name: "idx_created_by")
+  @@index([orderNoBlind], name: "idx_booking_blind")
+  @@map("booking")
+}
+
+// ============================================================================
+// 五、清单 / 穿搭 / 物品库域（checklist / outfit / item）
+// ============================================================================
+
+/// A19：version 乐观锁（CAS 勾选）+ scope 双语义 + idx_updated
+model TripChecklistItem {
+  id        BigInt @id
+  tripId    BigInt @map("trip_id")
+  templateId BigInt? @map("template_id")
+  /// SHARED / PERSONAL（双语义，A23 由 Repository 强制封装）
+  scope     String @default("SHARED") @db.VarChar(16)
+  /// PERONAL 清单的归属人（SHARED 时为 NULL，A19/A23）
+  ownerId   BigInt? @map("owner_id")
+  createdBy BigInt @map("created_by")
+  name      String @db.VarChar(128)
+  quantity  Int    @default(1)
+  checked   Boolean @default(false)
+  checkedBy BigInt? @map("checked_by")
+  checkedAt DateTime? @map("checked_at") @db.DateTime(3)
+  sort      Int    @default(0)
+  /// A19：CAS 乐观锁版本（勾选并发，E7）
+  version   Int    @default(0)
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+
+  trip    Trip     @relation(fields: [tripId], references: [id])
+  owner   User?    @relation("ChecklistItemOwner", fields: [ownerId], references: [id])
+  creator User     @relation("ChecklistItemCreator", fields: [createdBy], references: [id])
+  template ChecklistTemplate? @relation(fields: [templateId], references: [id])
+
+  @@index([tripId, scope, deletedAt], name: "idx_tci_trip_scope")
+  @@index([ownerId, deletedAt], name: "idx_tci_owner")
+  @@index([updatedAt], name: "idx_tci_updated")
+  @@map("trip_checklist_item")
+}
+
+/// 清单模板（SHARED 家庭模板 / PERSONAL 个人模板，双语义）
+model ChecklistTemplate {
+  id        BigInt @id
+  familyId  BigInt? @map("family_id")
+  scope     String @default("SHARED") @db.VarChar(16)
+  ownerId   BigInt? @map("owner_id")
+  name      String @db.VarChar(128)
+  itemsJson Json? @map("items_json")
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+
+  checklistItems TripChecklistItem[]
+
+  @@index([familyId, deletedAt], name: "idx_tpl_family")
+  @@index([ownerId, deletedAt], name: "idx_tpl_owner")
+  @@map("checklist_template")
+}
+
+/// 物品库（个人物品库 —— 私有域，PRIVATE 短路）
+model Item {
+  id        BigInt @id
+  /// 归属家庭（个人物品库仍挂家庭，但权限走 owner 短路）
+  familyId  BigInt @map("family_id")
+  ownerId   BigInt @map("owner_id")
+  name      String @db.VarChar(128)
+  category  String? @db.VarChar(32)
+  quantity  Int    @default(1)
+  note      String? @db.VarChar(256)
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+
+  family Family @relation(fields: [familyId], references: [id])
+  owner  User   @relation(fields: [ownerId], references: [id])
+  outfitItems OutfitItem[]
+
+  @@index([ownerId, deletedAt], name: "idx_item_owner")
+  @@index([familyId, category], name: "idx_item_family_cat")
+  @@map("item")
+}
+
+/// 穿搭（私有域 —— PRIVATE 短路）
+model Outfit {
+  id        BigInt @id
+  familyId  BigInt @map("family_id")
+  ownerId   BigInt @map("owner_id")
+  tripId    BigInt? @map("trip_id")
+  name      String @db.VarChar(128)
+  note      String? @db.VarChar(256)
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+
+  family Family @relation(fields: [familyId], references: [id])
+  owner  User   @relation(fields: [ownerId], references: [id])
+  outfitItems OutfitItem[]
+
+  @@index([ownerId, deletedAt], name: "idx_outfit_owner")
+  @@map("outfit")
+}
+
+/// A4：替代 outfit.item_ids JSON —— 关联表
+model OutfitItem {
+  id        BigInt @id
+  outfitId  BigInt @map("outfit_id")
+  itemId    BigInt @map("item_id")
+  sort      Int    @default(0)
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  outfit Outfit @relation(fields: [outfitId], references: [id])
+  item   Item   @relation(fields: [itemId], references: [id])
+
+  @@index([outfitId], name: "idx_outfit_item_outfit")
+  @@index([itemId], name: "idx_outfit_item_item")
+  @@map("outfit_item")
+}
+
+// ============================================================================
+// 六、预算 / 金额域（expense / fx）
+// ============================================================================
+
+/// N11：spend.owner_member_id（金额归属成员）
+model Expense {
+  id            BigInt @id
+  tripId        BigInt @map("trip_id")
+  familyId      BigInt @map("family_id")
+  createdBy     BigInt @map("created_by")
+  /// N11：金额归属成员（可为虚拟成员）—— 「每人花费」统计口径
+  ownerMemberId BigInt? @map("owner_member_id")
+  title         String @db.VarChar(128)
+  /// 原币金额（最小单位整数）
+  amount        BigInt
+  currency      String @default("CNY") @db.VarChar(8)
+  /// 基准币金额（逐笔固化；null = 待补汇率，不计入汇总）
+  amountBase    BigInt? @map("amount_base")
+  /// 汇率快照（DECIMAL(18,8)）
+  exchangeRate  Decimal? @map("exchange_rate") @db.Decimal(18, 8)
+  rateDate      String? @map("rate_date") @db.VarChar(10)
+  tier          String @default("SPOT_SELL") @db.VarChar(16)
+  rateSource    String @default("AUTO") @map("rate_source") @db.VarChar(8)
+  rateBy        BigInt? @map("rate_by")
+  category      String? @db.VarChar(32)
+  spentAt       DateTime? @map("spent_at") @db.DateTime(3)
+  createdAt     DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt     DateTime? @map("deleted_at") @db.DateTime(3)
+
+  trip   Trip   @relation(fields: [tripId], references: [id])
+  family Family @relation(fields: [familyId], references: [id])
+  creator User  @relation(fields: [createdBy], references: [id])
+
+  @@index([tripId, deletedAt], name: "idx_expense_trip")
+  @@index([ownerMemberId], name: "idx_expense_owner_member")
+  @@map("expense")
+}
+
+/// A3/A10：currency_config（币种精度与舍入）
+model CurrencyConfig {
+  currency  String @id @db.VarChar(8)
+  /// 展示小数位（CNY=2 / JPY=0 / BHD=3）
+  minorUnit Int    @default(2) @map("minor_unit")
+  roundMode String @default("HALF_UP") @map("round_mode") @db.VarChar(16)
+  isActive  Boolean @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@map("currency_config")
+}
+
+/// A10：补 updated_at（汇率快照，切档位不重算历史 —— 红线 R6）
+model ExchangeRate {
+  id         BigInt @id
+  base       String @db.VarChar(8)
+  quote      String @db.VarChar(8)
+  tier       String @default("SPOT_SELL") @db.VarChar(16)
+  /// 1 base = rate quote（DECIMAL(18,8)）
+  rate       Decimal @db.Decimal(18, 8)
+  rateDate   String @map("rate_date") @db.VarChar(10)
+  /// 合规授权源标识（⛔ 不得为爬虫来源）
+  source     String @db.VarChar(64)
+  rateTime   DateTime @map("rate_time") @db.DateTime(3)
+  createdAt  DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt  DateTime? @map("deleted_at") @db.DateTime(3)
+
+  @@unique([base, quote, tier, rateDate, source, deletedAt], name: "uk_fx_series")
+  @@index([rateDate], name: "idx_fx_date")
+  @@map("exchange_rate")
+}
+
+// ============================================================================
+// 七、提醒 / 订阅域（notify）
+// ============================================================================
+
+/// A2 + A13：channel / merged_group_id / tz / delivery / read_at + 复合唯一键
+model ReminderTask {
+  id           BigInt @id
+  receiverId   BigInt @map("receiver_id")
+  createdBy    BigInt @map("created_by")
+  tripId       BigInt? @map("trip_id")
+  /// 订阅授权关联（B7：降级路径必要）
+  subscriptionId BigInt? @map("subscription_id")
+  title        String @db.VarChar(128)
+  content      String? @db.VarChar(512)
+  /// A13：存 UTC（C5：接收人本地 09:00 折算）
+  remindAt     DateTime @map("remind_at") @db.DateTime(3)
+  /// A13：C13 用户常驻地时区快照
+  tz           String? @db.VarChar(32)
+  /// A13：SUBSCRIBE / IN_APP_TODO
+  channel      String @default("SUBSCRIBE") @db.VarChar(16)
+  /// A13：NORMAL / TODO_ONLY（C6 降级）
+  delivery     String @default("NORMAL") @db.VarChar(16)
+  /// A13：同人同时刻合并组
+  mergedGroupId BigInt? @map("merged_group_id")
+  /// PENDING / SENT / READ / FAILED
+  status       String @default("PENDING") @db.VarChar(16)
+  /// A13：已读时刻
+  readAt       DateTime? @map("read_at") @db.DateTime(3)
+  sentAt       DateTime? @map("sent_at") @db.DateTime(3)
+  retryCount   Int    @default(0) @map("retry_count")
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt    DateTime? @map("deleted_at") @db.DateTime(3)
+
+  receiver User @relation("ReminderReceiver", fields: [receiverId], references: [id])
+  creator  User @relation("ReminderCreator", fields: [createdBy], references: [id])
+  trip     Trip? @relation(fields: [tripId], references: [id])
+  subscription NotifySubscription? @relation(fields: [subscriptionId], references: [id])
+
+  @@index([status, remindAt], name: "idx_remind_at")
+  @@index([receiverId, delivery], name: "idx_receiver_delivery")
+  @@map("reminder_task")
+}
+
+/// A2：订阅消息授权状态（C6 长期订阅 + 降级）
+model NotifySubscription {
+  id          BigInt @id
+  userId      BigInt @map("user_id")
+  /// 微信订阅消息模板 ID
+  templateId  String @map("template_id") @db.VarChar(64)
+  /// GRANTED / EXPIRED / REVOKED
+  status      String @default("GRANTED") @db.VarChar(16)
+  grantedAt   DateTime? @map("granted_at") @db.DateTime(3)
+  /// C6：长期订阅默认 3 个月有效期
+  expireAt    DateTime? @map("expire_at") @db.DateTime(3)
+  /// 一次性订阅剩余条数（长期订阅为 NULL）
+  remainCount Int? @map("remain_count")
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt   DateTime? @map("deleted_at") @db.DateTime(3)
+
+  user User @relation(fields: [userId], references: [id])
+  reminderTasks ReminderTask[]
+
+  @@unique([userId, templateId, deletedAt], name: "uk_user_tpl")
+  @@index([userId], name: "idx_notify_sub_user")
+  @@map("notify_subscription")
+}
+
+// ============================================================================
+// 八、媒体 / 回忆域（media / memory）
+// ============================================================================
+
+/// M6：EXIF 剥离 + GPS 告警落库（可审计）
+model MediaAsset {
+  id           BigInt @id
+  familyId     BigInt @map("family_id")
+  tripId       BigInt? @map("trip_id")
+  ownerId      BigInt @map("owner_id")
+  /// COS 对象 key
+  fileKey      String @map("file_key") @db.VarChar(256)
+  mimeType     String @map("mime_type") @db.VarChar(64)
+  byteSize     BigInt @map("byte_size")
+  /// 图片服务端压缩校验（C10：单图 2MB 硬上限）
+  compressed   Boolean @default(false)
+  /// M6：EXIF 剥离落库标记
+  exifStripped Boolean @default(false) @map("exif_stripped")
+  /// M6：检出 GPS → 审计告警
+  hadGps       Boolean @default(false) @map("had_gps")
+  /// M1：存储层级（STANDARD 常驻；STANDARD_IA 待切流）
+  storageClass String @default("STANDARD") @map("storage_class") @db.VarChar(16)
+  width        Int?
+  height       Int?
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt    DateTime? @map("deleted_at") @db.DateTime(3)
+
+  family Family @relation(fields: [familyId], references: [id])
+  trip   Trip?  @relation(fields: [tripId], references: [id])
+  owner  User   @relation(fields: [ownerId], references: [id])
+
+  @@index([familyId, deletedAt], name: "idx_media_family")
+  @@index([tripId], name: "idx_media_trip")
+  @@map("media_asset")
+}
+
+/// A6：回忆只读快照（C8 已决：建表存快照，防历史漂移）
+model MemoryArchive {
+  id           BigInt @id
+  familyId     BigInt @map("family_id")
+  year         Int
+  /// TRIP（出行结束写）/ ANNUAL（每年 12 月定时任务写）
+  type         String @db.VarChar(16)
+  /// 关联 trip_id（当 type=TRIP）
+  refId        BigInt? @map("ref_id")
+  /// 回忆只读快照（防历史漂移）
+  snapshotJson Json   @map("snapshot_json")
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  family Family @relation(fields: [familyId], references: [id])
+  trip   Trip?  @relation(fields: [refId], references: [id])
+
+  @@unique([familyId, year, type], name: "uk_family_year_type")
+  @@index([familyId], name: "idx_memory_family")
+  @@map("memory_archive")
+}
+
+/// A7：孤儿文件治理（★评估项 —— 一期先建，低成本）
+model FilePending {
+  id        BigInt @id
+  /// COS 对象 key
+  fileKey   String @map("file_key") @db.VarChar(256)
+  ownerId   BigInt? @map("owner_id")
+  tripId    BigInt? @map("trip_id")
+  /// PENDING / CONFIRMED / ORPHAN
+  status    String @default("PENDING") @db.VarChar(16)
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+
+  @@unique([fileKey], name: "uk_file_key")
+  @@index([status], name: "idx_file_pending_status")
+  @@map("file_pending")
+}
+
+// ============================================================================
+// 九、节假日字典（holiday）
+// ============================================================================
+
+/// A10：补 updated_at
+model Holiday {
+  id        BigInt @id
+  /// 国家/地区代码（CN）
+  country   String @default("CN") @db.VarChar(8)
+  name      String @db.VarChar(64)
+  date      DateTime @db.Date
+  /// 是否调休工作日
+  isWorkday Boolean @default(false) @map("is_workday")
+  year      Int
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+
+  familyId BigInt? @map("family_id")
+  family   Family? @relation(fields: [familyId], references: [id])
+
+  @@index([country, year, date], name: "idx_holiday_country_year")
+  @@map("holiday")
+}
+
+// ============================================================================
+// 十、基础设施表（A1 / 幂等 / 审计）
+// ============================================================================
+
+/// A1：change_log —— 多端同步游标源（一期就建，原定二期）
+/// E1–E6：服务端时间源 changed_at 为同步游标；idx_cursor (changed_at, id) 保证有序
+model ChangeLog {
+  id         BigInt @id
+  /// wish / trip / itinerary_item / booking / trip_checklist_item / ...
+  entityType String @map("entity_type") @db.VarChar(32)
+  entityId   BigInt @map("entity_id")
+  familyId   BigInt? @map("family_id")
+  tripId     BigInt? @map("trip_id")
+  /// INSERT / UPDATE / DELETE
+  op         String @db.VarChar(8)
+  /// 🔴 服务端时间源（E2），用作同步游标；⛔ 禁用应用服务器时间
+  changedAt  DateTime @map("changed_at") @db.DateTime(3)
+  createdAt  DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  @@index([changedAt, id], name: "idx_cursor")
+  @@index([entityType, entityId], name: "idx_entity")
+  @@map("change_log")
+}
+
+/// 幂等表（技术方案 §7）：唯一键 (scope, request_id)
+model Idempotency {
+  id        BigInt @id
+  /// `${method}:${path}:${userId}`
+  scope     String @db.VarChar(191)
+  requestId String @map("request_id") @db.VarChar(64)
+  /// IN_PROGRESS / DONE
+  status    String @default("IN_PROGRESS") @db.VarChar(16)
+  result    Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  expiresAt DateTime @map("expires_at") @db.DateTime(3)
+
+  @@unique([scope, requestId], name: "uk_scope_request")
+  @@index([expiresAt], name: "idx_idem_expires")
+  @@map("idempotency")
+}
+
+/// M5：审计日志（reason / severity / retain_until 三列 + 到期清理）
+model AuditLog {
+  id          BigInt @id
+  actorId     BigInt? @map("actor_id")
+  action      String @db.VarChar(64)
+  /// M5：业务原因（枚举，见 audit-retention.ts AuditReason）
+  reason      String @db.VarChar(64)
+  /// M5：INFO / WARN / ALERT / CRITICAL
+  severity    String @default("INFO") @db.VarChar(16)
+  /// M5：保留到期时刻（到期前清理任务不得触碰）
+  retainUntil DateTime @map("retain_until") @db.DateTime(3)
+  targetType  String? @map("target_type") @db.VarChar(32)
+  targetId    BigInt? @map("target_id")
+  detail      Json?
+  /// T-4：日志/错误上报/埋点/网关四路脱敏 —— 本列写入前必须过脱敏器
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  @@index([retainUntil], name: "idx_audit_retain")
+  @@index([actorId, createdAt], name: "idx_audit_actor")
+  @@map("audit_log")
 }

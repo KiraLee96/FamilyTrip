@@ -6,33 +6,43 @@
  * 🔴 盲索引 4 条硬规则（派发单 §3.1，违反= 越权或数据不一致）：
  *
  *   规则 1  仅用于**等值检索**。不得用于范围查询、排序、模糊匹配。
- *   规则 2  计算式固定 `sha256(低基数字段 + 主键)`，低基数字段必须**全部**参与。
+ *   规则 2  计算式固定 `sha256(低基数字段 + 被索引值)`，低基数字段必须**全部**参与。
  *   规则 3  命中后**仍走完整鉴权**。盲索引命中 ≠ 有权访问。
  *   规则 4  不得单独建索引。必须与加密列在**同一事务**内写入。
  *
  * 规则 2 的「必须全部参与」是重点：漏掉任一低基数字段，
- * 同一主键在不同租户/家庭下会算出相同摘要，退化为全局唯一值，
- * 跨家庭碰撞即可枚举出他人记录。
+ * 同一订单号在不同家庭下会算出相同摘要，退化为全局可枚举值，
+ * 攻击者拿一个猜测的订单号即可探测「谁家也存了这个号」。
+ *
+ * ⛔ 计算式里**不含主键**。这是与「摘要指纹」的本质区别：
+ *    盲索引必须让「同一逻辑值 → 同一摘要」，否则 `WHERE blind = ?` 无法反查
+ *    （要查得先知道主键，而知道主键就根本不需要查了）。
+ *    主键的信息已通过 AAD 绑进**密文**（红线 R4），不应在盲索引里重复。
  */
 
 import { createHash } from 'node:crypto';
 import type { Buffer } from 'node:buffer';
-import type { SnowflakeId } from './to-buffer.js';
 
 /** 盲索引列固定 32B（sha256 摘要长度） */
 export const BLIND_INDEX_LENGTH = 32;
 
 /** 字段分隔符：选控制字符，避免与业务值里的分隔符混淆 */
-const FIELD_SEPARATOR = '';
+const FIELD_SEPARATOR = '\u001f';
 
 export interface BlindIndexInput {
   /**
-   * 低基数字段 —— 如 `{ familyId, contactType }`。
+   * 低基数字段 —— 如 `{ familyId, tripId }`。
    * ⛔ 全部必须参与计算；缺一个即破坏规则 2。
    */
   lowCardinality: Record<string, string | number | null | undefined>;
-  /** 记录主键 */
-  primaryKey: SnowflakeId;
+  /**
+   * 被索引的明文字段值（如订单号本身）。
+   *
+   * 🔴 这是「盲索引」与「摘要指纹」的分水岭：
+   *    带被索引值 → 同一值同摘要 → 可等值反查（本函数）；
+   *    带主键     → 每条唯一     → 不可反查（那是加密绑定的职责，不在这里）。
+   */
+  indexedValue: string;
   /** 可选：额外的、必须参与的低基数字段（如租户） */
   extra?: string | number | null;
 }
@@ -41,13 +51,13 @@ export interface BlindIndexInput {
  * 计算盲索引。
  *
  * 固定计算式：
- *   `sha256( join(sortedLowCardKeys, FIELD_SEPARATOR) ‖ FIELD_SEPARATOR ‖ primaryKey )`
+ *   `sha256( join(sortedLowCardKeys, FIELD_SEPARATOR) ‖ FIELD_SEPARATOR ‖ indexedValue )`
  *
- * 键名排序 —— 保证 `familyId` 与 `contactType` 无论以何种顺序传入，
+ * 键名排序 —— 保证 `familyId` 与 `tripId` 无论以何种顺序传入，
  * 只要键集合相同就得到相同摘要（否则同一逻辑值会出现两个摘要，检索必漏）。
  */
 export function computeBlindIndex(input: BlindIndexInput): Buffer {
-  const { lowCardinality, primaryKey } = input;
+  const { lowCardinality, indexedValue } = input;
 
   const parts: string[] = Object.keys(lowCardinality)
     .sort()
@@ -65,11 +75,11 @@ export function computeBlindIndex(input: BlindIndexInput): Buffer {
   if (parts.length === 0) {
     throw new TypeError('盲索引至少需要 1 个低基数字段');
   }
-  if (primaryKey === null || primaryKey === undefined || primaryKey === '') {
-    throw new TypeError('盲索引 primaryKey 不得为空');
+  if (indexedValue === null || indexedValue === undefined || indexedValue === '') {
+    throw new TypeError('盲索引 indexedValue（被索引值）不得为空');
   }
 
-  const material = [...parts, String(primaryKey)].join(FIELD_SEPARATOR);
+  const material = [...parts, indexedValue].join(FIELD_SEPARATOR);
   return createHash('sha256').update(material, 'utf8').digest();
 }
 
@@ -85,7 +95,8 @@ export function blindIndexHex(input: BlindIndexInput): string {
  * 都会在此被拒。DAO 层只允许把盲索引传给 Prisma 的 `equals` 过滤。
  */
 export type BlindIndexMatcher =
-  { kind: 'equals'; value: Buffer } | { kind: 'in'; values: Buffer[] };
+  | { kind: 'equals'; value: Buffer }
+  | { kind: 'in'; values: Buffer[] };
 
 export function equals(value: Buffer): BlindIndexMatcher {
   assertLength(value);

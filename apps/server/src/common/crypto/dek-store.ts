@@ -108,6 +108,20 @@ export class DekStore {
   }
 
   /**
+   * 同步窥视缓存中的 DEK 明文（不解密、不发起 KMS 调用）。
+   *
+   * 用途：`decryptField` 的 `resolveDek` 是**同步**签名，
+   * 因此解密路径必须先用 `dekByVersion()`（异步）预取，
+   * 再在同步回调里用本方法取值。
+   *
+   * @returns 命中且未过期则返回密钥；否则 undefined（调用方应视为编程错误）
+   */
+  peek(keyVer: number): Buffer | undefined {
+    const entry = this.cached(keyVer);
+    return entry?.key;
+  }
+
+  /**
    * 尽力而为的擦除。⛔ **不构成安全边界**（红线 R9）：
    * V8 可能已把密钥字节复制到别处。
    */

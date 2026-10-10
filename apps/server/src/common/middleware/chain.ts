@@ -39,6 +39,28 @@ import {
 } from '../auth/access-policy.js';
 
 /** 链路上下文 —— 逐段填充 */
+/**
+ * withOwner 段从**资源行**读到的归属维度。
+ *
+ * 一个形状覆盖两类资源，避免调用方各写一套签名：
+ *   · SHARED 域（家庭/出行）→ 用 `familyId` / `tripId`
+ *   · PRIVATE 域（物品/穿搭）→ 用 `ownerId` / `managedBy`
+ */
+export interface ResolvedOwnership {
+  familyId: bigint | null;
+  tripId: bigint | null;
+  ownerId: bigint | null;
+  managedBy: bigint | null;
+  /**
+   * 双语义表（`trip_checklist_item` / `checklist_template`）的域标记。
+   *
+   * `'SHARED' | 'PERSONAL'`；非双语义表为 `undefined`。
+   * 消费方必须原样透传给 `ResourceRef.scope` —— 链条第 5 段只负责**读出来**，
+   * 不下判定；域分流在 `resolveChecklistDomain` 里单点收敛。
+   */
+  scope?: string;
+}
+
 export interface ChainContext {
   /** 1 · resolveIdentity */
   token?: string;
@@ -54,6 +76,11 @@ export interface ChainContext {
   ownerId?: bigint | null;
   managedBy?: bigint | null;
   scope?: string;
+  /** 5 · 资源**行**上的归属维度（非请求体）—— 权限判定的唯一依据 */
+  familyId?: bigint | null;
+  tripId?: bigint | null;
+  /** 5 · 已解析并通过权限判定的资源 ID（写/删场景 handler 直接用） */
+  resourceId?: bigint;
   /** DB 当前时间；⛔ 禁应用服务器 new Date() */
   dbNow?: Date;
   requestId?: string;
@@ -68,9 +95,22 @@ export interface ChainDeps {
   loadFamilyIds(userId: bigint): Promise<ReadonlySet<bigint>>;
   loadManagedFamilyIds(userId: bigint): Promise<ReadonlySet<bigint>>;
   loadTripAccess(userId: bigint): Promise<ReadonlyMap<bigint, AccessLevel>>;
-  loadOwnerRef(
-    rowId: bigint,
-  ): Promise<{ ownerId: bigint | null; managedBy: bigint | null; scope?: string } | null>;
+  /**
+   * 定位某行属于谁 / 属于哪个家庭 / 属于哪次出行。
+   *
+   * 🔴 必须回带 `familyId` / `tripId`
+   *   否则 SHARED_FAMILY / SHARED_TRIP 维度的判定拿不到比对依据，
+   *   会把「自己是成员」的资源误判为不存在（误拒）。
+   *   `ownerId` / `managedBy` 供 PRIVATE 与代管短路用。
+   */
+  loadOwnerRef(rowId: bigint): Promise<{
+    ownerId: bigint | null;
+    managedBy: bigint | null;
+    scope?: string | undefined;
+    familyId?: bigint | null;
+    tripId?: bigint | null;
+    type?: string | undefined;
+  } | null>;
   /** DB 时间来源 */
   dbNow(): Promise<Date>;
 }
@@ -78,11 +118,26 @@ export interface ChainDeps {
 export interface HandlerSpec<TIn, TOut> {
   /** 鉴权配置：public 跳过鉴权；带 resource 则走权限判定 */
   auth:
-    { public: true } | { public: false; resource: (id: bigint) => ResourceRef; mode: AccessMode };
+    | { public: true }
+    | {
+        public: false;
+        /**
+         * 由资源 id + **已解析的归属**构造 ResourceRef。
+         *
+         * `resolved` 来自 withOwner 段对资源行的读取，不是请求体 ——
+         * 用它填 familyId / tripId 才能保证「资源属于谁」的判定可信。
+         */
+        resource: (id: bigint, resolved: ResolvedOwnership) => ResourceRef;
+        mode: AccessMode;
+      };
   /** 第 6 段 schema；不校验则省略 */
   schema?: ZodSchema<TIn>;
   /** 第 7 段 */
-  handler(ctx: ChainContext, input: TIn): Promise<{ data: TOut; meta?: ResponseMeta }>;
+  handler(
+    ctx: ChainContext,
+    input: TIn,
+    params: Readonly<Record<string, string>>,
+  ): Promise<{ data: TOut; meta?: ResponseMeta }>;
 }
 
 export interface ChainResult {
@@ -104,6 +159,7 @@ export async function runChain<TIn, TOut>(
   ctx: ChainContext,
   rawInput: unknown,
   rawId?: string,
+  params: Readonly<Record<string, string>> = {},
 ): Promise<ChainResult> {
   try {
     // ── 1 · resolveIdentity ─────────────────────────────────
@@ -154,8 +210,19 @@ export async function runChain<TIn, TOut>(
         ctx.ownerId = owner.ownerId;
         ctx.managedBy = owner.managedBy;
         ctx.scope = owner.scope;
+        ctx.resourceId = id;
+        // 归属维度来自**资源行**，不是请求体 —— 否则就是水平越权
+        ctx.familyId = owner.familyId ?? null;
+        ctx.tripId = owner.tripId ?? null;
 
-        const resource = spec.auth.resource(id);
+        const resource = spec.auth.resource(id, {
+          familyId: ctx.familyId ?? null,
+          tripId: ctx.tripId ?? null,
+          ownerId: owner.ownerId ?? null,
+          managedBy: owner.managedBy ?? null,
+          // 双语义表的域标记必须透传；非双语义表为 undefined（消费方自行兜底）
+          ...(owner.scope !== undefined ? { scope: owner.scope } : {}),
+        });
         const pctx: PermissionContext = {
           identity: { userId: ctx.userId },
           familyIds: ctx.familyIds,
@@ -182,7 +249,7 @@ export async function runChain<TIn, TOut>(
     }
 
     // ── 7 · handler ────────────────────────────────────────
-    const out = await spec.handler(ctx, input);
+    const out = await spec.handler(ctx, input, params);
 
     // ── 8 · responseEnvelope ───────────────────────────────
     reached = 8;
