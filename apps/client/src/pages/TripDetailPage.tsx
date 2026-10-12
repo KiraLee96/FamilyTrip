@@ -1,26 +1,28 @@
 /**
- * 行程详情 —— 按天时间轴 + 准备清单 + 花销
+ * 行程详情 —— 按天时间轴 + 准备清单 + 花销（Taro 同构版）
  * ============================================================================
- * 三个板块用标签页切换，避免长滚动：
- *   行程：按日期分组的时间轴（后端返回已按 date+sortOrder 排序）
- *   清单：共享清单，点一下即勾选（toggle 是幂等的单条切换）
- *   花销：总额 + 按人/按类目分布
+ * 三个板块用标签页切换，避免长滚动。
+ * 路由参数从 react-router 的 useParams 改为 nav 抽象层的 useRouteParams。
  */
 
 import { useCallback, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import type { ReactNode } from 'react';
+import { Text, View } from '@tarojs/components';
+import { Link } from '../nav/Link';
+import { useRouteParams } from '../nav';
 
 import { api } from '../api/index';
 import type { ChecklistItem } from '../api/types';
 import { Icon } from '../components/Icon';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
+import { PageLayout } from '../components/PageLayout';
 import { Progress, StatusChip, dateRange, shortDate, weekday } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
 
 type Tab = 'itinerary' | 'checklist' | 'expense';
 
 export function TripDetailPage() {
-  const { tripId = '' } = useParams();
+  const { tripId = '' } = useRouteParams<{ tripId: string }>();
   const [tab, setTab] = useState<Tab>('itinerary');
 
   const trip = useAsync(
@@ -33,57 +35,51 @@ export function TripDetailPage() {
   const t = trip.data!;
 
   return (
-    <>
+    <PageLayout title={t.title} sub={dateRange(t)}>
       <Link
         to="/trips"
         className="muted"
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 3,
-          marginBottom: 10,
-          textDecoration: 'none',
-        }}
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, marginBottom: 10 }}
       >
         <Icon name="chevron-right" size={14} className="rotate-180" />
         返回行程列表
       </Link>
 
-      <div className="trip">
-        <div className="trip__top">
-          <div style={{ flex: 1 }}>
-            <div className="trip__title">{t.title}</div>
-            <div className="trip__meta">
-              <span>
+      <View className="trip">
+        <View className="trip__top">
+          <View style={{ flex: 1 }}>
+            <Text className="trip__title">{t.title}</Text>
+            <View className="trip__meta">
+              <Text>
                 <Icon name="calendar" size={14} />
                 {dateRange(t)}
-              </span>
+              </Text>
               {t.timezone && (
-                <span>
+                <Text>
                   <Icon name="clock" size={14} />
                   {t.timezone}
-                </span>
+                </Text>
               )}
-            </div>
-          </div>
+            </View>
+          </View>
           <StatusChip status={t.status} />
-        </div>
+        </View>
         {(t.destinations ?? []).length > 0 && (
-          <div className="trip__dest">
+          <View className="trip__dest">
             {(t.destinations ?? []).map((d) => (
-              <span key={d.name} className="chip">
+              <Text key={d.name} className="chip">
                 <Icon name="map-pin" size={12} />
                 {d.name}
-              </span>
+              </Text>
             ))}
-          </div>
+          </View>
         )}
-        <div className="muted" style={{ marginTop: 10 }}>
+        <Text className="muted" style={{ marginTop: 10 }}>
           版本 v{t.version} · CAS 乐观锁，更新需回传该值
-        </div>
-      </div>
+        </Text>
+      </View>
 
-      <div className="tabs">
+      <View className="tabs">
         {(
           [
             ['itinerary', '行程'],
@@ -91,21 +87,20 @@ export function TripDetailPage() {
             ['expense', '花销'],
           ] as Array<[Tab, string]>
         ).map(([k, label]) => (
-          <button
+          <View
             key={k}
-            type="button"
             className={tab === k ? 'tabs__btn tabs__btn--on' : 'tabs__btn'}
             onClick={() => setTab(k)}
           >
             {label}
-          </button>
+          </View>
         ))}
-      </div>
+      </View>
 
       {tab === 'itinerary' && <ItineraryTab tripId={tripId} />}
       {tab === 'checklist' && <ChecklistTab />}
       {tab === 'expense' && <ExpenseTab tripId={tripId} />}
-    </>
+    </PageLayout>
   );
 }
 
@@ -126,38 +121,38 @@ function ItineraryTab({ tripId }: { tripId: string }) {
       {dates.map((d) => {
         const dayItems = items.filter((i) => i.date === d);
         return (
-          <div className="day" key={d}>
-            <div className="day__head">
+          <View className="day" key={d}>
+            <View className="day__head">
               {shortDate(d)} {weekday(d)}
-              <span className="day__date">{dayItems.length} 项安排</span>
-            </div>
-            <div className="tl">
+              <Text className="day__date">{dayItems.length} 项安排</Text>
+            </View>
+            <View className="tl">
               {dayItems.map((it) => (
-                <div className="tl__row" key={it.id}>
-                  <div className="tl__rail">
-                    <span className="tl__dot" />
-                    <span className="tl__line" />
-                  </div>
-                  <div className="tl__card">
+                <View className="tl__row" key={it.id}>
+                  <View className="tl__rail">
+                    <View className="tl__dot" />
+                    <View className="tl__line" />
+                  </View>
+                  <View className="tl__card">
                     {it.startTime && (
-                      <div className="tl__time">
+                      <View className="tl__time">
                         <Icon name="clock" size={13} />
-                        {it.startTime}
-                      </div>
+                        <Text>{it.startTime}</Text>
+                      </View>
                     )}
-                    <div className="tl__title">{it.title}</div>
+                    <Text className="tl__title">{it.title}</Text>
                     {it.location && (
-                      <div className="tl__loc">
+                      <View className="tl__loc">
                         <Icon name="map-pin" size={13} />
-                        {it.location}
-                      </div>
+                        <Text>{it.location}</Text>
+                      </View>
                     )}
-                    {it.note && <div className="tl__note">{it.note}</div>}
-                  </div>
-                </div>
+                    {it.note && <Text className="tl__note">{it.note}</Text>}
+                  </View>
+                </View>
               ))}
-            </div>
-          </div>
+            </View>
+          </View>
         );
       })}
     </>
@@ -193,47 +188,43 @@ function ChecklistTab() {
       <Progress done={done} total={list.length} label="整体准备度" />
 
       {shared.length > 0 && (
-        <div className="card card--flush" style={{ marginTop: 12 }}>
+        <View className="card card--flush" style={{ marginTop: 12 }}>
           <RowLabel>共享清单</RowLabel>
           {shared.map((c) => (
             <CheckRow key={c.id} item={c} onToggle={(id) => void toggle(id)} />
           ))}
-        </div>
+        </View>
       )}
 
       {personal.length > 0 && (
-        <div className="card card--flush">
+        <View className="card card--flush">
           <RowLabel>我的清单</RowLabel>
           {personal.map((c) => (
             <CheckRow key={c.id} item={c} onToggle={(id) => void toggle(id)} />
           ))}
-        </div>
+        </View>
       )}
     </>
   );
 }
 
-function RowLabel({ children }: { children: React.ReactNode }) {
+function RowLabel({ children }: { children: ReactNode }) {
   return (
-    <div className="muted" style={{ padding: '10px 14px 6px', fontSize: 11.5, fontWeight: 600 }}>
+    <Text className="muted" style={{ padding: '10px 14px 6px', fontSize: 11.5, fontWeight: 600 }}>
       {children}
-    </div>
+    </Text>
   );
 }
 
 function CheckRow({ item, onToggle }: { item: ChecklistItem; onToggle: (id: string) => void }) {
   return (
-    <button
-      type="button"
-      className={item.done ? 'check check--done' : 'check'}
-      onClick={() => onToggle(item.id)}
-    >
-      <span className="check__box">
+    <View className={item.done ? 'check check--done' : 'check'} onClick={() => onToggle(item.id)}>
+      <Text className="check__box">
         <Icon name={item.done ? 'check' : 'circle'} size={19} />
-      </span>
-      <span className="check__text">{item.title}</span>
-      {item.assigneeName && <span className="check__who">{item.assigneeName}</span>}
-    </button>
+      </Text>
+      <Text className="check__text">{item.title}</Text>
+      {item.assigneeName && <Text className="check__who">{item.assigneeName}</Text>}
+    </View>
   );
 }
 
@@ -258,70 +249,74 @@ function ExpenseTab({ tripId }: { tripId: string }) {
 
   return (
     <>
-      <div className="card">
-        <div className="money__total">
-          <div className="money__num">
-            <small>¥</small>
-            {s?.totalCny ?? '0.00'}
-          </div>
-          <div className="money__cap">本次出行合计（人民币折算）</div>
-        </div>
+      <View className="card">
+        <View className="money__total">
+          <View className="money__num">
+            <Text style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-3)', marginRight: 5 }}>
+              ¥
+            </Text>
+            <Text>{s?.totalCny ?? '0.00'}</Text>
+          </View>
+          <Text className="money__cap">本次出行合计（人民币折算）</Text>
+        </View>
 
-        <div className="section-title" style={{ margin: '0 0 9px' }}>
+        <Text className="section-title" style={{ margin: '0 0 9px' }}>
           按人
-        </div>
-        <div className="bars">
+        </Text>
+        <View className="bars">
           {(s?.byMember ?? []).map((m) => (
-            <div className="bar__row" key={m.memberName}>
-              <span className="bar__name">{m.memberName}</span>
-              <span className="bar__track">
-                <span
+            <View className="bar__row" key={m.memberName}>
+              <Text className="bar__name">{m.memberName}</Text>
+              <View className="bar__track">
+                <View
                   className="bar__fill"
                   style={{ width: `${(Number(m.amountCny) / maxMember) * 100}%` }}
                 />
-              </span>
-              <span className="bar__val">¥{m.amountCny}</span>
-            </div>
+              </View>
+              <Text className="bar__val">¥{m.amountCny}</Text>
+            </View>
           ))}
-        </div>
+        </View>
 
-        <div className="section-title" style={{ margin: '16px 0 9px' }}>
+        <Text className="section-title" style={{ margin: '16px 0 9px' }}>
           按类目
-        </div>
-        <div className="bars">
+        </Text>
+        <View className="bars">
           {(s?.byCategory ?? []).map((m) => (
-            <div className="bar__row" key={m.category}>
-              <span className="bar__name">{m.category}</span>
-              <span className="bar__track">
-                <span
+            <View className="bar__row" key={m.category}>
+              <Text className="bar__name">{m.category}</Text>
+              <View className="bar__track">
+                <View
                   className="bar__fill"
                   style={{ width: `${(Number(m.amountCny) / maxCat) * 100}%` }}
                 />
-              </span>
-              <span className="bar__val">¥{m.amountCny}</span>
-            </div>
+              </View>
+              <Text className="bar__val">¥{m.amountCny}</Text>
+            </View>
           ))}
-        </div>
-      </div>
+        </View>
+      </View>
 
-      <div className="section-title">明细（{items.length} 笔）</div>
-      <div className="card card--flush">
+      <Text className="section-title">明细（{items.length} 笔）</Text>
+      <View className="card card--flush">
         {items.map((e) => (
-          <div className="exp" key={e.id}>
-            <span className="exp__icon">
+          <View className="exp" key={e.id}>
+            <View className="exp__icon">
               <Icon name="wallet" size={17} />
-            </span>
-            <div className="exp__body">
-              <div className="exp__title">{e.title}</div>
-              <div className="exp__sub">
+            </View>
+            <View className="exp__body">
+              <Text className="exp__title">{e.title}</Text>
+              <Text className="exp__sub">
                 {e.payerName} · {shortDate(e.spentAt)}
                 {e.category ? ` · ${e.category}` : ''}
-              </div>
-            </div>
-            <div className="exp__amt">¥{e.amount}</div>
-          </div>
+              </Text>
+            </View>
+            <Text className="exp__amt">¥{e.amount}</Text>
+          </View>
         ))}
-      </div>
+      </View>
     </>
   );
 }
+
+export default TripDetailPage;

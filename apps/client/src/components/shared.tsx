@@ -1,6 +1,9 @@
-/** 共享展示组件与格式化工具 */
+/** 共享展示组件与格式化工具（Taro 同构版：View/Text 替代 div/span） */
 
-import { Icon } from './Icon';
+import type { ReactNode } from 'react';
+import { Text, View } from '@tarojs/components';
+
+import { Icon, type IconName } from './Icon';
 import type { Trip, TripStatus } from '../api/types';
 
 export const STATUS_TEXT: Record<TripStatus, string> = {
@@ -12,7 +15,7 @@ export const STATUS_TEXT: Record<TripStatus, string> = {
 };
 
 export function StatusChip({ status }: { status: TripStatus }) {
-  return <span className={`status status--${status}`}>{STATUS_TEXT[status]}</span>;
+  return <Text className={`status status--${status}`}>{STATUS_TEXT[status]}</Text>;
 }
 
 /** 2026-10-01 → 10/01 */
@@ -49,33 +52,27 @@ export function weekday(date: string): string {
 export function Progress({ done, total, label }: { done: number; total: number; label?: string }) {
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   return (
-    <div className="progress">
-      <div className="progress__bar">
-        <div className="progress__fill" style={{ width: `${pct}%` }} />
-      </div>
-      <div className="progress__label">
-        <span>{label ?? '准备进度'}</span>
-        <span>
+    <View className="progress">
+      <View className="progress__bar">
+        <View className="progress__fill" style={{ width: `${pct}%` }} />
+      </View>
+      <View className="progress__label">
+        <Text>{label ?? '准备进度'}</Text>
+        <Text>
           {done}/{total} · {pct}%
-        </span>
-      </div>
-    </div>
+        </Text>
+      </View>
+    </View>
   );
 }
 
-export function SectionTitle({
-  icon,
-  children,
-}: {
-  icon: Parameters<typeof Icon>[0]['name'];
-  children: React.ReactNode;
-}) {
+export function SectionTitle({ icon, children }: { icon: IconName; children: ReactNode }) {
   return (
-    <div className="section-title">
-      <span className="section-title__icon">
+    <View className="section-title">
+      <Text className="section-title__icon">
         <Icon name={icon} size={16} />
-      </span>
+      </Text>
       {children}
-    </div>
+    </View>
   );
 }

@@ -2,28 +2,46 @@
   "name": "@family-trip/client",
   "version": "0.1.0",
   "private": true,
-  "description": "家庭出行计划 · 客户端 H5 原型（Vite + React + TS；验证界面与交互，后续迁移 Taro 4.x 编译微信小程序）",
+  "description": "家庭出行计划 · 客户端（Taro 4.x 同构：微信小程序首发 + H5 预留）",
   "type": "module",
-  "note": "本批为 H5 可跑通原型：真实契约形状 + Mock 数据层，用于快速验证界面雏形。Taro 小程序工程待技术方案 v1.4 收口后接入。",
   "scripts": {
-    "dev": "vite",
-    "dev:h5": "vite",
-    "build": "vite build",
-    "preview": "vite preview --port 4173",
+    "dev": "taro build --type h5 --watch",
+    "dev:h5": "taro build --type h5 --watch",
+    "dev:weapp": "taro build --type weapp --watch",
+    "build": "taro build --type weapp",
+    "build:h5": "taro build --type h5",
+    "build:weapp": "taro build --type weapp",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@babel/runtime": "^7.24.0",
+    "@tarojs/components": "^4.0.0",
+    "@tarojs/helper": "^4.0.0",
+    "@tarojs/plugin-framework-react": "^4.0.0",
+    "@tarojs/plugin-platform-h5": "^4.0.0",
+    "@tarojs/plugin-platform-weapp": "^4.0.0",
+    "@tarojs/react": "^4.0.0",
+    "@tarojs/runtime": "^4.0.0",
+    "@tarojs/shared": "^4.0.0",
+    "@tarojs/taro": "^4.0.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.28.0"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@babel/core": "^7.24.0",
+    "@babel/preset-react": "^7.24.0",
+    "@tarojs/cli": "^4.0.0",
+    "babel-preset-taro": "^4.0.0",
+    "@tarojs/webpack5-runner": "^4.0.0",
+    "@types/node": "^22.9.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.4",
-    "typescript": "^5.6.3",
-    "vite": "^5.4.11",
-    "vitest": "^2.1.5"
+    "typescript": "^5.6.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@tarojs/cli"
+    ]
   }
 }

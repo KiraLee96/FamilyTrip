@@ -1,18 +1,19 @@
 /**
- * 年度规划 —— 全年出行总览
+ * 年度规划 —— 全年出行总览（Taro 同构版）
  * ============================================================================
- * 把「已完成 / 已计划 / 草稿」按季度归位，回答一个很实际的问题：
- * 「这一年我们打算去哪儿、去了哪儿、花了多少天」。
- * 数据全部由 /trips 聚合得出，不额外依赖后端接口，避免原型期加接口。
+ * 把「已完成 / 已计划 / 草稿」按季度归位。
+ * 数据全部由 /trips 聚合得出，不额外依赖后端接口。
  */
 
 import { useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Text, View } from '@tarojs/components';
+import { Link } from '../nav/Link';
 
 import { api } from '../api/index';
 import type { Trip } from '../api/types';
 import { Icon } from '../components/Icon';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
+import { PageLayout } from '../components/PageLayout';
 import { StatusChip, shortDate, tripDays } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
 
@@ -42,39 +43,41 @@ export function PlanPage() {
   const places = new Set(list.flatMap((t) => (t.destinations ?? []).map((d) => d.name))).size;
 
   return (
-    <>
-      <div className="year__hero">
-        <div className="year__n">{year}</div>
-        <div className="year__cap">全家的出行年度</div>
-        <div className="year__stats">
-          <div className="year__stat">
-            <b>{list.length}</b>
-            <span>个行程</span>
-          </div>
-          <div className="year__stat">
-            <b>{finished.length}</b>
-            <span>已完成</span>
-          </div>
-          <div className="year__stat">
-            <b>{places}</b>
-            <span>个目的地</span>
-          </div>
-        </div>
-      </div>
+    <PageLayout title="年度规划" sub="一年想去哪，提前有个数">
+      <View className="year__hero">
+        <Text className="year__n">{year}</Text>
+        <Text className="year__cap">全家的出行年度</Text>
+        <View className="year__stats">
+          <View className="year__stat">
+            <Text style={{ fontSize: 19, fontWeight: 700, display: 'block' }}>{list.length}</Text>
+            <Text style={{ fontSize: 11, opacity: 0.9 }}>个行程</Text>
+          </View>
+          <View className="year__stat">
+            <Text style={{ fontSize: 19, fontWeight: 700, display: 'block' }}>
+              {finished.length}
+            </Text>
+            <Text style={{ fontSize: 11, opacity: 0.9 }}>已完成</Text>
+          </View>
+          <View className="year__stat">
+            <Text style={{ fontSize: 19, fontWeight: 700, display: 'block' }}>{places}</Text>
+            <Text style={{ fontSize: 11, opacity: 0.9 }}>个目的地</Text>
+          </View>
+        </View>
+      </View>
 
-      <div className="card">
-        <div className="row-between">
-          <div>
-            <div style={{ fontSize: 13.5, fontWeight: 600 }}>全年在路上</div>
-            <div className="muted" style={{ marginTop: 2 }}>
+      <View className="card">
+        <View className="row-between">
+          <View>
+            <Text style={{ fontSize: 13.5, fontWeight: 600 }}>全年在路上</Text>
+            <Text className="muted" style={{ marginTop: 2 }}>
               已计划 {planned.length} 个 · 合计 {totalDays} 天
-            </div>
-          </div>
+            </Text>
+          </View>
           <Icon name="route" size={22} />
-        </div>
-      </div>
+        </View>
+      </View>
 
-      <div className="card">
+      <View className="card">
         {QUARTERS.map(({ q: n, months, label, season }) => {
           const items = list.filter((t) => {
             const d = t.startDate;
@@ -83,48 +86,48 @@ export function PlanPage() {
             return months.includes(m);
           });
           return (
-            <div className="q" key={n}>
-              <div className="q__no">{n}</div>
-              <div className="q__body">
-                <div className="q__label">
+            <View className="q" key={n}>
+              <Text className="q__no">{n}</Text>
+              <View className="q__body">
+                <View className="q__label">
                   {label}
-                  <span className="muted" style={{ marginLeft: 6, fontWeight: 400 }}>
+                  <Text className="muted" style={{ marginLeft: 6, fontWeight: 400 }}>
                     {season}
-                  </span>
-                </div>
+                  </Text>
+                </View>
                 {items.length === 0 ? (
-                  <div className="muted" style={{ marginTop: 5 }}>
+                  <Text className="muted" style={{ marginTop: 5 }}>
                     暂无安排
-                  </div>
+                  </Text>
                 ) : (
-                  <div className="q__trips">
+                  <View className="q__trips">
                     {items.map((t) => (
                       <TripPill key={t.id} trip={t} />
                     ))}
-                  </div>
+                  </View>
                 )}
-              </div>
-            </div>
+              </View>
+            </View>
           );
         })}
-      </div>
+      </View>
 
-      <p className="muted" style={{ textAlign: 'center', marginTop: 4 }}>
+      <Text className="muted" style={{ textAlign: 'center', marginTop: 4 }}>
         按出发月份归入季度；未定日期的行程暂不显示
-      </p>
-    </>
+      </Text>
+    </PageLayout>
   );
 }
 
 function TripPill({ trip }: { trip: Trip }) {
   return (
-    <Link
-      to={`/trips/${trip.id}`}
-      className="chip"
-      style={{ height: 30, padding: '0 10px', textDecoration: 'none' }}
-    >
-      {shortDate(trip.startDate)} {trip.title}
+    <Link to={`/trips/${trip.id}`} className="chip">
+      <Text>
+        {shortDate(trip.startDate)} {trip.title}
+      </Text>
       <StatusChip status={trip.status} />
     </Link>
   );
 }
+
+export default PlanPage;

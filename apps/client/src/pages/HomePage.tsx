@@ -1,17 +1,19 @@
 /**
- * 首页 —— 当前主出行 + 备选行程 + 待办提醒
+ * 首页 —— 当前主出行 + 备选行程 + 待办提醒（Taro 同构版）
  * ============================================================================
  * 信息优先级：正在筹备的出行放最上面，做成「主卡」；
- * 其余行程收成紧凑列表；清单未完成项当作提醒露出，让首页有「事要做」的感觉。
+ * 其余行程收成紧凑列表；清单未完成项当作提醒露出。
  */
 
 import { useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Text, View } from '@tarojs/components';
+import { Link } from '../nav/Link';
 
 import { api } from '../api/index';
 import type { ChecklistItem, Trip } from '../api/types';
 import { Icon } from '../components/Icon';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
+import { PageLayout } from '../components/PageLayout';
 import { Progress, SectionTitle, StatusChip, dateRange, shortDate } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
 
@@ -42,35 +44,31 @@ export function HomePage() {
   const todo = shared.filter((c) => !c.done);
 
   return (
-    <>
+    <PageLayout title="家庭出行" sub="把想一起去的地方，一件件排上">
       <SectionTitle icon="route">正在进行</SectionTitle>
-      <Link
-        to={`/trips/${primary.id}`}
-        className="trip"
-        style={{ display: 'block', color: 'inherit', textDecoration: 'none' }}
-      >
-        <div className="trip__top">
-          <div style={{ flex: 1 }}>
-            <div className="trip__title">{primary.title}</div>
-            <div className="trip__meta">
-              <span>
+      <Link to={`/trips/${primary.id}`} className="trip">
+        <View className="trip__top">
+          <View style={{ flex: 1 }}>
+            <Text className="trip__title">{primary.title}</Text>
+            <View className="trip__meta">
+              <Text>
                 <Icon name="calendar" size={14} />
                 {dateRange(primary)}
-              </span>
-            </div>
-          </div>
+              </Text>
+            </View>
+          </View>
           <StatusChip status={primary.status} />
-        </div>
+        </View>
 
         {(primary.destinations ?? []).length > 0 && (
-          <div className="trip__dest">
+          <View className="trip__dest">
             {(primary.destinations ?? []).map((d) => (
-              <span key={d.name} className="chip">
+              <Text key={d.name} className="chip">
                 <Icon name="map-pin" size={12} />
                 {d.name}
-              </span>
+              </Text>
             ))}
-          </div>
+          </View>
         )}
 
         <Progress done={shared.length - todo.length} total={shared.length} />
@@ -79,17 +77,17 @@ export function HomePage() {
       {todo.length > 0 && (
         <>
           <SectionTitle icon="check">还需要办（{todo.length}）</SectionTitle>
-          <div className="card card--flush">
+          <View className="card card--flush">
             {todo.slice(0, 3).map((c) => (
-              <div key={c.id} className="check" style={{ cursor: 'default' }}>
-                <span className="check__box">
+              <View key={c.id} className="check" style={{ cursor: 'default' }}>
+                <Text className="check__box">
                   <Icon name="circle" size={19} />
-                </span>
-                <span className="check__text">{c.title}</span>
-                {c.assigneeName && <span className="check__who">{c.assigneeName}</span>}
-              </div>
+                </Text>
+                <Text className="check__text">{c.title}</Text>
+                {c.assigneeName && <Text className="check__who">{c.assigneeName}</Text>}
+              </View>
             ))}
-          </div>
+          </View>
         </>
       )}
 
@@ -102,30 +100,26 @@ export function HomePage() {
         </>
       )}
 
-      <div style={{ marginTop: 4 }}>
+      <View style={{ marginTop: 4 }}>
         <Link to="/trips" className="btn btn--ghost btn--block">
           查看全部行程
         </Link>
-      </div>
-    </>
+      </View>
+    </PageLayout>
   );
 }
 
 function MiniTrip({ trip }: { trip: Trip }) {
   const dest = (trip.destinations ?? []).map((d) => d.name).join(' · ');
   return (
-    <Link
-      to={`/trips/${trip.id}`}
-      className="card row-between"
-      style={{ color: 'inherit', textDecoration: 'none', padding: '13px 14px' }}
-    >
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: 14.5, fontWeight: 550 }}>{trip.title}</div>
-        <div className="muted" style={{ marginTop: 3 }}>
+    <Link to={`/trips/${trip.id}`} className="card row-between">
+      <View style={{ minWidth: 0 }}>
+        <Text style={{ fontSize: 14.5, fontWeight: 550 }}>{trip.title}</Text>
+        <Text className="muted" style={{ marginTop: 3 }}>
           {shortDate(trip.startDate)} - {shortDate(trip.endDate)}
           {dest ? ` · ${dest}` : ''}
-        </div>
-      </div>
+        </Text>
+      </View>
       <StatusChip status={trip.status} />
     </Link>
   );
@@ -135,3 +129,5 @@ function MiniTrip({ trip }: { trip: Trip }) {
 export function countDone(items: ChecklistItem[]): number {
   return items.filter((c) => c.done).length;
 }
+
+export default HomePage;

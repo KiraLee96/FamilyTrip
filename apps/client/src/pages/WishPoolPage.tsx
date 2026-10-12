@@ -1,16 +1,17 @@
 /**
- * 心愿池 —— 全家提想法 → 投票 → 票高的转成行程
+ * 心愿池 —— 全家提想法 → 投票 → 票高的转成行程（Taro 同构版）
  * ============================================================================
  * 交互核心是「投票」：点右侧票数按钮即投票/取消，本地立即反馈，请求在后台完成。
- * 这样在移动端点按手感干脆，不会因为等网络而卡顿。
  */
 
 import { useCallback, useState } from 'react';
+import { Text, View } from '@tarojs/components';
 
 import { api } from '../api/index';
 import type { Wish } from '../api/types';
 import { Icon } from '../components/Icon';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
+import { PageLayout } from '../components/PageLayout';
 import { SectionTitle } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
 
@@ -46,18 +47,17 @@ export function WishPoolPage() {
   const adopted = list.filter((w) => w.status === 'ADOPTED');
 
   return (
-    <>
-      <div className="card row-between" style={{ padding: '12px 14px' }}>
-        <div>
-          <div style={{ fontSize: 13.5, fontWeight: 600 }}>
+    <PageLayout title="心愿池" sub="全家投票，票高的先安排">
+      <View className="card row-between">
+        <View>
+          <Text style={{ fontSize: 13.5, fontWeight: 600 }}>
             {families.data?.[0]?.name ?? '我的家庭'}
-          </div>
-          <div className="muted" style={{ marginTop: 2 }}>
+          </Text>
+          <Text className="muted" style={{ marginTop: 2 }}>
             共 {list.length} 条心愿 · 待定 {open.length} 条
-          </div>
-        </div>
-        <button
-          type="button"
+          </Text>
+        </View>
+        <View
           className="btn"
           onClick={() => {
             const id = families.data?.[0]?.id;
@@ -66,17 +66,17 @@ export function WishPoolPage() {
         >
           <Icon name="plus" size={15} />
           提心愿
-        </button>
-      </div>
+        </View>
+      </View>
 
       {adopted.length > 0 && (
         <>
           <SectionTitle icon="check">已成行</SectionTitle>
-          <div className="card card--flush">
+          <View className="card card--flush">
             {adopted.map((w) => (
               <WishRow key={w.id} wish={w} onVote={(id) => void onVote(id)} />
             ))}
-          </div>
+          </View>
         </>
       )}
 
@@ -84,53 +84,50 @@ export function WishPoolPage() {
       {open.length === 0 ? (
         <Empty text="还没有待投票的心愿" />
       ) : (
-        <div className="card card--flush">
+        <View className="card card--flush">
           {open.map((w) => (
             <WishRow key={w.id} wish={w} onVote={(id) => void onVote(id)} />
           ))}
-        </div>
+        </View>
       )}
 
-      <p className="muted" style={{ textAlign: 'center', marginTop: 14 }}>
+      <Text className="muted" style={{ textAlign: 'center', marginTop: 14 }}>
         票数最高的一条，可以直接转成行程草稿
-      </p>
-    </>
+      </Text>
+    </PageLayout>
   );
 }
 
 function WishRow({ wish, onVote }: { wish: Wish; onVote: (id: string) => void }) {
   return (
-    <div className="wish">
-      <div className="wish__body">
-        <div className="wish__title">
-          {wish.title}
+    <View className="wish">
+      <View className="wish__body">
+        <View className="wish__title">
+          <Text>{wish.title}</Text>
           {wish.status === 'ADOPTED' && (
-            <span className="tag" style={{ background: '#e5f7ef', color: '#16794f' }}>
+            <Text className="tag" style={{ background: '#e5f7ef', color: '#16794f' }}>
               已成行
-            </span>
+            </Text>
           )}
-        </div>
-        {wish.note && <div className="wish__note">{wish.note}</div>}
+        </View>
+        {wish.note && <Text className="wish__note">{wish.note}</Text>}
         {(wish.tags ?? []).length > 0 && (
-          <div className="wish__tags">
+          <View className="wish__tags">
             {(wish.tags ?? []).map((t) => (
-              <span key={t} className="tag">
+              <Text key={t} className="tag">
                 {t}
-              </span>
+              </Text>
             ))}
-          </div>
+          </View>
         )}
-      </div>
-      <button
-        type="button"
-        className={wish.votedByMe ? 'vote vote--on' : 'vote'}
-        onClick={() => onVote(wish.id)}
-        aria-pressed={wish.votedByMe}
-      >
+      </View>
+      <View className={wish.votedByMe ? 'vote vote--on' : 'vote'} onClick={() => onVote(wish.id)}>
         <Icon name="heart" size={17} />
-        <span className="vote__n">{wish.votes}</span>
-        <span className="vote__cap">{wish.votedByMe ? '已投' : '投票'}</span>
-      </button>
-    </div>
+        <Text className="vote__n">{wish.votes}</Text>
+        <Text className="vote__cap">{wish.votedByMe ? '已投' : '投票'}</Text>
+      </View>
+    </View>
   );
 }
+
+export default WishPoolPage;
