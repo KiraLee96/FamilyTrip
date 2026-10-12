@@ -12,6 +12,7 @@ export default {
     'pages/WishPoolPage',
     'pages/TripsPage',
     'pages/TripDetailPage',
+    'pages/TripCreatePage',
     'pages/PlanPage',
   ],
   window: {

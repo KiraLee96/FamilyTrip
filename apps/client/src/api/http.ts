@@ -77,6 +77,10 @@ export function createHttpClient(): ApiClient {
     listItineraries: (tripId) => request<ItineraryItem[]>('GET', `/itineraries?tripId=${tripId}`),
     listChecklist: (scope) =>
       request<ChecklistItem[]>('GET', `/checklists/items${scope ? `?scope=${scope}` : ''}`),
+    // 后端返回 { item }；item 行字段为 name/checked/quantity/scope（与 listChecklist
+    // 同样存在既有字段差异），真联调时与 list 走同一适配层，本次不扩散处理
+    createChecklistItem: (input) =>
+      request<{ item: ChecklistItem }>('POST', '/checklists/items', input).then((r) => r.item),
     toggleChecklistItem: (id) => request<ChecklistItem>('POST', `/checklists/items/${id}/toggle`),
     listExpenses: (tripId) => request<Expense[]>('GET', `/expenses?tripId=${tripId}`),
     expenseSummary: (tripId) =>

@@ -7,7 +7,7 @@
 
 import { useCallback, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Text, View } from '@tarojs/components';
+import { Input, Text, View } from '@tarojs/components';
 import { Link } from '../nav/Link';
 import { useRouteParams } from '../nav';
 
@@ -22,7 +22,8 @@ import { useAsync } from '../hooks/useAsync';
 type Tab = 'itinerary' | 'checklist' | 'expense';
 
 export function TripDetailPage() {
-  const { tripId = '' } = useRouteParams<{ tripId: string }>();
+  // nav 层生成的 query 参数名是 id（见 src/nav/index.ts 的 toTaroUrl）
+  const { id: tripId = '' } = useRouteParams<{ id: string }>();
   const [tab, setTab] = useState<Tab>('itinerary');
 
   const trip = useAsync(
@@ -98,7 +99,7 @@ export function TripDetailPage() {
       </View>
 
       {tab === 'itinerary' && <ItineraryTab tripId={tripId} />}
-      {tab === 'checklist' && <ChecklistTab />}
+      {tab === 'checklist' && <ChecklistTab tripId={tripId} familyId={t.familyId} />}
       {tab === 'expense' && <ExpenseTab tripId={tripId} />}
     </PageLayout>
   );
@@ -159,17 +160,24 @@ function ItineraryTab({ tripId }: { tripId: string }) {
   );
 }
 
-function ChecklistTab() {
+function ChecklistTab({ tripId, familyId }: { tripId: string; familyId: string }) {
   const q = useAsync(
     useCallback(() => api.listChecklist(), []),
     [],
   );
+  /** toggle 的本地覆盖（与既有模式一致） */
   const [local, setLocal] = useState<Record<string, ChecklistItem>>({});
+  /** 本页新增的项（不在首屏列表里，需追加渲染） */
+  const [extra, setExtra] = useState<ChecklistItem[]>([]);
+  const [draft, setDraft] = useState('');
 
   if (q.loading) return <Loading />;
   if (q.error) return <ErrorBox message={q.error} onRetry={q.reload} />;
 
-  const list = (q.data ?? []).map((c) => local[c.id] ?? c);
+  const list = [
+    ...(q.data ?? []).map((c) => local[c.id] ?? c),
+    ...extra.map((c) => local[c.id] ?? c),
+  ];
   const shared = list.filter((c) => c.scope === 'SHARED');
   const personal = list.filter((c) => c.scope === 'PERSONAL');
   const done = list.filter((c) => c.done).length;
@@ -178,6 +186,18 @@ function ChecklistTab() {
     try {
       const next = await api.toggleChecklistItem(id);
       setLocal((m) => ({ ...m, [id]: next }));
+    } catch {
+      /* 忽略：保持服务端状态 */
+    }
+  };
+
+  const add = async () => {
+    const name = draft.trim();
+    if (!name) return;
+    try {
+      const item = await api.createChecklistItem({ tripId, familyId, name });
+      setExtra((xs) => [...xs, item]);
+      setDraft('');
     } catch {
       /* 忽略：保持服务端状态 */
     }
@@ -204,6 +224,24 @@ function ChecklistTab() {
           ))}
         </View>
       )}
+
+      <View className="card card--flush">
+        <View className="add-row">
+          <Input
+            className="add-row__input"
+            placeholder="添加物品，如：防晒霜"
+            value={draft}
+            maxlength={64}
+            onInput={(e) => setDraft(e.detail.value)}
+          />
+          <View
+            className={draft.trim() ? 'add-row__btn' : 'add-row__btn add-row__btn--off'}
+            onClick={() => void add()}
+          >
+            <Text style={{ color: '#fff', fontSize: 13.5, fontWeight: 550 }}>添加</Text>
+          </View>
+        </View>
+      </View>
     </>
   );
 }

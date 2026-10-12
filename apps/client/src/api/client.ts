@@ -78,6 +78,15 @@ export interface ApiClient {
   // ---- checklist ----
   /** GET /checklists/items */
   listChecklist(scope?: 'SHARED' | 'PERSONAL'): Promise<ChecklistItem[]>;
+  /** POST /checklists/items（新增物品） */
+  createChecklistItem(input: {
+    tripId: string;
+    familyId: string;
+    /** 后端字段名为 name（对齐 createChecklistItemSchema） */
+    name: string;
+    quantity?: number;
+    scope?: 'SHARED' | 'PERSONAL';
+  }): Promise<ChecklistItem>;
   /** POST /checklists/items/:id/toggle */
   toggleChecklistItem(id: string): Promise<ChecklistItem>;
 

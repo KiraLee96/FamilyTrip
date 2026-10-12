@@ -299,6 +299,16 @@ export function createMockClient(): ApiClient {
       );
       return respond(list);
     },
+    async createChecklistItem(input) {
+      const item: ChecklistItem = {
+        id: `c${Date.now().toString(36)}`,
+        scope: input.scope ?? 'SHARED',
+        title: input.name,
+        done: false,
+      };
+      state.checklist.push(item);
+      return respond(item);
+    },
     async listChecklist(scope) {
       const list = scope ? state.checklist.filter((c) => c.scope === scope) : state.checklist;
       return respond(list);

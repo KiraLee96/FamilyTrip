@@ -11,6 +11,7 @@
  *   /wishes      → pages/WishPoolPage  （tab）
  *   /trips       → pages/TripsPage     （tab）
  *   /plan        → pages/PlanPage      （tab）
+ *   /trips/new   → pages/TripCreatePage（非 tab，须先于 /trips/:id 匹配）
  *   /trips/:id   → pages/TripDetailPage（非 tab，带 query 参数）
  */
 
@@ -25,6 +26,9 @@ const TAB_PAGE: Record<string, string> = {
 };
 
 function toTaroUrl(to: string): { url: string; tab: boolean } {
+  if (to === '/trips/new') {
+    return { url: '/pages/TripCreatePage', tab: false };
+  }
   if (to.startsWith('/trips/')) {
     const id = encodeURIComponent(to.slice('/trips/'.length));
     return { url: `/pages/TripDetailPage?id=${id}`, tab: false };

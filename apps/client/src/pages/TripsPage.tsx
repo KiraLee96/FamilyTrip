@@ -6,7 +6,9 @@
 
 import { useCallback } from 'react';
 import { Text, View } from '@tarojs/components';
+import Taro from '@tarojs/taro';
 import { Link } from '../nav/Link';
+import { navigate } from '../nav';
 
 import { api } from '../api/index';
 import type { Trip, TripStatus } from '../api/types';
@@ -31,29 +33,51 @@ export function TripsPage() {
     [],
   );
 
+  // tab 页驻留缓存：从详情页返回时不会自动重拉，用 useDidShow 刷新
+  // （H5 端对应页面重新显示，小程序端对应 onShow，双端语义一致）
+  Taro.useDidShow(() => {
+    q.reload();
+  });
+
   if (q.loading) return <Loading />;
   if (q.error) return <ErrorBox message={q.error} onRetry={q.reload} />;
 
   const list = q.data ?? [];
-  if (list.length === 0) return <Empty text="还没有行程，去心愿池挑一个吧" />;
 
   return (
     <PageLayout title="行程" sub="按天看安排，不慌不赶">
-      {ORDER.map((st) => {
-        const group = list.filter((t) => t.status === st);
-        if (group.length === 0) return null;
-        return (
-          <View key={st}>
-            <SectionTitle icon="route">
-              {GROUP_LABEL[st]}（{group.length}）
-            </SectionTitle>
-            {group.map((t) => (
-              <TripCard key={t.id} trip={t} />
-            ))}
-          </View>
-        );
-      })}
+      <CreateTripButton />
+      {list.length === 0 ? (
+        <Empty text="还没有行程，从新建开始吧" />
+      ) : (
+        <>
+          {ORDER.map((st) => {
+            const group = list.filter((t) => t.status === st);
+            if (group.length === 0) return null;
+            return (
+              <View key={st}>
+                <SectionTitle icon="route">
+                  {GROUP_LABEL[st]}（{group.length}）
+                </SectionTitle>
+                {group.map((t) => (
+                  <TripCard key={t.id} trip={t} />
+                ))}
+              </View>
+            );
+          })}
+        </>
+      )}
     </PageLayout>
+  );
+}
+
+/** 新建行程入口：空态/非空态都显示，跳 TripCreatePage */
+function CreateTripButton() {
+  return (
+    <View className="add-bar" onClick={() => navigate('/trips/new')}>
+      <Icon name="plus" size={16} />
+      <Text className="add-bar__text">新建行程</Text>
+    </View>
   );
 }
 
