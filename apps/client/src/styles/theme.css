@@ -1050,6 +1050,223 @@ p {
   background: #c9d2e2;
 }
 
+/* ---------- 照片墙 ---------- */
+
+.photo-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.photo-cell {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: #eef1f6;
+}
+
+.photo-cell__img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Mock 占位卡（预置照片无真实图片字节） */
+.photo-cell__ph {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: linear-gradient(135deg, #e8eef7, #f4f7fb);
+  color: var(--text-3);
+}
+
+.photo-cell__ph-date {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 首个「+ 上传照片」格 */
+.photo-cell--add {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border: 1px dashed var(--line-strong);
+  background: var(--card);
+  color: var(--primary);
+}
+
+.photo-cell--add:active {
+  background: var(--primary-soft);
+}
+
+.photo-cell--busy {
+  opacity: 0.6;
+}
+
+.photo-cell__plus {
+  font-size: 22px;
+  font-weight: 300;
+  line-height: 1;
+}
+
+.photo-cell__add-text {
+  font-size: 11px;
+  font-weight: 550;
+}
+
+/* 删除角标 */
+.photo-cell__del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(20, 26, 43, 0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.photo-cell__del-x {
+  font-size: 13px;
+  line-height: 1;
+  margin-top: -1px;
+}
+
+/* ---------- 回忆卡片 ---------- */
+
+.memory__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.memory__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 7px;
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.memory__trip {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.memory__trip-title {
+  display: block;
+  font-size: 15.5px;
+  font-weight: 650;
+}
+
+.memory__trip-sub {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.memory__block {
+  margin-top: 12px;
+}
+
+.memory__block-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 7px;
+}
+
+.memory__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12.5px;
+}
+
+.memory__row-date {
+  flex: 0 0 auto;
+  min-width: 52px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.memory__row-title {
+  flex: 1 1 auto;
+}
+
+.memory__row-loc {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.memory__money {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.memory__money-num {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.memory__cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.memory__foot {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.memory__hint {
+  display: block;
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.6;
+}
+
+.memory__empty {
+  text-align: center;
+  padding: 22px 16px;
+}
+
+.memory__empty-title {
+  display: block;
+  font-size: 15px;
+  font-weight: 650;
+}
+
 /* ---------- 小工具 ---------- */
 
 .row-between {

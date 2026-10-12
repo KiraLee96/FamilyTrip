@@ -7,19 +7,21 @@
 
 import { useCallback, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Input, Text, View } from '@tarojs/components';
+import { Image, Input, Text, View } from '@tarojs/components';
 import { Link } from '../nav/Link';
 import { useRouteParams } from '../nav';
 
-import { api } from '../api/index';
-import type { ChecklistItem } from '../api/types';
+import { ApiError, api } from '../api/index';
+import type { ChecklistItem, MemoryArchive, MemorySnapshot } from '../api/types';
 import { Icon } from '../components/Icon';
+import { MemoryCard } from '../components/MemoryCard';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
 import { Progress, StatusChip, dateRange, shortDate, weekday } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
+import { pickAndUploadPhotos } from '../utils/upload';
 
-type Tab = 'itinerary' | 'checklist' | 'expense';
+type Tab = 'itinerary' | 'checklist' | 'expense' | 'photo' | 'memory';
 
 export function TripDetailPage() {
   // nav 层生成的 query 参数名是 id（见 src/nav/index.ts 的 toTaroUrl）
@@ -86,6 +88,8 @@ export function TripDetailPage() {
             ['itinerary', '行程'],
             ['checklist', '清单'],
             ['expense', '花销'],
+            ['photo', '照片'],
+            ['memory', '回忆'],
           ] as Array<[Tab, string]>
         ).map(([k, label]) => (
           <View
@@ -101,6 +105,8 @@ export function TripDetailPage() {
       {tab === 'itinerary' && <ItineraryTab tripId={tripId} />}
       {tab === 'checklist' && <ChecklistTab tripId={tripId} familyId={t.familyId} />}
       {tab === 'expense' && <ExpenseTab tripId={tripId} />}
+      {tab === 'photo' && <PhotoTab tripId={tripId} />}
+      {tab === 'memory' && <MemoryTab tripId={tripId} tripTitle={t.title} />}
     </PageLayout>
   );
 }
@@ -353,6 +359,183 @@ function ExpenseTab({ tripId }: { tripId: string }) {
           </View>
         ))}
       </View>
+    </>
+  );
+}
+
+/**
+ * 照片 tab —— 照片墙 + 上传（media 域两段式）
+ * Mock 模式下预置照片渲染占位卡（无真实图片字节），
+ * 本会话上传的照片用本地临时路径即时渲染（刷新失效，已知局限）。
+ */
+function PhotoTab({ tripId }: { tripId: string }) {
+  const q = useAsync(
+    useCallback(() => api.listMedia({ tripId }), [tripId]),
+    [tripId],
+  );
+  /** 本会话上传的本地路径：assetId → tempFilePath */
+  const [localPaths, setLocalPaths] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  if (q.loading) return <Loading />;
+  if (q.error) return <ErrorBox message={q.error} onRetry={q.reload} />;
+
+  const photos = q.data ?? [];
+
+  const upload = async () => {
+    setErr('');
+    setBusy(true);
+    try {
+      const added = await pickAndUploadPhotos(tripId);
+      setLocalPaths((m) => {
+        const next = { ...m };
+        for (const p of added) next[p.asset.id] = p.localPath;
+        return next;
+      });
+      q.reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : '上传失败，请重试');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id: string) => {
+    try {
+      await api.deleteMediaAsset(id);
+      q.reload();
+    } catch {
+      /* 忽略：仅上传者或户主可删，失败时保持原状 */
+    }
+  };
+
+  return (
+    <>
+      <View className="photo-grid">
+        <View
+          className={
+            busy ? 'photo-cell photo-cell--add photo-cell--busy' : 'photo-cell photo-cell--add'
+          }
+          onClick={() => {
+            if (!busy) void upload();
+          }}
+        >
+          <Text className="photo-cell__plus">＋</Text>
+          <Text className="photo-cell__add-text">{busy ? '上传中…' : '上传照片'}</Text>
+        </View>
+        {photos.map((p) => {
+          const local = localPaths[p.id];
+          return (
+            <View className="photo-cell" key={p.id}>
+              {local ? (
+                <Image className="photo-cell__img" src={local} mode="aspectFill" />
+              ) : (
+                <View className="photo-cell__ph">
+                  <Icon name="camera" size={26} />
+                  <Text className="photo-cell__ph-date">{shortDate(p.createdAt.slice(0, 10))}</Text>
+                </View>
+              )}
+              <View className="photo-cell__del" onClick={() => void remove(p.id)}>
+                <Text className="photo-cell__del-x">×</Text>
+              </View>
+            </View>
+          );
+        })}
+      </View>
+      {err !== '' && <ErrorBox message={err} onRetry={() => void upload()} />}
+      <Text className="muted" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.6 }}>
+        照片归档后仅家庭成员可见；原图位置信息（EXIF GPS）按隐私策略剥离。
+      </Text>
+    </>
+  );
+}
+
+/**
+ * 回忆 tab —— 出行回忆快照（memory 域，只读 + 生成）
+ * 幂等语义：同年 TRIP 回忆已存在则返回既有快照（created=false），不覆盖。
+ */
+function MemoryTab({ tripId, tripTitle }: { tripId: string; tripTitle: string }) {
+  const [gen, setGen] = useState<{
+    memory: MemoryArchive;
+    snapshot: MemorySnapshot;
+    created: boolean;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [genErr, setGenErr] = useState('');
+
+  const list = useAsync(
+    useCallback(() => api.listMemories({ type: 'TRIP' }), []),
+    [],
+  );
+
+  // 本页生成的快照优先；否则从列表按标题匹配（列表项只有摘要），再拉完整快照
+  const detail = useAsync(
+    useCallback(async (): Promise<MemorySnapshot | null> => {
+      if (gen) return gen.snapshot;
+      const hit = (list.data ?? []).find((m) => m.summary.tripTitle === tripTitle);
+      if (!hit) return null;
+      const d = await api.getMemory(hit.id);
+      return d.snapshot;
+    }, [list.data, gen, tripTitle]),
+    [list.data, gen, tripTitle],
+  );
+
+  const generate = async () => {
+    setBusy(true);
+    setGenErr('');
+    try {
+      const r = await api.generateTripMemory(tripId);
+      setGen(r);
+    } catch (e) {
+      setGenErr(e instanceof ApiError ? `${e.message}（code ${e.code}）` : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (list.loading || detail.loading) return <Loading />;
+  if (list.error) return <ErrorBox message={list.error} onRetry={list.reload} />;
+
+  const snap = detail.data ?? null;
+
+  return (
+    <>
+      {snap ? (
+        <>
+          <MemoryCard
+            snapshot={snap}
+            note={
+              gen !== null && !gen.created && snap.trip !== undefined && snap.trip.id !== tripId
+                ? `本年度的出行回忆已存在（来自「${snap.trip.title}」），快照不可覆盖。`
+                : undefined
+            }
+          />
+          {gen !== null && gen.created && (
+            <Text className="muted" style={{ fontSize: 11.5, marginTop: 8, lineHeight: 1.6 }}>
+              回忆已生成。之后的改动不会影响这篇快照 —— 它定格在生成时刻。
+            </Text>
+          )}
+        </>
+      ) : (
+        <View className="card memory__empty">
+          <Text className="memory__empty-title">还没有回忆</Text>
+          <Text className="muted" style={{ fontSize: 12, lineHeight: 1.6, margin: '6px 0 12px' }}>
+            出行结束后生成回忆，把成员、安排、花销汇总和照片数定格成一篇不可变的家庭档案。
+          </Text>
+          <View
+            className={busy ? 'add-row__btn add-row__btn--off' : 'add-row__btn'}
+            onClick={() => {
+              if (!busy) void generate();
+            }}
+          >
+            <Text style={{ color: '#fff', fontSize: 13.5, fontWeight: 550 }}>
+              {busy ? '生成中…' : '生成本次出行回忆'}
+            </Text>
+          </View>
+          {genErr !== '' && <ErrorBox message={genErr} onRetry={() => void generate()} />}
+        </View>
+      )}
     </>
   );
 }

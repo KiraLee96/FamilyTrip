@@ -12,6 +12,10 @@ import type {
   ExpenseSummary,
   Family,
   ItineraryItem,
+  MediaAsset,
+  MemoryArchive,
+  MemorySnapshot,
+  PresignUploadResult,
   Trip,
   User,
   Wish,
@@ -233,6 +237,120 @@ const EXPENSE_SUMMARY: ExpenseSummary = {
   ],
 };
 
+/**
+ * 预置媒体资产（云南行程的 3 张照片）。
+ * Mock 没有真实图片字节，界面渲染占位卡（本地路径由上传时即时补齐）。
+ */
+const MEDIA: MediaAsset[] = [
+  {
+    id: '601',
+    familyId: '10',
+    tripId: '103',
+    ownerId: '1',
+    fileKey: 'f/10/20260712-a1b2c3d4.jpg',
+    mimeType: 'image/jpeg',
+    byteSize: '2345678',
+    compressed: true,
+    exifStripped: true,
+    hadGps: false,
+    storageClass: 'STANDARD',
+    width: 4032,
+    height: 3024,
+    createdAt: '2026-07-12T10:20:00.000Z',
+    updatedAt: '2026-07-12T10:20:00.000Z',
+  },
+  {
+    id: '602',
+    familyId: '10',
+    tripId: '103',
+    ownerId: '1',
+    fileKey: 'f/10/20260715-e5f6a7b8.jpg',
+    mimeType: 'image/jpeg',
+    byteSize: '1987654',
+    compressed: true,
+    exifStripped: true,
+    hadGps: false,
+    storageClass: 'STANDARD',
+    width: 4032,
+    height: 3024,
+    createdAt: '2026-07-15T08:40:00.000Z',
+    updatedAt: '2026-07-15T08:40:00.000Z',
+  },
+  {
+    id: '603',
+    familyId: '10',
+    tripId: '103',
+    ownerId: '1',
+    fileKey: 'f/10/20260719-c9d0e1f2.jpg',
+    mimeType: 'image/jpeg',
+    byteSize: '2876543',
+    compressed: true,
+    exifStripped: true,
+    hadGps: true,
+    storageClass: 'STANDARD',
+    width: 4032,
+    height: 3024,
+    createdAt: '2026-07-19T17:05:00.000Z',
+    updatedAt: '2026-07-19T17:05:00.000Z',
+  },
+];
+
+/** 预置的云南行程回忆快照（对应 MemoryArchive '901'） */
+const TRIP_MEMORY_SNAPSHOT: MemorySnapshot = {
+  schemaVersion: 1,
+  type: 'TRIP',
+  year: 2026,
+  familyId: '10',
+  trip: {
+    id: '103',
+    title: '暑假 · 云南亲子环线',
+    status: 'FINISHED',
+    startDate: '2026-07-10',
+    endDate: '2026-07-20',
+    timezone: 'Asia/Shanghai',
+    memberCount: 4,
+    memberNames: ['爸爸', '妈妈', '爷爷', '小珂'],
+  },
+  itinerary: [
+    { date: '2026-07-10', title: '飞抵昆明，逛滇池', location: '昆明' },
+    { date: '2026-07-12', title: '高铁到大理，环洱海', location: '大理' },
+    { date: '2026-07-15', title: '丽江古城 + 束河', location: '丽江' },
+    { date: '2026-07-18', title: '香格里拉普达措', location: '香格里拉' },
+  ],
+  expenseSummary: {
+    currency: 'CNY',
+    totalMinor: '860000',
+    pendingRateCount: 0,
+    byCategory: { 交通: '320000', 住宿: '310000', 门票: '150000', 餐饮: '80000' },
+  },
+  mediaCount: 3,
+  generatedAt: '2026-07-25T20:00:00.000Z',
+};
+
+/** 回忆快照单独存放（列表项不回传快照，与后端 toListItem 同构） */
+const MEMORY_SNAPSHOTS: Record<string, MemorySnapshot> = {
+  '901': TRIP_MEMORY_SNAPSHOT,
+};
+
+const MEMORIES: MemoryArchive[] = [
+  {
+    id: '901',
+    familyId: '10',
+    year: 2026,
+    type: 'TRIP',
+    refId: '103',
+    createdAt: '2026-07-25T20:00:00.000Z',
+    summary: {
+      tripTitle: '暑假 · 云南亲子环线',
+      memberCount: 4,
+      itineraryCount: 4,
+      totalMinor: '860000',
+      pendingRateCount: 0,
+      mediaCount: 3,
+    },
+  },
+];
+
 /** 模拟网络延迟，让 loading 态真实可见 */
 const delay = (ms = 180): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -242,10 +360,13 @@ async function respond<T>(data: T): Promise<T> {
   return unwrap({ code: 0, message: 'ok', data });
 }
 
-/** 可变的 Mock 状态（投票/勾选改这里，刷新后重置） */
+/** 可变的 Mock 状态（投票/勾选/上传改这里，刷新后重置） */
 const state = {
   wishes: [...WISHES],
   checklist: [...CHECKLIST],
+  media: [...MEDIA],
+  memories: [...MEMORIES],
+  memorySnapshots: { ...MEMORY_SNAPSHOTS },
 };
 
 export function createMockClient(): ApiClient {
@@ -324,6 +445,180 @@ export function createMockClient(): ApiClient {
     },
     async expenseSummary() {
       return respond(EXPENSE_SUMMARY);
+    },
+    // ---- media ----
+    async presignUpload(input) {
+      // Mock 无对象存储：uploadUrl 置空即「跳过直传」（上传工具依此判断），
+      // fileKey 仍按后端规则生成，保证 confirm 链路形状一致。
+      const ext = /\.[A-Za-z0-9]{1,8}$/.exec(input.fileName)?.[0].toLowerCase() ?? '';
+      const fileKey = `f/${FAMILY.id}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
+      return respond<PresignUploadResult>({ uploadUrl: '', expiresIn: 0, fileKey });
+    },
+    async confirmMediaAsset(input) {
+      const asset: MediaAsset = {
+        id: `m${Date.now().toString(36)}`,
+        familyId: FAMILY.id,
+        tripId: input.tripId ?? null,
+        ownerId: ME.id,
+        fileKey: input.fileKey,
+        mimeType: input.mimeType,
+        byteSize: String(input.byteSize),
+        compressed: true,
+        // Mock 不做真实 EXIF 处理，统一按已剥离登记（真后端以 stripExif 结果为准）
+        exifStripped: true,
+        hadGps: false,
+        storageClass: 'STANDARD',
+        width: input.width ?? null,
+        height: input.height ?? null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      state.media.unshift(asset);
+      return respond(asset);
+    },
+    async listMedia(query) {
+      let list = state.media;
+      if (query?.tripId !== undefined) list = list.filter((m) => m.tripId === query.tripId);
+      if (query?.mimePrefix !== undefined)
+        list = list.filter((m) => m.mimeType.startsWith(query.mimePrefix!));
+      return respond([...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+    },
+    async deleteMediaAsset(id) {
+      const i = state.media.findIndex((m) => m.id === id);
+      if (i < 0) throw new ApiError(404, '资产不存在');
+      state.media.splice(i, 1);
+      await delay();
+    },
+    // ---- memory ----
+    async listMemories(query) {
+      let list = state.memories;
+      if (query?.type !== undefined) list = list.filter((m) => m.type === query.type);
+      if (query?.year !== undefined) list = list.filter((m) => m.year === query.year);
+      // 年 desc + id desc，与后端排序口径一致
+      return respond([...list].sort((a, b) => b.year - a.year || b.id.localeCompare(a.id)));
+    },
+    async getMemory(id) {
+      const memory = state.memories.find((m) => m.id === id);
+      if (!memory) throw new ApiError(404, '回忆不存在');
+      const snapshot = state.memorySnapshots[id];
+      if (!snapshot) throw new ApiError(404, '回忆快照不存在');
+      return respond({ memory, snapshot });
+    },
+    async generateTripMemory(tripId) {
+      const trip = TRIPS.find((t) => t.id === tripId);
+      if (!trip) throw new ApiError(404, '出行不存在');
+      const year =
+        Number((trip.endDate ?? trip.startDate ?? '').slice(0, 4)) || new Date().getFullYear();
+
+      // 幂等：同年 TRIP 回忆已存在 → 直接返回既有快照，不覆盖
+      const existing = state.memories.find((m) => m.type === 'TRIP' && m.year === year);
+      if (existing) {
+        const snapshot = state.memorySnapshots[existing.id];
+        if (!snapshot) throw new ApiError(500, '回忆快照缺失');
+        return respond({ memory: existing, snapshot, created: false });
+      }
+
+      const itinerary = ITINERARY.filter((i) => i.tripId === tripId);
+      const expenses = EXPENSES.filter((e) => e.tripId === tripId);
+      const totalMinor = expenses
+        .reduce((sum, e) => sum + Math.round(Number(e.amountCny ?? e.amount) * 100), 0)
+        .toString();
+      const snapshot: MemorySnapshot = {
+        schemaVersion: 1,
+        type: 'TRIP',
+        year,
+        familyId: trip.familyId,
+        trip: {
+          id: trip.id,
+          title: trip.title,
+          status: trip.status,
+          startDate: trip.startDate ?? null,
+          endDate: trip.endDate ?? null,
+          timezone: trip.timezone ?? 'Asia/Shanghai',
+          memberCount: 4,
+          memberNames: ['爸爸', '妈妈', '爷爷', '小珂'],
+        },
+        itinerary: itinerary.map((i) => ({
+          date: i.date,
+          title: i.title,
+          location: i.location ?? null,
+        })),
+        expenseSummary: {
+          currency: 'CNY',
+          totalMinor,
+          pendingRateCount: 0,
+          byCategory: {},
+        },
+        mediaCount: state.media.filter((m) => m.tripId === tripId).length,
+        generatedAt: new Date().toISOString(),
+      };
+      const memory: MemoryArchive = {
+        id: `r${Date.now().toString(36)}`,
+        familyId: trip.familyId,
+        year,
+        type: 'TRIP',
+        refId: tripId,
+        createdAt: snapshot.generatedAt,
+        summary: {
+          tripTitle: snapshot.trip?.title ?? null,
+          memberCount: snapshot.trip?.memberCount ?? null,
+          itineraryCount: snapshot.itinerary?.length ?? 0,
+          totalMinor,
+          pendingRateCount: 0,
+          mediaCount: snapshot.mediaCount ?? 0,
+        },
+      };
+      state.memories.unshift(memory);
+      state.memorySnapshots[memory.id] = snapshot;
+      return respond({ memory, snapshot, created: true });
+    },
+    async generateAnnualMemory(year) {
+      const existing = state.memories.find((m) => m.type === 'ANNUAL' && m.year === year);
+      if (existing) {
+        const snapshot = state.memorySnapshots[existing.id];
+        if (!snapshot) throw new ApiError(500, '回忆快照缺失');
+        return respond({ memory: existing, snapshot, created: false });
+      }
+      const trips = TRIPS.filter(
+        (t) => t.familyId === FAMILY.id && (t.startDate ?? '').startsWith(String(year)),
+      );
+      const expenses = EXPENSES.filter((e) => e.spentAt.startsWith(String(year)));
+      const totalMinor = expenses
+        .reduce((sum, e) => sum + Math.round(Number(e.amountCny ?? e.amount) * 100), 0)
+        .toString();
+      const snapshot: MemorySnapshot = {
+        schemaVersion: 1,
+        type: 'ANNUAL',
+        year,
+        familyId: FAMILY.id,
+        itinerary: trips.map((t) => ({
+          date: t.startDate ?? null,
+          title: t.title,
+          location: t.destinations?.[0]?.name ?? null,
+        })),
+        expenseSummary: { currency: 'CNY', totalMinor, pendingRateCount: 0, byCategory: {} },
+        mediaCount: state.media.length,
+        generatedAt: new Date().toISOString(),
+      };
+      const memory: MemoryArchive = {
+        id: `r${Date.now().toString(36)}`,
+        familyId: FAMILY.id,
+        year,
+        type: 'ANNUAL',
+        refId: null,
+        createdAt: snapshot.generatedAt,
+        summary: {
+          tripTitle: null,
+          memberCount: null,
+          itineraryCount: snapshot.itinerary?.length ?? 0,
+          totalMinor,
+          pendingRateCount: 0,
+          mediaCount: snapshot.mediaCount ?? 0,
+        },
+      };
+      state.memories.unshift(memory);
+      state.memorySnapshots[memory.id] = snapshot;
+      return respond({ memory, snapshot, created: true });
     },
   };
 }

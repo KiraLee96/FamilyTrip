@@ -21,7 +21,8 @@ export type IconName =
   | 'plus'
   | 'user'
   | 'clock'
-  | 'wallet';
+  | 'wallet'
+  | 'camera';
 
 const GLYPH: Record<IconName, string> = {
   home: '🏠',
@@ -37,6 +38,7 @@ const GLYPH: Record<IconName, string> = {
   user: '👤',
   clock: '🕐',
   wallet: '💰',
+  camera: '📷',
 };
 
 export interface IconProps {

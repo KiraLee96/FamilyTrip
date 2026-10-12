@@ -17,10 +17,16 @@
 
 import type {
   ChecklistItem,
+  ConfirmMediaAssetInput,
   Expense,
   ExpenseSummary,
   Family,
   ItineraryItem,
+  MediaAsset,
+  MemoryArchive,
+  MemorySnapshot,
+  MemoryType,
+  PresignUploadResult,
   Trip,
   User,
   Wish,
@@ -95,6 +101,50 @@ export interface ApiClient {
   listExpenses(tripId: string): Promise<Expense[]>;
   /** GET /expenses/summary */
   expenseSummary(tripId: string): Promise<ExpenseSummary>;
+
+  // ---- media（用户上传的照片/视频） ----
+  /** POST /media/presign —— 预签名上传位，客户端随后直传对象存储 */
+  presignUpload(input: {
+    fileName: string;
+    mimeType: string;
+    byteSize: number;
+  }): Promise<PresignUploadResult>;
+  /**
+   * POST /media/confirm —— 上传完成后登记资产。
+   * familyId 由实现层内部解析（Mock 取常量；HTTP 走 GET /families 首个家庭），
+   * 界面层不感知 —— 与「界面只依赖接口契约」原则一致。
+   */
+  confirmMediaAsset(input: ConfirmMediaAssetInput): Promise<MediaAsset>;
+  /** GET /media（默认按创建时间倒序；分页由后端 meta 承载，原型只取首页） */
+  listMedia(query?: {
+    tripId?: string;
+    mimePrefix?: string;
+    page?: number;
+    pageSize?: number;
+  }): Promise<MediaAsset[]>;
+  /** DELETE /media/:id */
+  deleteMediaAsset(id: string): Promise<void>;
+
+  // ---- memory（回忆快照，只读 + 生成） ----
+  /** GET /memories（列表项只含摘要） */
+  listMemories(query?: { type?: MemoryType; year?: number }): Promise<MemoryArchive[]>;
+  /** GET /memories/:id（含完整快照） */
+  getMemory(id: string): Promise<{ memory: MemoryArchive; snapshot: MemorySnapshot }>;
+  /**
+   * POST /memories/generate-trip —— 生成出行回忆（出行结束后调用）。
+   * 幂等：同年 TRIP 回忆已存在则直接返回既有快照（created=false），不覆盖。
+   */
+  generateTripMemory(tripId: string): Promise<{
+    memory: MemoryArchive;
+    snapshot: MemorySnapshot;
+    created: boolean;
+  }>;
+  /** POST /memories/generate-annual —— 生成年度回忆（同样幂等） */
+  generateAnnualMemory(year: number): Promise<{
+    memory: MemoryArchive;
+    snapshot: MemorySnapshot;
+    created: boolean;
+  }>;
 }
 
 /** 从信封中取 data；code 非 0 抛 ApiError */

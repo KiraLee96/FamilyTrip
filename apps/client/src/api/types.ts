@@ -123,3 +123,124 @@ export interface ExpenseSummary {
   byMember: Array<{ memberName: string; amountCny: string }>;
   byCategory: Array<{ category: string; amountCny: string }>;
 }
+
+// ─── 媒体资产（对齐 media 域 mediaAsset 行） ───────────────────────
+
+/** 存储分级 */
+export type StorageClass = 'STANDARD' | 'IA' | 'ARCHIVE';
+
+/**
+ * 媒体资产（照片/视频登记行）。
+ * 字段与后端 serializeRow(mediaAsset, MEDIA_BIGINT_FIELDS) 一字不差。
+ * 注意：后端只存 fileKey，不返回访问 URL —— 展示地址由前端按存储规则拼接。
+ */
+export interface MediaAsset {
+  id: string;
+  familyId: string;
+  tripId: string | null;
+  ownerId: string;
+  fileKey: string;
+  mimeType: string;
+  /** 字节数（后端 bigint 序列化为字符串） */
+  byteSize: string;
+  compressed: boolean;
+  /** 是否已剥离 EXIF（M6 隐私红线） */
+  exifStripped: boolean;
+  /** 原图是否含 GPS（供审计告警） */
+  hadGps: boolean;
+  storageClass: StorageClass;
+  width: number | null;
+  height: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 预签名上传位（POST /media/presign 返回） */
+export interface PresignUploadResult {
+  /** 对象存储直传地址（PUT） */
+  uploadUrl: string;
+  headers?: Record<string, string>;
+  /** 有效期（秒） */
+  expiresIn: number;
+  /** 服务端生成的文件 key，登记时原样回传 */
+  fileKey: string;
+}
+
+/** 登记媒体资产入参（POST /media/confirm） */
+export interface ConfirmMediaAssetInput {
+  tripId?: string;
+  fileKey: string;
+  mimeType: string;
+  byteSize: number;
+  width?: number;
+  height?: number;
+}
+
+// ─── 回忆归档（对齐 memory 域 MemorySnapshot） ─────────────────────
+
+/** 回忆类型 */
+export type MemoryType = 'TRIP' | 'ANNUAL';
+
+/** 回忆快照中的出行摘要 */
+export interface MemoryTripBrief {
+  id: string;
+  title: string;
+  status: string;
+  startDate: string | null;
+  endDate: string | null;
+  timezone: string;
+  memberCount: number;
+  memberNames: string[];
+}
+
+/** 回忆快照中的行程条目 */
+export interface MemoryItineraryBrief {
+  date: string | null;
+  title: string;
+  location: string | null;
+}
+
+/** 回忆快照中的花销汇总 */
+export interface MemoryExpenseSummary {
+  currency: string;
+  /** 总额（最小货币单位字符串，避免浮点误差） */
+  totalMinor: string;
+  /** 待补汇率条数（不计入 total） */
+  pendingRateCount: number;
+  byCategory: Record<string, string>;
+}
+
+/**
+ * 回忆快照（写入时刻的完整副本，不可变）。
+ * 后端只含共享域数据（PERSONAL 清单绝不写入，D4 隐私）。
+ */
+export interface MemorySnapshot {
+  schemaVersion: number;
+  type: MemoryType;
+  year: number;
+  familyId: string;
+  trip?: MemoryTripBrief;
+  itinerary?: MemoryItineraryBrief[];
+  expenseSummary?: MemoryExpenseSummary;
+  mediaCount?: number;
+  generatedAt: string;
+}
+
+/** 回忆列表项（后端 toListItem：只回摘要，不回整个快照） */
+export interface MemoryArchive {
+  id: string;
+  familyId: string;
+  year: number;
+  type: MemoryType;
+  /** 生成来源（TRIP 回忆为 tripId；ANNUAL 为 null） */
+  refId: string | null;
+  createdAt: string;
+  summary: {
+    tripTitle: string | null;
+    memberCount: number | null;
+    itineraryCount: number;
+    totalMinor: string | null;
+    pendingRateCount: number;
+    mediaCount: number;
+  };
+}

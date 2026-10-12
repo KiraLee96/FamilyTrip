@@ -2,7 +2,7 @@
   "miniprogramRoot": "dist/",
   "projectname": "family-trip-client",
   "description": "家庭出行计划客户端（Taro 4.x 同构）",
-  "appid": "touristappid",
+  "appid": "wx3567e523d83206e4",
   "setting": {
     "urlCheck": false,
     "es6": false,

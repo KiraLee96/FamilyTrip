@@ -19,11 +19,16 @@ import Taro from '@tarojs/taro';
 import { ApiError, unwrap, type ApiClient } from './client';
 import type {
   ChecklistItem,
+  ConfirmMediaAssetInput,
   Envelope,
   Expense,
   ExpenseSummary,
   Family,
   ItineraryItem,
+  MediaAsset,
+  MemoryArchive,
+  MemorySnapshot,
+  PresignUploadResult,
   Trip,
   User,
   Wish,
@@ -42,6 +47,30 @@ let token: string | undefined;
 
 export function setToken(t: string | undefined): void {
   token = t;
+}
+
+/**
+ * 默认家庭 id 解析（media/memory 写接口都要 familyId）。
+ *
+ * 登录链路（A6）未就位前，按「取家庭列表首个」兜底 —— 单家庭账号的既有假设。
+ * A6 落地后改为「当前上下文家庭」，此处换成读登录态即可，接口签名不变。
+ * 结果做模块级缓存，避免每次上传都打一遍 /families。
+ */
+let familyIdPromise: Promise<string> | undefined;
+
+async function resolveFamilyId(): Promise<string> {
+  if (familyIdPromise === undefined) {
+    familyIdPromise = request<Family[]>('GET', '/families').then((list) => {
+      const first = list[0];
+      if (!first) throw new ApiError(404, '尚未加入任何家庭');
+      return first.id;
+    });
+    // 失败不缓存，下次可重试
+    familyIdPromise.catch(() => {
+      familyIdPromise = undefined;
+    });
+  }
+  return familyIdPromise;
 }
 
 async function request<T>(method: HttpMethod, path: string, body?: unknown): Promise<T> {
@@ -85,6 +114,84 @@ export function createHttpClient(): ApiClient {
     listExpenses: (tripId) => request<Expense[]>('GET', `/expenses?tripId=${tripId}`),
     expenseSummary: (tripId) =>
       request<ExpenseSummary>('GET', `/expenses/summary?tripId=${tripId}`),
+
+    // ---- media ----
+    presignUpload: async (input) => {
+      const familyId = await resolveFamilyId();
+      return request<PresignUploadResult>('POST', '/media/presign', {
+        familyId,
+        fileName: input.fileName,
+        mimeType: input.mimeType,
+        byteSize: input.byteSize,
+      });
+    },
+    confirmMediaAsset: async (input: ConfirmMediaAssetInput) => {
+      const familyId = await resolveFamilyId();
+      // compressed：chooseImage 以 compressed 尺寸取图；exifStripped/hadGps 前端
+      // 无法确认，保守按未剥离/未检测登记（hadGps && !exifStripped 才会触发
+      // 服务端审计 ALERT；真联调时如需服务端兜底剥离再调 /media/strip-exif）。
+      const body = {
+        familyId,
+        ...(input.tripId !== undefined ? { tripId: input.tripId } : {}),
+        fileKey: input.fileKey,
+        mimeType: input.mimeType,
+        byteSize: input.byteSize,
+        compressed: true,
+        exifStripped: false,
+        hadGps: false,
+        storageClass: 'STANDARD',
+        ...(input.width !== undefined ? { width: input.width } : {}),
+        ...(input.height !== undefined ? { height: input.height } : {}),
+      };
+      const r = await request<{ asset: MediaAsset }>('POST', '/media/confirm', body);
+      return r.asset;
+    },
+    listMedia: async (query) => {
+      const familyId = await resolveFamilyId();
+      // 手写 query 串（不用 URLSearchParams —— 小程序端兼容性更稳）
+      const parts = [`familyId=${familyId}`];
+      if (query?.tripId !== undefined) parts.push(`tripId=${query.tripId}`);
+      if (query?.mimePrefix !== undefined) parts.push(`mimePrefix=${query.mimePrefix}`);
+      if (query?.page !== undefined) parts.push(`page=${query.page}`);
+      if (query?.pageSize !== undefined) parts.push(`pageSize=${query.pageSize}`);
+      const r = await request<{ items: MediaAsset[]; meta: unknown }>(
+        'GET',
+        `/media?${parts.join('&')}`,
+      );
+      return r.items;
+    },
+    deleteMediaAsset: async (id) => {
+      await request<null>('DELETE', `/media/${id}`);
+    },
+
+    // ---- memory ----
+    listMemories: async (query) => {
+      const familyId = await resolveFamilyId();
+      const parts = [`familyId=${familyId}`];
+      if (query?.type !== undefined) parts.push(`type=${query.type}`);
+      if (query?.year !== undefined) parts.push(`year=${query.year}`);
+      const r = await request<{ items: MemoryArchive[]; meta: unknown }>(
+        'GET',
+        `/memories?${parts.join('&')}`,
+      );
+      return r.items;
+    },
+    getMemory: (id) =>
+      request<{ memory: MemoryArchive; snapshot: MemorySnapshot }>('GET', `/memories/${id}`),
+    generateTripMemory: (tripId) =>
+      request<{ memory: MemoryArchive; snapshot: MemorySnapshot; created: boolean }>(
+        'POST',
+        '/memories/generate-trip',
+        { tripId, rebuild: false },
+      ),
+    generateAnnualMemory: async (year) => {
+      const familyId = await resolveFamilyId();
+      return request<{ memory: MemoryArchive; snapshot: MemorySnapshot; created: boolean }>(
+        'POST',
+        '/memories/generate-annual',
+        { familyId, year, rebuild: false },
+      );
+    },
   };
 }
 

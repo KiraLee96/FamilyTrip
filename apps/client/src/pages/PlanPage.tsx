@@ -5,13 +5,14 @@
  * 数据全部由 /trips 聚合得出，不额外依赖后端接口。
  */
 
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { Text, View } from '@tarojs/components';
 import { Link } from '../nav/Link';
 
-import { api } from '../api/index';
-import type { Trip } from '../api/types';
+import { ApiError, api } from '../api/index';
+import type { MemorySnapshot, Trip } from '../api/types';
 import { Icon } from '../components/Icon';
+import { MemoryCard } from '../components/MemoryCard';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
 import { StatusChip, shortDate, tripDays } from '../components/shared';
@@ -112,10 +113,86 @@ export function PlanPage() {
         })}
       </View>
 
+      <AnnualMemorySection year={year} />
+
       <Text className="muted" style={{ textAlign: 'center', marginTop: 4 }}>
         按出发月份归入季度；未定日期的行程暂不显示
       </Text>
     </PageLayout>
+  );
+}
+
+/**
+ * 年度回忆区块（memory 域 ANNUAL 快照）
+ * 幂等：本年度回忆已存在则直接展示既有快照（created=false），不覆盖。
+ * 加载失败/未生成时静默降级为「生成入口」，不阻塞主界面。
+ */
+function AnnualMemorySection({ year }: { year: number }) {
+  const [gen, setGen] = useState<{ snapshot: MemorySnapshot; created: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [genErr, setGenErr] = useState('');
+
+  const list = useAsync(
+    useCallback(() => api.listMemories({ type: 'ANNUAL', year }), [year]),
+    [year],
+  );
+
+  const detail = useAsync(
+    useCallback(async (): Promise<MemorySnapshot | null> => {
+      if (gen) return gen.snapshot;
+      const hit = (list.data ?? []).find((m) => m.year === year);
+      if (!hit) return null;
+      const d = await api.getMemory(hit.id);
+      return d.snapshot;
+    }, [list.data, gen, year]),
+    [list.data, gen, year],
+  );
+
+  const generate = async () => {
+    setBusy(true);
+    setGenErr('');
+    try {
+      const r = await api.generateAnnualMemory(year);
+      setGen({ snapshot: r.snapshot, created: r.created });
+    } catch (e) {
+      setGenErr(e instanceof ApiError ? `${e.message}（code ${e.code}）` : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (list.loading || detail.loading) return null;
+
+  const snap = detail.data ?? null;
+
+  return (
+    <>
+      <Text className="section-title">年度回忆 · {year}</Text>
+      {snap ? (
+        <MemoryCard
+          snapshot={snap}
+          note={gen !== null && !gen.created ? '本年度回忆已存在，快照不可覆盖。' : undefined}
+        />
+      ) : (
+        <View className="card memory__empty">
+          <Text className="memory__empty-title">{year} 年的回忆还没生成</Text>
+          <Text className="muted" style={{ fontSize: 12, lineHeight: 1.6, margin: '6px 0 12px' }}>
+            年底一键生成本年度回忆：全年行程、花销汇总、照片数，定格成不可变的家庭档案。
+          </Text>
+          <View
+            className={busy ? 'add-row__btn add-row__btn--off' : 'add-row__btn'}
+            onClick={() => {
+              if (!busy) void generate();
+            }}
+          >
+            <Text style={{ color: '#fff', fontSize: 13.5, fontWeight: 550 }}>
+              {busy ? '生成中…' : `生成 ${year} 年度回忆`}
+            </Text>
+          </View>
+          {genErr !== '' && <ErrorBox message={genErr} onRetry={() => void generate()} />}
+        </View>
+      )}
+    </>
   );
 }
 
