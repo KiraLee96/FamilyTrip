@@ -9,11 +9,13 @@
 import type { PropsWithChildren } from 'react';
 import { useLaunch } from '@tarojs/taro';
 
+import { bootstrapSession } from './api/session';
 import './styles/theme.css';
 
 export default function App({ children }: PropsWithChildren) {
   useLaunch(() => {
-    // 小程序启动钩子；H5 下为空实现，不影响渲染
+    // A6：启动即恢复/建立登录态。失败不阻塞渲染（内部降级为未登录）
+    void bootstrapSession();
   });
 
   // children 由 Taro 注入（当前页面），原样返回即可

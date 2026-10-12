@@ -18,6 +18,7 @@
 import Taro from '@tarojs/taro';
 import { ApiError, unwrap, type ApiClient } from './client';
 import type {
+  AuthSession,
   ChecklistItem,
   ConfirmMediaAssetInput,
   Envelope,
@@ -38,6 +39,9 @@ const BASE = process.env.API_BASE_URL ?? 'http://127.0.0.1:34570/api';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
+/** token 持久化 key（A6：与 session.ts 共用，登出/401 时同步清除） */
+export const TOKEN_KEY = 'auth_token';
+
 /** 一次性 requestId（幂等键），后端要求写接口携带 */
 function newRequestId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -47,6 +51,39 @@ let token: string | undefined;
 
 export function setToken(t: string | undefined): void {
   token = t;
+}
+
+/** 登出 / 401 时调用：familyId 兜底缓存必须失效，否则换账号后仍解析到旧家庭 */
+export function resetFamilyIdCache(): void {
+  familyIdPromise = undefined;
+}
+
+/**
+ * unknown → string 安全转换（标量直接转，对象/数组一律空串）：
+ * 后端 user 行经 serializeRow 后是 Record<string, unknown>，直接 String()
+ * 会触发 no-base-to-string 且可能漏出 '[object Object]'。
+ */
+function asString(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'bigint' || typeof v === 'boolean') {
+    return String(v);
+  }
+  return '';
+}
+
+/**
+ * 后端 user 行 → 客户端 User 投影。
+ * 后端 serializeRow 后是 Record<string, unknown>（含 openid/status 等富字段），
+ * 界面只认 id/nickname/avatarUrl/homeTimezone 四件套，这里做白名单裁剪，
+ * 避免把服务端内部字段漏进界面层。
+ */
+function toUser(raw: Record<string, unknown>): User {
+  return {
+    id: asString(raw['id']),
+    nickname: asString(raw['nickname']),
+    ...(typeof raw['avatarUrl'] === 'string' ? { avatarUrl: raw['avatarUrl'] } : {}),
+    ...(typeof raw['homeTimezone'] === 'string' ? { homeTimezone: raw['homeTimezone'] } : {}),
+  };
 }
 
 /**
@@ -87,14 +124,27 @@ async function request<T>(method: HttpMethod, path: string, body?: unknown): Pro
 
   // Taro.request 已按响应 Content-Type 自动解析 JSON
   const env = res.data as Envelope<T>;
+  // 凭证失效（4010）/ 过期（4011）：清掉本地 token，下次启动走静默登录，
+  // 避免带着死 token 把每个接口都打成 401
+  if (env.code === 4010 || env.code === 4011) {
+    setToken(undefined);
+    Taro.removeStorageSync(TOKEN_KEY);
+  }
   // 信封内 code 才是业务结果；HTTP 状态只作传输层参考
   return unwrap<T>(env);
 }
 
 export function createHttpClient(): ApiClient {
   return {
-    login: (code) => request<User>('POST', '/auth/login', { code }),
-    me: () => request<User>('GET', '/auth/me'),
+    login: async (code) => {
+      // 后端返回 AuthSession；ApiClient 契约为 User，token 在此层落库
+      const session = await request<AuthSession>('POST', '/auth/login', { code });
+      setToken(session.token);
+      Taro.setStorageSync(TOKEN_KEY, session.token);
+      return toUser(session.user as unknown as Record<string, unknown>);
+    },
+    me: () =>
+      request<User>('GET', '/auth/me').then((u) => toUser(u as unknown as Record<string, unknown>)),
     listFamilies: () => request<Family[]>('GET', '/families'),
     listTrips: (familyId) =>
       request<Trip[]>('GET', `/trips${familyId ? `?familyId=${familyId}` : ''}`),

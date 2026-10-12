@@ -5,19 +5,23 @@
  * 其余行程收成紧凑列表；清单未完成项当作提醒露出。
  */
 
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { Text, View } from '@tarojs/components';
 import { Link } from '../nav/Link';
 
-import { api } from '../api/index';
+import { api, DATA_SOURCE } from '../api/index';
 import type { ChecklistItem, Trip } from '../api/types';
+import { retryLogin } from '../api/session';
 import { Icon } from '../components/Icon';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
 import { Progress, SectionTitle, StatusChip, dateRange, shortDate } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
+import { useSession } from '../hooks/useSession';
 
 export function HomePage() {
+  const me = useSession();
+  const [relogining, setRelogining] = useState(false);
   const trips = useAsync(
     useCallback(() => api.listTrips(), []),
     [],
@@ -27,11 +31,50 @@ export function HomePage() {
     [],
   );
 
-  if (trips.loading) return <Loading />;
-  if (trips.error) return <ErrorBox message={trips.error} onRetry={trips.reload} />;
+  // http 模式且未拿到登录态：bootstrap 静默登录失败，给手动重试入口。
+  // 声明放在各早退分支之前——加载/错误/空态时登录卡片同样要可见
+  const loginPending = DATA_SOURCE === 'http' && me === undefined;
+  const sessionCard = loginPending ? (
+    <View className="card" style={{ marginBottom: 12 }}>
+      <Text className="muted" style={{ fontSize: 13 }}>
+        微信登录未完成，数据可能加载失败
+      </Text>
+      <View
+        className="btn btn--ghost btn--block"
+        style={{ marginTop: 8, opacity: relogining ? 0.6 : 1 }}
+        onClick={() => {
+          setRelogining(true);
+          void retryLogin().finally(() => setRelogining(false));
+        }}
+      >
+        <Text>{relogining ? '登录中…' : '重新登录'}</Text>
+      </View>
+    </View>
+  ) : null;
+
+  if (trips.loading)
+    return (
+      <>
+        {sessionCard}
+        <Loading />
+      </>
+    );
+  if (trips.error)
+    return (
+      <>
+        {sessionCard}
+        <ErrorBox message={trips.error} onRetry={trips.reload} />
+      </>
+    );
 
   const list = trips.data ?? [];
-  if (list.length === 0) return <Empty text="还没有出行计划，先去心愿池挑一个吧" />;
+  if (list.length === 0)
+    return (
+      <>
+        {sessionCard}
+        <Empty text="还没有出行计划，先去心愿池挑一个吧" />
+      </>
+    );
 
   // 主卡：优先「进行中」，其次「已计划」，最后取第一条
   const primary =
@@ -44,7 +87,9 @@ export function HomePage() {
   const todo = shared.filter((c) => !c.done);
 
   return (
-    <PageLayout title="家庭出行" sub="把想一起去的地方，一件件排上">
+    <PageLayout title="家庭出行" sub={me ? `你好，${me.nickname}` : '把想一起去的地方，一件件排上'}>
+      {sessionCard}
+
       <SectionTitle icon="route">正在进行</SectionTitle>
       <Link to={`/trips/${primary.id}`} className="trip">
         <View className="trip__top">

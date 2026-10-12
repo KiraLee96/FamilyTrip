@@ -33,6 +33,19 @@ export interface User {
   homeTimezone?: string;
 }
 
+/**
+ * 登录会话（POST /auth/login 的 data，对齐后端 auth.service.ts 的 AuthSession）。
+ * 🔴 ApiClient.login 的返回契约为 User（原型接口一字不改）—— token 的持久化
+ *    由 http 实现层在收到本结构后内部完成，界面层不感知，见 api/session.ts。
+ */
+export interface AuthSession {
+  token: string;
+  expiresIn: number;
+  user: User;
+  /** 是否新注册 —— 客户端据此决定是否走 onboarding */
+  isNewUser: boolean;
+}
+
 /** 家庭 */
 export interface Family {
   id: string;
