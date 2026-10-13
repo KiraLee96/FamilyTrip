@@ -8,7 +8,10 @@
    变量集中在此处，改主题只需改这一份。
    ========================================================================== */
 
-page, :root {
+/* 小程序 WXSS 只认 page 选择器（:root 会触发 token 解析错误），
+   env() 也不支持双参数 fallback 语法——安全区变量在此给字面量兜底，
+   真实安全区由原生 tabBar 自行处理。H5 端见下方条件编译覆盖。 */
+page {
   --primary: #3b7cff;
   --primary-press: #2f68db;
   --primary-soft: #e8f0ff;
@@ -35,8 +38,15 @@ page, :root {
   --shadow-up: 0 -2px 12px rgba(24, 32, 54, 0.07);
 
   --tabbar-h: 56px;
+  --safe-b: 0px;
+}
+
+/* #ifdef H5 */
+/* H5 浏览器完整支持 env() 双参数 fallback，用 :root 覆盖安全区真实值 */
+:root {
   --safe-b: env(safe-area-inset-bottom, 0px);
 }
+/* #endif */
 
 * {
   box-sizing: border-box;
@@ -255,7 +265,11 @@ p {
 .trip::before {
   content: '';
   position: absolute;
-  inset: 0 0 auto 0;
+  /* inset 简写在部分小程序 WebView 不识别，拆四值 */
+  top: 0;
+  right: 0;
+  bottom: auto;
+  left: 0;
   height: 4px;
   background: linear-gradient(90deg, var(--primary), #7aa5ff);
 }
