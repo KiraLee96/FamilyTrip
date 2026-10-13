@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-h5/
 dist-h5-dead/
+dist-h5-live/
 build/
 .swc/
 coverage/

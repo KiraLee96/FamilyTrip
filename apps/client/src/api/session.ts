@@ -17,7 +17,7 @@
 
 import Taro from '@tarojs/taro';
 import { api, DATA_SOURCE } from './index';
-import { resetFamilyIdCache, setToken, TOKEN_KEY } from './http';
+import { installSessionRecoverer, resetFamilyIdCache, setToken, TOKEN_KEY } from './http';
 import type { User } from './types';
 
 const USER_KEY = 'auth_user';
@@ -75,8 +75,26 @@ let booting: Promise<void> | undefined;
  */
 export function bootstrapSession(): Promise<void> {
   booting ??= runBootstrap();
+  // 幂等：bootstrap 已跑过也重复注入无副作用
+  installSessionRecoverer(forceRelogin);
   return booting;
 }
+
+/**
+ * 401 恢复器（http 层在凭证失效时调用）。
+ * 与界面「重新登录」按钮同一套重登逻辑，但失败要抛错——
+ * http 层据此放弃重试、把 401 降级给界面，而不是无限重登。
+ */
+async function forceRelogin(): Promise<void> {
+  await retryLogin();
+  if (typeof Taro.getStorageSync(TOKEN_KEY) !== 'string') {
+    throw new Error('重新登录未获得 token');
+  }
+}
+
+// 模块装载即注入恢复器：http 层的 401 重试不依赖 bootstrap 的启动时序
+// （H5 下页面请求可能早于 App useLaunch 发出，恢复器必须先于请求就位）
+installSessionRecoverer(forceRelogin);
 
 async function runBootstrap(): Promise<void> {
   const cached = Taro.getStorageSync(TOKEN_KEY);

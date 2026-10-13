@@ -1,4 +1,4 @@
-# 交付交接清单（派发单 ② · 前端泳道 A1–A5 + 功能补充 + A6/A7）
+# 交付交接清单（派发单 ② · 前端泳道 A1–A7 全量 + 功能补充）
 
 > 里程碑：**M-Client-1** —— 微信开发者工具（测试号 AppID）打开后，首页 / 心愿池 / 行程 / 年度规划 四页面可显示、可交互、控制台 0 error。
 > 交付范围：仅 `apps/client`（红线 #4，`apps/server/**` 未触碰）。
@@ -78,8 +78,32 @@ console 错误数 0。
 | B2  | 「重新登录」降级入口可见                      | PASS |
 | B3  | 数据错误态展示（非崩溃）                      | PASS |
 
-H5 本地预览：`node static_server.cjs <port> <dist目录>`（工作区 `.workbuddy/2026-10-12-11-01-27/static_server.cjs`），Mock 入口 <http://127.0.0.1:5199>。
-注意：`dist-h5` / `dist-h5-dead` 与 weapp 的 `dist` 是三份独立产物，互不覆盖（`config/index.ts` 的 `outputRoot` 构建后已 `git checkout` 还原为 `dist`）。
+### 真后端联调端到端验收（无头 Chrome + 本地 server :3000，9/9 通过）
+
+验证脚本 `verify_h5_live.cjs` + 截图（工作区 `.workbuddy/2026-10-12-11-01-27/`），联调三件套：`apps/server/.env`（后端泳道已补，含零依赖 `load-env.ts`）、H5 live 包（`API_BASE_URL=http://127.0.0.1:3000/api`）、静态服务挂 **5199**（后端 CORS 白名单 origin，`app.enableCors` 默认放行 + credentials）。
+
+| #   | 步骤                                                                        | 结果 |
+| --- | --------------------------------------------------------------------------- | ---- |
+| L1  | 真登录（H5 合成 code → stubWechat → 真 token）                              | PASS |
+| L2  | 登录态广播 + 401 冷启动竞态自恢复                                           | PASS |
+| L3  | CORS 预检放行 + `Access-Control-Allow-Origin` 回显                          | PASS |
+| L4a | 点击行程卡进入详情（hash 路由）                                             | PASS |
+| L4b | **照片 tab 真 URL 下发到 `<img>`**（`https://media.local/...`，后端方案 A） | PASS |
+| L4c | media.local 不可达时 onError → 占位卡降级                                   | PASS |
+
+联调中定位并修复的前端缺陷（均在 `http.ts` 实现层，`ApiClient` 签名零改动）：
+
+1. **列表信封未拆包**：后端 list 统一回 `{items, meta}`，原实现整包当数组 → 首页 `.find` 转译 helper 炸 `Cannot read properties of undefined`。已加 `requestList()` helper 拆 `items`，覆盖 trips/wishes/itineraries/expenses/families/media/memories 全列表端点。
+2. **单实体包裹形态**：后端 trip/wish/checklist-item/itinerary/media-asset 分别以 `{trip}/{wish}/{data}/{item}/{asset}` 包裹，已按域投影。
+3. **Wish 字段差**：后端行是 `voteCount/myVoted/status:WANT`，前端契约是 `votes/votedByMe/status:OPEN`，`toWish` 白名单投影桥接。
+4. **trip 行字段差**：`destinationsJson`→`destinations`（JSON.parse 容错）、ISO datetime→`YYYY-MM-DD` 切片。
+5. **清单 toggle 需 CAS**：后端 toggle 要 `{version, checked}`（乐观锁），前端实现先读当前 version 再提交。
+6. **401 冷启动竞态**（真后端模式必现）：H5 下子组件 `useAsync` 早于 `App` `useLaunch` 的 bootstrap，首波请求无 token 直冲后端 → 4010。已改为**单航班自恢复**：撞 4010/4011 → 清 token → 静默重登（并发合并）→ 带新 token 重试原请求一次（沿用同一 `X-Request-Id` 保幂等语义）。无门闩、无死锁、token 过期同路径覆盖。
+
+后端侧联调阻塞（派发单移交 4 项）已由后端泳道全部处理：`.env` + `load-env.ts`（此前 `.env` 是死配置，无加载器）、CORS 放行 `127.0.0.1:5199`、media list/confirm 直回 `url`（方案 A）、checklist 响应带 `title/done` 别名（存储层零迁移）。
+
+H5 本地预览（live 模式）：`API_BASE_URL=http://127.0.0.1:3000/api` 打 live 包 + 静态服务挂 5199（须与 CORS 白名单一致）。
+注意：`dist-h5`（Mock）/ `dist-h5-dead`（不可达后端）/ `dist-h5-live`（真后端）与 weapp 的 `dist` 是四份独立产物，互不覆盖（`config/index.ts` 的 `outputRoot` 构建后已 `git checkout` 还原为 `dist`）。
 
 ## 三、⚠️ 关键修复（必读）
 
@@ -110,14 +134,14 @@ H5 本地预览：`node static_server.cjs <port> <dist目录>`（工作区 `.wor
 
 ## 五、红线自查
 
-| 红线                                     | 状态                                                                                                                            |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| #1 `ApiClient` 接口不改                  | ✅ 既有方法签名一字未动；仅**新增** `createChecklistItem` + media/memory 8 方法（后端路由均已存在，属补齐契约，非单方面改签名） |
-| #2 全程 Mock，不发真实请求               | ✅ 默认 `API_BASE_URL` 为空走 Mock（media 直传在 Mock 模式跳过，`uploadUrl` 为空）；http 模式需显式注入地址，切换只靠环境变量   |
-| #3 组件不 fork                           | ✅ 6 页 + shared/Loading/Icon/MemoryCard 统一 `View/Text`，无双份                                                               |
-| #4 `apps/server/**` 不动，单独 commit    | ✅ 提交仅含 `apps/client` + 根 `package.json`/`pnpm-lock.yaml`（client 使能），未含 `apps/server`                               |
-| #5 AppID 走配置不写死                    | ✅ `project.config.json` 承载，当前为测试号 `wx3567e523d83206e4`                                                                |
-| #6 TS strict / ESLint 0 error / Prettier | ✅ typecheck 0 错误、eslint 0 error                                                                                             |
+| 红线                                     | 状态                                                                                                                                                             |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #1 `ApiClient` 接口不改                  | ✅ 既有方法签名一字未动；仅**新增** `createChecklistItem` + media/memory 8 方法（后端路由均已存在，属补齐契约，非单方面改签名）                                  |
+| #2 全程 Mock，不发真实请求               | ✅ 默认 `API_BASE_URL` 为空走 Mock（media 直传在 Mock 模式跳过，`uploadUrl` 为空）；http 模式需显式注入地址，切换只靠环境变量                                    |
+| #3 组件不 fork                           | ✅ 6 页 + shared/Loading/Icon/MemoryCard 统一 `View/Text`，无双份                                                                                                |
+| #4 `apps/server/**` 不动，单独 commit    | ✅ 前端提交仅含 `apps/client` + 根 `.gitignore`；联调中经用户授权代改 server 一行（`@All('*path')`→`@All('*')`，根因见第六节），该改动未由前端提交，留给后端泳道 |
+| #5 AppID 走配置不写死                    | ✅ `project.config.json` 承载，当前为测试号 `wx3567e523d83206e4`                                                                                                 |
+| #6 TS strict / ESLint 0 error / Prettier | ✅ typecheck 0 错误、eslint 0 error                                                                                                                              |
 
 ## 六、A6/A7 落地说明与后续依赖
 
@@ -128,18 +152,18 @@ H5 本地预览：`node static_server.cjs <port> <dist目录>`（工作区 `.wor
 - **契约边界**：`ApiClient.login(code): Promise<User>` 签名未动；token 持久化由 http 实现层内部完成（收到 AuthSession 后 `setToken` + `setStorageSync`），界面层零感知。
 - **凭证失效**：信封 `code` 为 4010/4011 时自动清本地 token，bootstrap 带旧 token 失败会兜底重登一次；仍失败则首页显示「微信登录未完成」+ 手动「重新登录」。
 
-### A7 联调（已实现，待后端就绪后真连）
+### A7 联调（已完成真连验收，9/9）
 
-联调三步：① `API_BASE_URL=http://<后端>:34570/api pnpm --filter @family-trip/client run build:weapp`；② 微信开发者工具勾选「不校验合法域名」；③ 导入 `apps/client/dist`。徽标变绿（「已连后端」）即真链路。
+联调复现三步：① `API_BASE_URL=http://127.0.0.1:3000/api pnpm --filter @family-trip/client run build:weapp`；② 微信开发者工具勾选「详情 → 本地设置 → 不校验合法域名」；③ 导入 `apps/client/dist`。徽标变绿（「已连后端」）即真链路。
 
-仍需后端/环境侧配合的注意点：
+联调前置（后端泳道已交付，前端仅确认）：`.env` + `load-env.ts`（此前无加载器，`.env` 是死配置）；CORS 默认放行 `http://127.0.0.1:5199`（`CORS_ORIGIN=*` 可全放）；media list/confirm 直回 `url`（方案 A，`MEDIA_PUBLIC_BASE_URL` + fileKey）；checklist 响应带 `title/done` 别名。
 
-- 后端 checklist 列表返回 `{items, meta, ...}` 且行字段为 `name/checked`，与前端 `ChecklistItem`（`title/done`）有既有字段差，需统一适配层（`listChecklist`/`createChecklistItem`/`toggleChecklistItem` 同批处理）。
-- media 的 list 响应只给 `fileKey` 无可访问 URL，真后端模式下图片展示需对象存储/CDN 规则拼接（Mock 模式用本地临时路径即时渲染，刷新失效，已知局限）。
-- `familyId` 经 `resolveFamilyId()`（`GET /families` 取首个，模块级缓存）解析，界面零感知；登出/401 时缓存联动失效（`resetFamilyIdCache`）。
-- CORS 需放行 H5 dev origin（派发单 ④ B4′）；端口以后端 `PORT` 为准（派发单约定 34570）。
+**联调中发现的 server 缺陷**（用户授权下前端代改一行，提交归后端）：`HttpAdapterController` 的 `@All('*path')` 在 express 4.22.1（path-to-regexp 0.1.13，CVE 补丁版改了 `*name` 语义）下编译为 `(.*)path` 字面量后缀匹配 → `/api/*` 全部 404。已改 `@All('*')`（controller 内部自剥 `originalUrl` 前缀，不用 `req.params`，裸通配足够）。
+
+**前端适配层**（`http.ts`，ApiClient 签名零改动）：`requestList()` 拆 `{items}`；`toUser/toWish/toTrip` 白名单投影（Wish `voteCount/myVoted/WANT`→`votes/votedByMe/OPEN`，trip `destinationsJson`→`destinations`、ISO→date）；清单 toggle 带 CAS `version`。
 
 ### 其他后续
 
 - **H5 二期**：`build:h5` 已可用（`dev:h5`/`build:h5` 脚本就绪），同构无需再改。
 - 小程序端截图仍需在开发者工具内人工截取（待补项）；H5 端截图已由无头浏览器产出。
+- `resolveFamilyId()`（`GET /families` 取首个，模块级缓存）解析 familyId，界面零感知；登出/401 时缓存联动失效（`resetFamilyIdCache`）。新用户无家庭时抛 404「尚未加入任何家庭」，前端无建家庭 UI（后端已建联调家庭）。

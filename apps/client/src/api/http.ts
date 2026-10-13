@@ -23,7 +23,6 @@ import type {
   ConfirmMediaAssetInput,
   Envelope,
   Expense,
-  ExpenseSummary,
   Family,
   ItineraryItem,
   MediaAsset,
@@ -59,6 +58,29 @@ export function resetFamilyIdCache(): void {
 }
 
 /**
+ * 401 恢复器（session.ts 注入）：凭证失效时强制静默重登。
+ * 注入而非 import：session.ts 反向依赖本模块的 api，避免循环依赖。
+ */
+let sessionRecoverer: (() => Promise<void>) | undefined;
+
+export function installSessionRecoverer(fn: () => Promise<void>): void {
+  sessionRecoverer = fn;
+}
+
+/** 单航班重登：并发 401 只触发一次登录，其余请求复用同一 Promise */
+let recovering: Promise<void> | undefined;
+
+function recoverSession(): Promise<void> {
+  if (sessionRecoverer === undefined) {
+    return Promise.reject(new ApiError(401, '登录态已失效'));
+  }
+  recovering ??= sessionRecoverer().finally(() => {
+    recovering = undefined;
+  });
+  return recovering;
+}
+
+/**
  * unknown → string 安全转换（标量直接转，对象/数组一律空串）：
  * 后端 user 行经 serializeRow 后是 Record<string, unknown>，直接 String()
  * 会触发 no-base-to-string 且可能漏出 '[object Object]'。
@@ -87,7 +109,146 @@ function toUser(raw: Record<string, unknown>): User {
 }
 
 /**
- * 默认家庭 id 解析（media/memory 写接口都要 familyId）。
+ * ─── 后端行 → 客户端模型投影（真后端形状适配层） ───
+ * 服务端各域返回存储行（bigint 序列化 + 领域字段名 + 日期 ISO 全串），
+ * 界面层只认 api/types.ts 的契约模型。适配全部收敛在本实现层：
+ * ApiClient 接口签名、mock 实现、页面三者零改动（红线 #1）。
+ */
+
+function asNumber(v: unknown): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+  return 0;
+}
+
+function asBoolean(v: unknown): boolean {
+  return v === true || v === 'true' || v === 1;
+}
+
+/** ISO datetime → YYYY-MM-DD（界面日期组件只认短日期） */
+function asDate(v: unknown): string | undefined {
+  const s = asString(v);
+  return s === '' ? undefined : s.slice(0, 10);
+}
+
+/** 分 → 元字符串（服务端金额一律最小货币单位整数，避免浮点误差） */
+function minorToYuan(v: unknown): string {
+  return (asNumber(v) / 100).toFixed(2);
+}
+
+/** destinationsJson 等 JSON 字符串列 → 数组 */
+function parseJsonArray(v: unknown): unknown[] {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '') {
+    try {
+      const parsed: unknown = JSON.parse(v);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+/** 可选字符串：空串归一为 undefined（界面 `field &&` 判断更干净） */
+function optString(v: unknown): string | undefined {
+  const s = asString(v);
+  return s === '' ? undefined : s;
+}
+
+function toTrip(raw: Record<string, unknown>): Trip {
+  return {
+    id: asString(raw['id']),
+    familyId: asString(raw['familyId']),
+    title: asString(raw['title']),
+    status: asString(raw['status']) as Trip['status'],
+    ...(asDate(raw['startDate']) !== undefined ? { startDate: asDate(raw['startDate']) } : {}),
+    ...(asDate(raw['endDate']) !== undefined ? { endDate: asDate(raw['endDate']) } : {}),
+    ...(optString(raw['timezone']) !== undefined ? { timezone: optString(raw['timezone']) } : {}),
+    destinations: parseJsonArray(raw['destinationsJson']).map((d) => ({
+      name: asString((d as Record<string, unknown>)?.['name']),
+    })),
+    version: asNumber(raw['version']),
+  };
+}
+
+function toWish(raw: Record<string, unknown>): Wish {
+  // 服务端状态机 WANT/PLANNED/DONE/DROPPED → 客户端 OPEN/ADOPTED/ARCHIVED
+  const statusMap: Record<string, Wish['status']> = {
+    WANT: 'OPEN',
+    PLANNED: 'ADOPTED',
+    DONE: 'ADOPTED',
+    DROPPED: 'ARCHIVED',
+  };
+  return {
+    id: asString(raw['id']),
+    ...(optString(raw['tripId']) !== undefined ? { tripId: optString(raw['tripId']) } : {}),
+    familyId: asString(raw['familyId']),
+    title: asString(raw['title']),
+    ...(optString(raw['description']) !== undefined ? { note: optString(raw['description']) } : {}),
+    votes: asNumber(raw['voteCount']),
+    votedByMe: asBoolean(raw['myVoted']),
+    status: statusMap[asString(raw['status'])] ?? 'OPEN',
+  };
+}
+
+function toItineraryItem(raw: Record<string, unknown>): ItineraryItem {
+  const startAt = asString(raw['startAt']);
+  return {
+    id: asString(raw['id']),
+    tripId: asString(raw['tripId']),
+    date: startAt.slice(0, 10),
+    ...(startAt.length >= 16 ? { startTime: startAt.slice(11, 16) } : {}),
+    title: asString(raw['title']),
+    ...(optString(raw['location']) !== undefined ? { location: optString(raw['location']) } : {}),
+    ...(optString(raw['note']) !== undefined ? { note: optString(raw['note']) } : {}),
+    sortOrder: asNumber(raw['sort']),
+  };
+}
+
+function toExpense(raw: Record<string, unknown>): Expense {
+  return {
+    id: asString(raw['id']),
+    tripId: asString(raw['tripId']),
+    title: asString(raw['title']),
+    amount: minorToYuan(raw['amount']),
+    currency: asString(raw['currency']) || 'CNY',
+    ...(raw['amountBase'] !== undefined && raw['amountBase'] !== null
+      ? { amountCny: minorToYuan(raw['amountBase']) }
+      : {}),
+    // 服务端行只存 ownerMemberId，未解析成员名；缺省空串由界面兜底
+    payerName: asString(raw['payerName']),
+    spentAt: asDate(raw['spentAt']) ?? asString(raw['spentAt']),
+    ...(optString(raw['category']) !== undefined ? { category: optString(raw['category']) } : {}),
+  };
+}
+
+function toFamily(raw: Record<string, unknown>): Family {
+  return {
+    id: asString(raw['id']),
+    name: asString(raw['name']),
+    // 服务端字段名 ownerId；客户端契约 ownerUserId
+    ownerUserId: asString(raw['ownerId']),
+    memberCount: asNumber(raw['memberCount']) || 1,
+  };
+}
+
+function toChecklistItem(raw: Record<string, unknown>): ChecklistItem {
+  // 服务端行同时带 name/checked（存储字段）与 title/done（别名，后端映射）；
+  // 投影时别名优先、存储字段兜底——无论哪边定稿都不破界面
+  return {
+    id: asString(raw['id']),
+    scope: (asString(raw['scope']) || 'SHARED') as ChecklistItem['scope'],
+    title: asString(raw['title']) || asString(raw['name']),
+    done: asBoolean(raw['done']) || asBoolean(raw['checked']),
+    ...(optString(raw['assigneeName']) !== undefined
+      ? { assigneeName: optString(raw['assigneeName']) }
+      : {}),
+  };
+}
+
+/**
+ * 默认家庭 id 解析（media/memory/expense 写接口都要 familyId）。
  *
  * 登录链路（A6）未就位前，按「取家庭列表首个」兜底 —— 单家庭账号的既有假设。
  * A6 落地后改为「当前上下文家庭」，此处换成读登录态即可，接口签名不变。
@@ -97,10 +258,10 @@ let familyIdPromise: Promise<string> | undefined;
 
 async function resolveFamilyId(): Promise<string> {
   if (familyIdPromise === undefined) {
-    familyIdPromise = request<Family[]>('GET', '/families').then((list) => {
-      const first = list[0];
+    familyIdPromise = requestList<Record<string, unknown>>('GET', '/families').then((rows) => {
+      const first = rows[0];
       if (!first) throw new ApiError(404, '尚未加入任何家庭');
-      return first.id;
+      return asString(first['id']);
     });
     // 失败不缓存，下次可重试
     familyIdPromise.catch(() => {
@@ -110,10 +271,26 @@ async function resolveFamilyId(): Promise<string> {
   return familyIdPromise;
 }
 
-async function request<T>(method: HttpMethod, path: string, body?: unknown): Promise<T> {
+/**
+ * 列表端点统一拆包：后端 list 信封为 `{items, meta}`。
+ * （checklist 域例外——直接回裸数组，见 listChecklist）
+ */
+async function requestList<T>(method: HttpMethod, path: string): Promise<T[]> {
+  const r = await request<{ items: T[] }>(method, path);
+  return r.items;
+}
+
+async function request<T>(
+  method: HttpMethod,
+  path: string,
+  body?: unknown,
+  opts: { retried?: boolean; requestId?: string } = {},
+): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  if (method !== 'GET') headers['X-Request-Id'] = newRequestId();
+  // 重试沿用同一 requestId：重试是同一逻辑操作的再次投递，幂等键必须不变
+  const requestId = opts.requestId ?? (method !== 'GET' ? newRequestId() : undefined);
+  if (requestId) headers['X-Request-Id'] = requestId;
 
   const res = await Taro.request({
     url: `${BASE}${path}`,
@@ -124,11 +301,19 @@ async function request<T>(method: HttpMethod, path: string, body?: unknown): Pro
 
   // Taro.request 已按响应 Content-Type 自动解析 JSON
   const env = res.data as Envelope<T>;
-  // 凭证失效（4010）/ 过期（4011）：清掉本地 token，下次启动走静默登录，
-  // 避免带着死 token 把每个接口都打成 401
-  if (env.code === 4010 || env.code === 4011) {
+  // 凭证失效（4010）/ 过期（4011）：清掉本地 token，静默重登后带新 token 重试一次。
+  // 覆盖两种时序：① 冷启动竞态——页面请求早于 bootstrap 登录完成（H5 下子组件
+  // effect 先于 App useLaunch 执行，必然发生）；② token 过期。单航班重登 +
+  // 每请求至多重试一次，不会打爆后端也不会死循环。
+  if ((env.code === 4010 || env.code === 4011) && !opts.retried && path !== '/auth/login') {
     setToken(undefined);
     Taro.removeStorageSync(TOKEN_KEY);
+    try {
+      await recoverSession();
+      return request<T>(method, path, body, { retried: true, requestId });
+    } catch {
+      // 重登失败：落入下方 unwrap，把 401 抛给界面降级（错误态 + 手动重试入口）
+    }
   }
   // 信封内 code 才是业务结果；HTTP 状态只作传输层参考
   return unwrap<T>(env);
@@ -145,25 +330,91 @@ export function createHttpClient(): ApiClient {
     },
     me: () =>
       request<User>('GET', '/auth/me').then((u) => toUser(u as unknown as Record<string, unknown>)),
-    listFamilies: () => request<Family[]>('GET', '/families'),
-    listTrips: (familyId) =>
-      request<Trip[]>('GET', `/trips${familyId ? `?familyId=${familyId}` : ''}`),
-    getTrip: (id) => request<Trip>('GET', `/trips/${id}`),
-    createTrip: (input) => request<Trip>('POST', '/trips', input),
-    listWishes: (familyId) =>
-      request<Wish[]>('GET', `/wishes${familyId ? `?familyId=${familyId}` : ''}`),
-    voteWish: (id) => request<Wish>('POST', `/wishes/${id}/vote`),
-    listItineraries: (tripId) => request<ItineraryItem[]>('GET', `/itineraries?tripId=${tripId}`),
-    listChecklist: (scope) =>
-      request<ChecklistItem[]>('GET', `/checklists/items${scope ? `?scope=${scope}` : ''}`),
-    // 后端返回 { item }；item 行字段为 name/checked/quantity/scope（与 listChecklist
-    // 同样存在既有字段差异），真联调时与 list 走同一适配层，本次不扩散处理
-    createChecklistItem: (input) =>
-      request<{ item: ChecklistItem }>('POST', '/checklists/items', input).then((r) => r.item),
-    toggleChecklistItem: (id) => request<ChecklistItem>('POST', `/checklists/items/${id}/toggle`),
-    listExpenses: (tripId) => request<Expense[]>('GET', `/expenses?tripId=${tripId}`),
-    expenseSummary: (tripId) =>
-      request<ExpenseSummary>('GET', `/expenses/summary?tripId=${tripId}`),
+    listFamilies: async () => {
+      const rows = await requestList<Record<string, unknown>>('GET', '/families');
+      return rows.map(toFamily);
+    },
+    listTrips: async (familyId) => {
+      const rows = await requestList<Record<string, unknown>>(
+        'GET',
+        `/trips${familyId ? `?familyId=${familyId}` : ''}`,
+      );
+      return rows.map(toTrip);
+    },
+    getTrip: async (id) => {
+      const r = await request<{ trip: Record<string, unknown> }>('GET', `/trips/${id}`);
+      return toTrip(r.trip);
+    },
+    createTrip: async (input) => {
+      const r = await request<{ trip: Record<string, unknown> }>('POST', '/trips', input);
+      return toTrip(r.trip);
+    },
+    listWishes: async (familyId) => {
+      const rows = await requestList<Record<string, unknown>>(
+        'GET',
+        `/wishes${familyId ? `?familyId=${familyId}` : ''}`,
+      );
+      return rows.map(toWish);
+    },
+    voteWish: async (id) => {
+      // 服务端 vote 幂等（同一用户重复投票只计一次），显式 vote:true
+      const r = await request<{ wish: Record<string, unknown> }>('POST', `/wishes/${id}/vote`, {
+        vote: true,
+      });
+      return toWish(r.wish);
+    },
+    listItineraries: async (tripId) => {
+      const rows = await requestList<Record<string, unknown>>(
+        'GET',
+        `/itineraries?tripId=${tripId}`,
+      );
+      return rows.map(toItineraryItem);
+    },
+    listChecklist: async (scope) => {
+      // checklist 域直接回裸数组（不套 items），逐行投影取 title/done 别名
+      const rows = await request<Array<Record<string, unknown>>>(
+        'GET',
+        `/checklists/items${scope ? `?scope=${scope}` : ''}`,
+      );
+      return rows.map(toChecklistItem);
+    },
+    // 后端现已对齐 mock：直接回裸 ChecklistItem（不再包裹 { item }）
+    createChecklistItem: async (input) => {
+      const r = await request<Record<string, unknown>>('POST', '/checklists/items', input);
+      return toChecklistItem(r);
+    },
+    toggleChecklistItem: async (id) => {
+      // E7 CAS：toggle 必传 {version, checked}。先取当前项拿版本号再投递，
+      // 409（version 冲突）由信封上抛，界面据此提示刷新重试。
+      const cur = await request<Record<string, unknown>>('GET', `/checklists/items/${id}`);
+      const r = await request<Record<string, unknown>>('POST', `/checklists/items/${id}/toggle`, {
+        version: asNumber(cur['version']),
+        checked: !asBoolean(cur['checked']),
+      });
+      return toChecklistItem(r);
+    },
+    listExpenses: async (tripId) => {
+      const rows = await requestList<Record<string, unknown>>('GET', `/expenses?tripId=${tripId}`);
+      return rows.map(toExpense);
+    },
+    expenseSummary: async (tripId) => {
+      const r = await request<{
+        totalMinor: unknown;
+        byOwner?: Array<{ ownerMemberId: unknown; totalMinor: unknown }>;
+        byCategory?: Array<{ category: unknown; totalMinor: unknown }>;
+      }>('GET', `/expenses/summary?tripId=${tripId}`);
+      return {
+        totalCny: minorToYuan(r.totalMinor),
+        byMember: (r.byOwner ?? []).map((o) => ({
+          memberName: asString(o.ownerMemberId) || '未分配',
+          amountCny: minorToYuan(o.totalMinor),
+        })),
+        byCategory: (r.byCategory ?? []).map((c) => ({
+          category: asString(c.category) || '未分类',
+          amountCny: minorToYuan(c.totalMinor),
+        })),
+      };
+    },
 
     // ---- media ----
     presignUpload: async (input) => {
@@ -204,11 +455,8 @@ export function createHttpClient(): ApiClient {
       if (query?.mimePrefix !== undefined) parts.push(`mimePrefix=${query.mimePrefix}`);
       if (query?.page !== undefined) parts.push(`page=${query.page}`);
       if (query?.pageSize !== undefined) parts.push(`pageSize=${query.pageSize}`);
-      const r = await request<{ items: MediaAsset[]; meta: unknown }>(
-        'GET',
-        `/media?${parts.join('&')}`,
-      );
-      return r.items;
+      const r = await requestList<MediaAsset>('GET', `/media?${parts.join('&')}`);
+      return r;
     },
     deleteMediaAsset: async (id) => {
       await request<null>('DELETE', `/media/${id}`);
@@ -220,11 +468,8 @@ export function createHttpClient(): ApiClient {
       const parts = [`familyId=${familyId}`];
       if (query?.type !== undefined) parts.push(`type=${query.type}`);
       if (query?.year !== undefined) parts.push(`year=${query.year}`);
-      const r = await request<{ items: MemoryArchive[]; meta: unknown }>(
-        'GET',
-        `/memories?${parts.join('&')}`,
-      );
-      return r.items;
+      const r = await requestList<MemoryArchive>('GET', `/memories?${parts.join('&')}`);
+      return r;
     },
     getMemory: (id) =>
       request<{ memory: MemoryArchive; snapshot: MemorySnapshot }>('GET', `/memories/${id}`),

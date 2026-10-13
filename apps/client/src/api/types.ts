@@ -145,10 +145,14 @@ export type StorageClass = 'STANDARD' | 'IA' | 'ARCHIVE';
 /**
  * 媒体资产（照片/视频登记行）。
  * 字段与后端 serializeRow(mediaAsset, MEDIA_BIGINT_FIELDS) 一字不差。
- * 注意：后端只存 fileKey，不返回访问 URL —— 展示地址由前端按存储规则拼接。
+ * ✅ 方案 A（已落地）：后端 list / confirm / stripExif 响应已直接带回 `url`
+ *   （= 公网基址 MEDIA_PUBLIC_BASE_URL + fileKey），前端零拼接可直接用。
+ *   fileKey 仍保留，便于做缓存 key 或二次拼接。
  */
 export interface MediaAsset {
   id: string;
+  /** 可访问 URL（后端拼接，方案 A）；Mock 联调置空串 */
+  url: string;
   familyId: string;
   tripId: string | null;
   ownerId: string;

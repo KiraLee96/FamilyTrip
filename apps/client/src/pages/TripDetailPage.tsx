@@ -365,8 +365,10 @@ function ExpenseTab({ tripId }: { tripId: string }) {
 
 /**
  * 照片 tab —— 照片墙 + 上传（media 域两段式）
- * Mock 模式下预置照片渲染占位卡（无真实图片字节），
- * 本会话上传的照片用本地临时路径即时渲染（刷新失效，已知局限）。
+ * 图片地址三级降级链（优先可用者）：
+ *   1. localPaths  —— 本会话刚上传的本地临时路径，零延迟立即可见；
+ *   2. asset.url   —— 真后端拼接的持久 URL（方案 A，MEDIA_PUBLIC_BASE_URL+fileKey）；
+ *   3. 占位卡       —— Mock 模式 url 为空，或远程图加载失败（onError 降级，不破图）。
  */
 function PhotoTab({ tripId }: { tripId: string }) {
   const q = useAsync(
@@ -375,6 +377,8 @@ function PhotoTab({ tripId }: { tripId: string }) {
   );
   /** 本会话上传的本地路径：assetId → tempFilePath */
   const [localPaths, setLocalPaths] = useState<Record<string, string>>({});
+  /** 远程图加载失败的 assetId 集合（域名不可达等）→ 降级占位，不破图 */
+  const [brokenUrls, setBrokenUrls] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -425,11 +429,17 @@ function PhotoTab({ tripId }: { tripId: string }) {
           <Text className="photo-cell__add-text">{busy ? '上传中…' : '上传照片'}</Text>
         </View>
         {photos.map((p) => {
-          const local = localPaths[p.id];
+          // 三级降级：本会话本地路径 > 真后端持久 URL（未加载失败时）> 占位卡
+          const src = localPaths[p.id] ?? (brokenUrls[p.id] ? '' : p.url);
           return (
             <View className="photo-cell" key={p.id}>
-              {local ? (
-                <Image className="photo-cell__img" src={local} mode="aspectFill" />
+              {src !== '' ? (
+                <Image
+                  className="photo-cell__img"
+                  src={src}
+                  mode="aspectFill"
+                  onError={() => setBrokenUrls((m) => (m[p.id] ? m : { ...m, [p.id]: true }))}
+                />
               ) : (
                 <View className="photo-cell__ph">
                   <Icon name="camera" size={26} />
