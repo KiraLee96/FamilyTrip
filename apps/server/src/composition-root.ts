@@ -25,7 +25,11 @@
  */
 
 import { createChainDeps, signToken, type IdentityDeps } from './common/middleware/chain-deps.js';
-import { createDispatcher, type RawRequest, type RouteSpec } from './common/middleware/dispatcher.js';
+import {
+  createDispatcher,
+  type RawRequest,
+  type RouteSpec,
+} from './common/middleware/dispatcher.js';
 import type { ChainResult } from './common/middleware/chain.js';
 import { MemoryTableDriver } from './common/db/table-client.js';
 import type { TableDriver } from './common/db/table-client.js';
@@ -82,6 +86,8 @@ export interface BuildAppOptions {
   putObject?: Parameters<typeof createMediaDomain>[0]['putObject'];
   processor?: Parameters<typeof createMediaDomain>[0]['processor'];
   allowedMimePrefixes?: readonly string[];
+  /** 媒体公网访问基址（方案 A） */
+  mediaPublicBaseUrl?: string;
   defaultTimezone?: string;
   auditRetentionDays?: number;
   now?: () => Date;
@@ -222,6 +228,8 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
     ...(options.allowedMimePrefixes !== undefined
       ? { allowedMimePrefixes: options.allowedMimePrefixes }
       : {}),
+    mediaPublicBaseUrl:
+      options.mediaPublicBaseUrl ?? process.env['MEDIA_PUBLIC_BASE_URL'] ?? 'https://media.local',
   });
   const fxDomain = createFxDomain({
     ...common,

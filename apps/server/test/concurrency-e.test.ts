@@ -23,8 +23,6 @@ import {
 } from '../src/common/concurrency/row-lock.js';
 import { ErrorCode } from '../src/common/errors/error-code.js';
 
-
-
 interface ChecklistItem {
   id: string;
   version: number;
@@ -40,7 +38,7 @@ describe('E7 · CAS 乐观锁（清单勾选）', () => {
   });
 
   async function createItem(s: Awaited<ReturnType<typeof scaffold>>): Promise<ChecklistItem> {
-    const r = mustOk<{ item: ChecklistItem }>(
+    const r = mustOk<ChecklistItem>(
       await app.dispatch(
         req('POST', '/checklists/items', {
           token: s.token,
@@ -48,7 +46,7 @@ describe('E7 · CAS 乐观锁（清单勾选）', () => {
         }),
       ),
     );
-    return r.item;
+    return r;
   }
 
   it('E7：陈旧 version 勾选 → 409 / 4090，且数据不被改写', async () => {
@@ -56,7 +54,7 @@ describe('E7 · CAS 乐观锁（清单勾选）', () => {
     const item = await createItem(s);
 
     // 第一次：带正确 version，成功
-    const first = mustOk<{ item: ChecklistItem }>(
+    const first = mustOk<ChecklistItem>(
       await app.dispatch(
         req('POST', `/checklists/items/${item.id}/toggle`, {
           token: s.token,
@@ -64,9 +62,9 @@ describe('E7 · CAS 乐观锁（清单勾选）', () => {
         }),
       ),
     );
-    expect(first.item.checked).toBe(true);
+    expect(first.checked).toBe(true);
     // 🔴 version 必须递增 —— 客户端靠它发下一次请求
-    expect(first.item.version).toBe(item.version + 1);
+    expect(first.version).toBe(item.version + 1);
 
     // 第二次：**复用已过期的 version**（模拟另一端基于旧快照提交）→ 必须 409
     const stale = await app.dispatch(
@@ -80,11 +78,11 @@ describe('E7 · CAS 乐观锁（清单勾选）', () => {
     expect(stale.envelope.code).toBe(4090);
 
     // 🔴 关键：冲突请求**不得**产生任何副作用 —— checked 仍是 true
-    const after = mustOk<{ item: ChecklistItem }>(
+    const after = mustOk<ChecklistItem>(
       await app.dispatch(req('GET', `/checklists/items/${item.id}`, { token: s.token })),
     );
-    expect(after.item.checked).toBe(true);
-    expect(after.item.version).toBe(item.version + 1);
+    expect(after.checked).toBe(true);
+    expect(after.version).toBe(item.version + 1);
   });
 
   it('E7：version 必传 —— 缺失即 4001，绝不「降级为无锁写入」', async () => {
@@ -103,11 +101,11 @@ describe('E7 · CAS 乐观锁（清单勾选）', () => {
     expect(missing.envelope.code).toBe(4001);
 
     // 确认确实没写进去
-    const after = mustOk<{ item: ChecklistItem }>(
+    const after = mustOk<ChecklistItem>(
       await app.dispatch(req('GET', `/checklists/items/${item.id}`, { token: s.token })),
     );
-    expect(after.item.checked).toBe(false);
-    expect(after.item.version).toBe(item.version);
+    expect(after.checked).toBe(false);
+    expect(after.version).toBe(item.version);
   });
 
   it('E7：连续递增版本可正常串行推进（v0 → v1 → v2）', async () => {
@@ -116,7 +114,7 @@ describe('E7 · CAS 乐观锁（清单勾选）', () => {
     expect(item.version).toBe(0);
 
     for (let round = 1; round <= 2; round += 1) {
-      const r = mustOk<{ item: ChecklistItem }>(
+      const r = mustOk<ChecklistItem>(
         await app.dispatch(
           req('POST', `/checklists/items/${item.id}/toggle`, {
             token: s.token,
@@ -124,8 +122,8 @@ describe('E7 · CAS 乐观锁（清单勾选）', () => {
           }),
         ),
       );
-      expect(r.item.version).toBe(round);
-      item = r.item;
+      expect(r.version).toBe(round);
+      item = r;
     }
     expect(item.version).toBe(2);
   });
@@ -241,7 +239,9 @@ describe('E8 ① · JSON patch（行锁增量更新）', () => {
   it('非法的 patch 路径一律拒（原型污染 / 连续点 / 数组越界）', () => {
     const base = { a: 1, arr: [1, 2] };
 
-    expect(() => applyJsonPatch(base, [{ op: 'set', path: '__proto__.polluted', value: 1 }])).toThrow();
+    expect(() =>
+      applyJsonPatch(base, [{ op: 'set', path: '__proto__.polluted', value: 1 }]),
+    ).toThrow();
     expect(() => applyJsonPatch(base, [{ op: 'set', path: 'constructor.x', value: 1 }])).toThrow();
     expect(() => applyJsonPatch(base, [{ op: 'set', path: 'a..b', value: 1 }])).toThrow();
     expect(() => applyJsonPatch(base, [{ op: 'set', path: 'arr.9', value: 1 }])).toThrow();

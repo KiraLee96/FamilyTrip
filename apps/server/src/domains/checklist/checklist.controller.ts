@@ -17,7 +17,7 @@ import {
   type ApplyTemplateInput,
   type CreateChecklistItemInput,
   type CreateTemplateInput,
-  type ListChecklistQueryInput
+  type ListChecklistQueryInput,
 } from './checklist.schema.js';
 
 export interface ChecklistDomainOptions {
@@ -81,7 +81,7 @@ export function createChecklistDomain(o: ChecklistDomainOptions): ChecklistDomai
           ownerId: b.ownerId !== undefined ? BigInt(b.ownerId) : undefined,
           templateId: b.templateId !== undefined ? BigInt(b.templateId) : undefined,
         });
-        return { data: { item } };
+        return { data: item };
       },
     },
 
@@ -101,7 +101,8 @@ export function createChecklistDomain(o: ChecklistDomainOptions): ChecklistDomai
           page: q.page,
           pageSize: q.pageSize,
         });
-        return { data: r, meta: r.meta };
+        // 对齐前端契约：list 直接回裸数组（meta 仍走信封外层，UI 暂未消费）
+        return { data: r.items, meta: r.meta };
       },
     },
 
@@ -111,7 +112,7 @@ export function createChecklistDomain(o: ChecklistDomainOptions): ChecklistDomai
       auth: { public: false, resourceType: 'trip_checklist_item', mode: 'READ', ref: itemRef },
       handler: async (ctx) => {
         const item = await service.detailItem(ctx.userId!, ctx.resourceId!);
-        return { data: { item } };
+        return { data: item };
       },
     },
 
@@ -123,7 +124,7 @@ export function createChecklistDomain(o: ChecklistDomainOptions): ChecklistDomai
       schema: toggleChecklistItemSchema as never,
       handler: async (ctx, input) => {
         const item = await service.toggle(ctx.userId!, ctx.resourceId!, input);
-        return { data: { item } };
+        return { data: item };
       },
     },
 
@@ -147,7 +148,7 @@ export function createChecklistDomain(o: ChecklistDomainOptions): ChecklistDomai
       schema: updateChecklistItemSchema as never,
       handler: async (ctx, input) => {
         const item = await service.updateItem(ctx.userId!, ctx.resourceId!, input);
-        return { data: { item } };
+        return { data: item };
       },
     },
 

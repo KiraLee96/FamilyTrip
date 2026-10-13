@@ -40,6 +40,8 @@ export interface MediaServiceOptions {
   auditRetentionDays?: number;
   /** 允许的 MIME 前缀 */
   allowedMimePrefixes?: readonly string[];
+  /** 媒体公网访问基址（方案 A：list 响应会把 fileKey 拼成可访问 URL）。生产接 CDN。 */
+  mediaPublicBaseUrl?: string;
 }
 
 const MEDIA_BIGINT_FIELDS = ['id', 'familyId', 'tripId', 'ownerId', 'byteSize'];
@@ -49,19 +51,29 @@ const PENDING_TTL_MS = 60 * 60 * 1000; // 1 小时
 export class MediaService {
   private readonly retentionDays: number;
   private readonly allowed: readonly string[];
+  private readonly mediaBase: string;
 
   constructor(private readonly o: MediaServiceOptions) {
     this.retentionDays = o.auditRetentionDays ?? 365;
     this.allowed = o.allowedMimePrefixes ?? DEFAULT_ALLOWED;
+    this.mediaBase = (o.mediaPublicBaseUrl ?? 'https://media.local').replace(/\/+$/, '');
   }
 
   /** 签发上传位（第一段） */
-  async presign(userId: bigint, input: {
-    familyId: bigint;
-    fileName: string;
-    mimeType: string;
-    byteSize: string;
-  }): Promise<{ uploadUrl: string; headers?: Record<string, string>; expiresIn: number; fileKey: string; }> {
+  async presign(
+    userId: bigint,
+    input: {
+      familyId: bigint;
+      fileName: string;
+      mimeType: string;
+      byteSize: string;
+    },
+  ): Promise<{
+    uploadUrl: string;
+    headers?: Record<string, string>;
+    expiresIn: number;
+    fileKey: string;
+  }> {
     this.assertMimeAllowed(input.mimeType);
     await this.assertFamilyMember(this.o.ctx, input.familyId, userId);
 
@@ -94,26 +106,32 @@ export class MediaService {
   }
 
   /** 登记资产（第二段：上传后确认） */
-  async confirm(userId: bigint, input: {
-    familyId: bigint;
-    tripId?: bigint;
-    fileKey: string;
-    mimeType: string;
-    byteSize: string;
-    compressed: boolean;
-    exifStripped: boolean;
-    hadGps: boolean;
-    storageClass: string;
-    width?: number;
-    height?: number;
-  }): Promise<Record<string, unknown>> {
+  async confirm(
+    userId: bigint,
+    input: {
+      familyId: bigint;
+      tripId?: bigint;
+      fileKey: string;
+      mimeType: string;
+      byteSize: string;
+      compressed: boolean;
+      exifStripped: boolean;
+      hadGps: boolean;
+      storageClass: string;
+      width?: number;
+      height?: number;
+    },
+  ): Promise<Record<string, unknown>> {
     this.assertMimeAllowed(input.mimeType);
 
     return this.o.ctx.tx(async (tx) => {
       await this.assertFamilyMember(tx, input.familyId, userId);
 
       // filePending 必须存在且属于我（防「登记别人上传的文件」）
-      const pending = await tx.db.findUnique('filePending', { fileKey: input.fileKey, deletedAt: null });
+      const pending = await tx.db.findUnique('filePending', {
+        fileKey: input.fileKey,
+        deletedAt: null,
+      });
       if (!pending) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
       if (pending['ownerId'] !== userId) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
 
@@ -139,7 +157,11 @@ export class MediaService {
         deletedAt: null,
       });
 
-      await tx.db.update('filePending', { id: pending['id'] }, { status: 'CONFIRMED', updatedAt: now });
+      await tx.db.update(
+        'filePending',
+        { id: pending['id'] },
+        { status: 'CONFIRMED', updatedAt: now },
+      );
 
       await this.change(tx, 'media_asset', id, input.familyId, input.tripId ?? null, 'INSERT', now);
 
@@ -157,7 +179,7 @@ export class MediaService {
       }
 
       const row = await tx.db.findUnique('mediaAsset', { id });
-      return serializeRow(row ?? {}, MEDIA_BIGINT_FIELDS);
+      return this.withUrl(serializeRow(row ?? {}, MEDIA_BIGINT_FIELDS));
     });
   }
 
@@ -167,18 +189,27 @@ export class MediaService {
    * 🔴 需读+写对象存储（外部 I/O） → **必须在事务外**执行。
    *    只有最后的元数据回写用短事务。
    */
-  async stripExif(userId: bigint, input: { fileKey: string; mimeType: string }): Promise<{ asset: Record<string, unknown>; hadExif: boolean; hadGps: boolean; }> {
+  async stripExif(
+    userId: bigint,
+    input: { fileKey: string; mimeType: string },
+  ): Promise<{ asset: Record<string, unknown>; hadExif: boolean; hadGps: boolean }> {
     if (this.o.fetchObject === undefined || this.o.putObject === undefined) {
       throw new AppError(ErrorCode.INTERNAL_ERROR, '未配置对象存储读写能力，无法服务端剥离');
     }
 
-    const asset = await this.o.ctx.read.findUnique('mediaAsset', { fileKey: input.fileKey, deletedAt: null });
+    const asset = await this.o.ctx.read.findUnique('mediaAsset', {
+      fileKey: input.fileKey,
+      deletedAt: null,
+    });
     if (!asset) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
     await this.assertFamilyMember(this.o.ctx, asset['familyId'] as bigint, userId);
 
     // ── 事务外：读 → 剥离 → 写回 ──
     const raw = await this.o.fetchObject(input.fileKey);
-    const result = await stripExifServerSide(raw, this.o.processor ? { processor: this.o.processor } : {});
+    const result = await stripExifServerSide(
+      raw,
+      this.o.processor ? { processor: this.o.processor } : {},
+    );
     await this.o.putObject(input.fileKey, result.data, input.mimeType);
 
     // ── 短事务：回写标记 ──
@@ -187,7 +218,12 @@ export class MediaService {
       await tx.db.update(
         'mediaAsset',
         { id: asset['id'] },
-        { exifStripped: result.exifStripped, hadGps: result.hadGps, byteSize: BigInt(result.data.length), updatedAt: now },
+        {
+          exifStripped: result.exifStripped,
+          hadGps: result.hadGps,
+          byteSize: BigInt(result.data.length),
+          updatedAt: now,
+        },
       );
 
       if (result.hadGps) {
@@ -203,18 +239,25 @@ export class MediaService {
       }
 
       const row = await tx.db.findUnique('mediaAsset', { id: asset['id'] });
-      return { asset: serializeRow(row ?? {}, MEDIA_BIGINT_FIELDS), hadExif: result.hadExif, hadGps: result.hadGps };
+      return {
+        asset: this.withUrl(serializeRow(row ?? {}, MEDIA_BIGINT_FIELDS)),
+        hadExif: result.hadExif,
+        hadGps: result.hadGps,
+      };
     });
   }
 
   /** 列表 */
-  async list(userId: bigint, q: {
-    familyId?: bigint;
-    tripId?: bigint;
-    mimePrefix?: string;
-    page?: unknown;
-    pageSize?: unknown;
-  }): Promise<{ items: Record<string, unknown>[]; meta: Record<string, unknown>; }> {
+  async list(
+    userId: bigint,
+    q: {
+      familyId?: bigint;
+      tripId?: bigint;
+      mimePrefix?: string;
+      page?: unknown;
+      pageSize?: unknown;
+    },
+  ): Promise<{ items: Record<string, unknown>[]; meta: Record<string, unknown> }> {
     const page = normalizePageQuery(q.page, q.pageSize);
     const visibleFamilies = await this.visibleFamilyIds(userId);
 
@@ -222,13 +265,14 @@ export class MediaService {
     let rows = all.filter((r) => visibleFamilies.has(r['familyId'] as bigint));
     if (q.familyId !== undefined) rows = rows.filter((r) => r['familyId'] === q.familyId);
     if (q.tripId !== undefined) rows = rows.filter((r) => r['tripId'] === q.tripId);
-    if (q.mimePrefix !== undefined) rows = rows.filter((r) => String(r['mimeType']).startsWith(q.mimePrefix!));
+    if (q.mimePrefix !== undefined)
+      rows = rows.filter((r) => String(r['mimeType']).startsWith(q.mimePrefix!));
 
     rows = [...rows].sort((a, b) => timeOf(b['createdAt']) - timeOf(a['createdAt']));
     const slice = rows.slice(page.skip, page.skip + page.take);
 
     return {
-      items: slice.map((r) => serializeRow(r, MEDIA_BIGINT_FIELDS)),
+      items: slice.map((r) => this.withUrl(serializeRow(r, MEDIA_BIGINT_FIELDS))),
       meta: buildPageMeta(page, rows.length) as unknown as Record<string, unknown>,
     };
   }
@@ -244,7 +288,15 @@ export class MediaService {
 
       const now = await tx.db.dbNow();
       await tx.db.update('mediaAsset', { id: assetId }, { deletedAt: now, updatedAt: now });
-      await this.change(tx, 'media_asset', assetId, r['familyId'] as bigint, (r['tripId'] ?? null) as bigint | null, 'DELETE', now);
+      await this.change(
+        tx,
+        'media_asset',
+        assetId,
+        r['familyId'] as bigint,
+        (r['tripId'] ?? null) as bigint | null,
+        'DELETE',
+        now,
+      );
       return now;
     });
   }
@@ -257,23 +309,38 @@ export class MediaService {
     }
   }
 
-  private async assertFamilyMember(src: TxHandle | DomainContext, familyId: bigint, userId: bigint): Promise<void> {
+  private async assertFamilyMember(
+    src: TxHandle | DomainContext,
+    familyId: bigint,
+    userId: bigint,
+  ): Promise<void> {
     const db = 'db' in src ? src.db : src.read;
     const m = await db.findUnique('familyMember', { familyId, userId, deletedAt: null });
     if (m) return;
-    const managed = await db.findMany('familyMember', { where: { familyId, managedBy: userId, deletedAt: null } });
+    const managed = await db.findMany('familyMember', {
+      where: { familyId, managedBy: userId, deletedAt: null },
+    });
     if (managed.length > 0) return;
     throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
   }
 
   private async assertFamilyOwner(tx: TxHandle, familyId: bigint, userId: bigint): Promise<void> {
-    const o = await tx.db.findUnique('familyMember', { familyId, userId, role: 'OWNER', deletedAt: null });
+    const o = await tx.db.findUnique('familyMember', {
+      familyId,
+      userId,
+      role: 'OWNER',
+      deletedAt: null,
+    });
     if (!o) throw new AppError(ErrorCode.FORBIDDEN, '仅上传者或户主可删除');
   }
 
   private async visibleFamilyIds(userId: bigint): Promise<Set<bigint>> {
-    const mine = await this.o.ctx.read.findMany('familyMember', { where: { userId, deletedAt: null } });
-    const managed = await this.o.ctx.read.findMany('familyMember', { where: { managedBy: userId, deletedAt: null } });
+    const mine = await this.o.ctx.read.findMany('familyMember', {
+      where: { userId, deletedAt: null },
+    });
+    const managed = await this.o.ctx.read.findMany('familyMember', {
+      where: { managedBy: userId, deletedAt: null },
+    });
     const s = new Set<bigint>();
     for (const m of mine) s.add(m['familyId'] as bigint);
     for (const m of managed) s.add(m['familyId'] as bigint);
@@ -325,6 +392,16 @@ export class MediaService {
       detail: e.detail ?? null,
       createdAt: e.at,
     });
+  }
+
+  /**
+   * 契约（#3 方案 A）：把内部 `fileKey` 拼成可访问 URL 随响应返回，前端零拼接。
+   * base 来自 `MEDIA_PUBLIC_BASE_URL`（生产接对象存储 / CDN 公网域名）；
+   * 缺省回落占位域名，仅供联调阶段验证契约形状（链接不可达）。
+   */
+  private withUrl(row: Record<string, unknown>): Record<string, unknown> {
+    const fileKey = typeof row['fileKey'] === 'string' ? row['fileKey'] : '';
+    return { ...row, url: fileKey ? `${this.mediaBase}/${fileKey}` : '' };
   }
 }
 

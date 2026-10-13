@@ -26,7 +26,6 @@ import {
 import { checkAccessDeclaration } from '../src/common/ci/access-gate.js';
 import { ErrorCode } from '../src/common/errors/error-code.js';
 
-
 describe('D1/D8 · 404 不可区分（不给越权者任何探测信号）', () => {
   let app: BuiltApp;
 
@@ -226,12 +225,7 @@ describe('D5 · 权限矩阵完整性（启动期断言）', () => {
 
 describe('D6 · fail-closed（未标注 = 拒绝，不留暗门）', () => {
   it('门禁：HTTP 路由缺少 @RequireAccess / @Public 声明 → 记为违规', () => {
-    const bad = [
-      'export class X {',
-      '  @Get("items")',
-      '  async list() {}',
-      '}',
-    ].join('\n');
+    const bad = ['export class X {', '  @Get("items")', '  async list() {}', '}'].join('\n');
     const v = checkAccessDeclaration('bad.ts', bad);
     expect(v).toHaveLength(1);
     expect(v[0]!.rule).toBe('D2-access-declared');
@@ -302,7 +296,7 @@ describe('D7 · SHARED 两个维度各自独立成立', () => {
     );
 
     // owner 建一个出行级清单项
-    const item = mustOk<{ item: { id: string } }>(
+    const item = mustOk<{ id: string }>(
       await app.dispatch(
         req('POST', '/checklists/items', {
           token: owner.token,
@@ -318,13 +312,11 @@ describe('D7 · SHARED 两个维度各自独立成立', () => {
 
     // mate 不是 trip 成员 → 读该出行级资源必须 404（尽管同家庭）
     const denied = await app.dispatch(
-      req('GET', `/checklists/items/${item.item.id}`, { token: mate.token }),
+      req('GET', `/checklists/items/${item.id}`, { token: mate.token }),
     );
     expect(denied.httpStatus).toBe(404);
 
     // owner 自己读 → 200
-    mustOk(
-      await app.dispatch(req('GET', `/checklists/items/${item.item.id}`, { token: owner.token })),
-    );
+    mustOk(await app.dispatch(req('GET', `/checklists/items/${item.id}`, { token: owner.token })));
   });
 });

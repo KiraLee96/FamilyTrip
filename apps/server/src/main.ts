@@ -1,3 +1,4 @@
+import './common/env/load-env.js'; // 🔴 必须在读取 process.env 的模块之前最先执行
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
@@ -84,6 +85,21 @@ async function bootstrap(): Promise<void> {
   await installDriver();
 
   const app = await NestFactory.create(AppModule);
+
+  // CORS：放行 H5 预览等前端 origin（联调期可设 CORS_ORIGIN=* 放开全部）。
+  // 注意：前端走 Authorization 头，故 credentials 必须与具体 origin 配合（* 时自动关闭）。
+  const corsOrigins = (process.env['CORS_ORIGIN'] ?? 'http://127.0.0.1:5199')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const allowAll = corsOrigins.includes('*');
+  app.enableCors({
+    origin: allowAll ? '*' : corsOrigins,
+    credentials: !allowAll,
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id'],
+  });
+
   const port = Number(process.env.PORT ?? 3000);
   await app.listen(port);
   console.log(`family-trip server listening on :${port}`);

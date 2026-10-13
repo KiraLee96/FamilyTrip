@@ -79,16 +79,19 @@ export class ChecklistService {
   }
 
   /** 新增清单项（强制 scope/owner 不变式） */
-  async createItem(userId: bigint, input: {
-    tripId: bigint;
-    familyId: bigint;
-    name: string;
-    quantity: number;
-    sort: number;
-    scope: 'SHARED' | 'PERSONAL';
-    ownerId?: bigint;
-    templateId?: bigint;
-  }): Promise<Record<string, unknown>> {
+  async createItem(
+    userId: bigint,
+    input: {
+      tripId: bigint;
+      familyId: bigint;
+      name: string;
+      quantity: number;
+      sort: number;
+      scope: 'SHARED' | 'PERSONAL';
+      ownerId?: bigint;
+      templateId?: bigint;
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const t = await tx.db.findUnique('trip', { id: input.tripId, deletedAt: null });
       if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -128,7 +131,7 @@ export class ChecklistService {
       await this.change(tx, 'trip_checklist_item', id, input.familyId, input.tripId, 'INSERT', now);
 
       const row = await tx.db.findUnique('tripChecklistItem', { id });
-      return serializeRow(row ?? {}, ITEM_BIGINT_FIELDS);
+      return this.withChecklistAliases(serializeRow(row ?? {}, ITEM_BIGINT_FIELDS));
     });
   }
 
@@ -140,14 +143,17 @@ export class ChecklistService {
    *   · 别人的 PERSONAL 项 → **不返回内容**，折叠成 per-owner 占位
    *   · 空闲 owner 不足 1 条占位的也产出（表示「他确实有私有项」但不泄露数量）
    */
-  async list(userId: bigint, q: {
-    tripId?: bigint;
-    familyId?: bigint;
-    scope?: 'SHARED' | 'PERSONAL';
-    checked?: boolean;
-    page?: unknown;
-    pageSize?: unknown;
-  }): Promise<{
+  async list(
+    userId: bigint,
+    q: {
+      tripId?: bigint;
+      familyId?: bigint;
+      scope?: 'SHARED' | 'PERSONAL';
+      checked?: boolean;
+      page?: unknown;
+      pageSize?: unknown;
+    },
+  ): Promise<{
     items: unknown[];
     meta: Record<string, unknown>;
     myPrivateCount: number;
@@ -192,7 +198,7 @@ export class ChecklistService {
     const sorted = [...visible].sort((a, b) => Number(a['sort'] ?? 0) - Number(b['sort'] ?? 0));
     const slice = sorted.slice(page.skip, page.skip + page.take);
 
-    const items = slice.map((r) => serializeRow(r, ITEM_BIGINT_FIELDS));
+    const items = slice.map((r) => this.withChecklistAliases(serializeRow(r, ITEM_BIGINT_FIELDS)));
 
     // D5：折叠占位（每人最多 1 条，无任何私有字段）
     // 先把 owner 的公开昵称查出来（buildLockedPlaceholders 是同步函数）
@@ -219,10 +225,13 @@ export class ChecklistService {
 
   /** 单项详情 */
   async detailItem(userId: bigint, itemId: bigint): Promise<Record<string, unknown>> {
-    const r = await this.o.ctx.read.findUnique('tripChecklistItem', { id: itemId, deletedAt: null });
+    const r = await this.o.ctx.read.findUnique('tripChecklistItem', {
+      id: itemId,
+      deletedAt: null,
+    });
     if (!r) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
     await this.assertItemVisible(this.o.ctx, r, userId);
-    return serializeRow(r, ITEM_BIGINT_FIELDS);
+    return this.withChecklistAliases(serializeRow(r, ITEM_BIGINT_FIELDS));
   }
 
   /**
@@ -231,7 +240,11 @@ export class ChecklistService {
    * 🔴 0 行受影响 = 有人在你读到之后改过 → 409。
    *    错误信息要明确告知「请刷新」，而不是含糊的「操作失败」。
    */
-  async toggle(userId: bigint, itemId: bigint, input: { version: number; checked: boolean }): Promise<Record<string, unknown>> {
+  async toggle(
+    userId: bigint,
+    itemId: bigint,
+    input: { version: number; checked: boolean },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const r = await tx.db.findUnique('tripChecklistItem', { id: itemId, deletedAt: null });
       if (!r) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -259,10 +272,18 @@ export class ChecklistService {
         );
       }
 
-      await this.change(tx, 'trip_checklist_item', itemId, null, r['tripId'] as bigint, 'UPDATE', now);
+      await this.change(
+        tx,
+        'trip_checklist_item',
+        itemId,
+        null,
+        r['tripId'] as bigint,
+        'UPDATE',
+        now,
+      );
 
       const row = await tx.db.findUnique('tripChecklistItem', { id: itemId });
-      return serializeRow(row ?? {}, ITEM_BIGINT_FIELDS);
+      return this.withChecklistAliases(serializeRow(row ?? {}, ITEM_BIGINT_FIELDS));
     });
   }
 
@@ -273,7 +294,19 @@ export class ChecklistService {
    * 为什么不做「全有全无」：用户连勾 5 项，其中 1 项被别人先勾了，
    * 不应让另外 4 项也失败 —— 那是惩罚用户。
    */
-  async batchToggle(userId: bigint, input: { items: Array<{ id: string; version: number; checked: boolean }> }): Promise<{ results: { id: string; ok: boolean; error?: { code: number; message: string; }; item?: Record<string, unknown>; }[]; succeeded: number; failed: number; }> {
+  async batchToggle(
+    userId: bigint,
+    input: { items: Array<{ id: string; version: number; checked: boolean }> },
+  ): Promise<{
+    results: {
+      id: string;
+      ok: boolean;
+      error?: { code: number; message: string };
+      item?: Record<string, unknown>;
+    }[];
+    succeeded: number;
+    failed: number;
+  }> {
     const results: Array<{
       id: string;
       ok: boolean;
@@ -283,8 +316,11 @@ export class ChecklistService {
 
     for (const it of input.items) {
       try {
-        const item = await this.toggle(userId, BigInt(it.id), { version: it.version, checked: it.checked });
-        results.push({ id: it.id, ok: true, item });
+        const item = await this.toggle(userId, BigInt(it.id), {
+          version: it.version,
+          checked: it.checked,
+        });
+        results.push({ id: it.id, ok: true, item: this.withChecklistAliases(item) });
       } catch (e) {
         const err = e as { code?: number; message?: string };
         results.push({
@@ -300,12 +336,16 @@ export class ChecklistService {
   }
 
   /** 改清单项（CAS） */
-  async updateItem(userId: bigint, itemId: bigint, patch: {
-    version: number;
-    name?: string;
-    quantity?: number;
-    sort?: number;
-  }): Promise<Record<string, unknown>> {
+  async updateItem(
+    userId: bigint,
+    itemId: bigint,
+    patch: {
+      version: number;
+      name?: string;
+      quantity?: number;
+      sort?: number;
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const r = await tx.db.findUnique('tripChecklistItem', { id: itemId, deletedAt: null });
       if (!r) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -326,9 +366,17 @@ export class ChecklistService {
         throw new AppError(ErrorCode.VERSION_CONFLICT, '该清单项已被他人修改，请刷新后重试');
       }
 
-      await this.change(tx, 'trip_checklist_item', itemId, null, r['tripId'] as bigint, 'UPDATE', now);
+      await this.change(
+        tx,
+        'trip_checklist_item',
+        itemId,
+        null,
+        r['tripId'] as bigint,
+        'UPDATE',
+        now,
+      );
       const row = await tx.db.findUnique('tripChecklistItem', { id: itemId });
-      return serializeRow(row ?? {}, ITEM_BIGINT_FIELDS);
+      return this.withChecklistAliases(serializeRow(row ?? {}, ITEM_BIGINT_FIELDS));
     });
   }
 
@@ -341,7 +389,15 @@ export class ChecklistService {
 
       const now = await tx.db.dbNow();
       await tx.db.update('tripChecklistItem', { id: itemId }, { deletedAt: now, updatedAt: now });
-      await this.change(tx, 'trip_checklist_item', itemId, null, r['tripId'] as bigint, 'DELETE', now);
+      await this.change(
+        tx,
+        'trip_checklist_item',
+        itemId,
+        null,
+        r['tripId'] as bigint,
+        'DELETE',
+        now,
+      );
       return now;
     });
   }
@@ -349,13 +405,16 @@ export class ChecklistService {
   // ── 模板 ────────────────────────────────────────────────
 
   /** 建模板 */
-  async createTemplate(userId: bigint, input: {
-    familyId?: bigint;
-    name: string;
-    scope: 'SHARED' | 'PERSONAL';
-    ownerId?: bigint;
-    items: Array<{ name: string; quantity: number }>;
-  }): Promise<Record<string, unknown>> {
+  async createTemplate(
+    userId: bigint,
+    input: {
+      familyId?: bigint;
+      name: string;
+      scope: 'SHARED' | 'PERSONAL';
+      ownerId?: bigint;
+      items: Array<{ name: string; quantity: number }>;
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const now = await tx.db.dbNow();
 
@@ -384,7 +443,10 @@ export class ChecklistService {
   }
 
   /** 列模板（共享 + 自己的私有） */
-  async listTemplates(userId: bigint, familyId?: bigint): Promise<{ items: Record<string, unknown>[]; }> {
+  async listTemplates(
+    userId: bigint,
+    familyId?: bigint,
+  ): Promise<{ items: Record<string, unknown>[] }> {
     const all = await this.o.ctx.read.findMany('checklistTemplate', { where: { deletedAt: null } });
     const visible = all.filter((t) => {
       const domain = resolveChecklistDomain({
@@ -404,9 +466,15 @@ export class ChecklistService {
    * 幂等保护：同一 (templateId, tripId) 已有项时不重复套用，
    * 除非显式允许（避免用户连点两次按钮产生双倍清单）。
    */
-  async applyTemplate(userId: bigint, input: { templateId: bigint; tripId: bigint; familyId: bigint }): Promise<{ created: number; skipped: number; alreadyApplied: boolean; }> {
+  async applyTemplate(
+    userId: bigint,
+    input: { templateId: bigint; tripId: bigint; familyId: bigint },
+  ): Promise<{ created: number; skipped: number; alreadyApplied: boolean }> {
     return this.o.ctx.tx(async (tx) => {
-      const tpl = await tx.db.findUnique('checklistTemplate', { id: input.templateId, deletedAt: null });
+      const tpl = await tx.db.findUnique('checklistTemplate', {
+        id: input.templateId,
+        deletedAt: null,
+      });
       if (!tpl) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
 
       const t = await tx.db.findUnique('trip', { id: input.tripId, deletedAt: null });
@@ -425,7 +493,10 @@ export class ChecklistService {
         return { created: 0, skipped: existing.length, alreadyApplied: true };
       }
 
-      const items = JSON.parse(stringCell(tpl, 'itemsJson') ?? '[]') as Array<{ name: string; quantity: number }>;
+      const items = JSON.parse(stringCell(tpl, 'itemsJson') ?? '[]') as Array<{
+        name: string;
+        quantity: number;
+      }>;
       const now = await tx.db.dbNow();
 
       let sort = 0;
@@ -436,7 +507,7 @@ export class ChecklistService {
           tripId: input.tripId,
           templateId: input.templateId,
           scope: tpl['scope'],
-          ownerId: tpl['scope'] === 'PERSONAL' ? (tpl['ownerId']) : null,
+          ownerId: tpl['scope'] === 'PERSONAL' ? tpl['ownerId'] : null,
           createdBy: userId,
           name: it.name,
           quantity: it.quantity ?? 1,
@@ -449,7 +520,15 @@ export class ChecklistService {
           updatedAt: now,
           deletedAt: null,
         });
-        await this.change(tx, 'trip_checklist_item', id, input.familyId, input.tripId, 'INSERT', now);
+        await this.change(
+          tx,
+          'trip_checklist_item',
+          id,
+          input.familyId,
+          input.tripId,
+          'INSERT',
+          now,
+        );
       }
 
       return { created: items.length, skipped: 0, alreadyApplied: false };
@@ -546,12 +625,28 @@ export class ChecklistService {
   }
 
   private async visibleTripIds(userId: bigint): Promise<Set<bigint>> {
-    const mine = await this.o.ctx.read.findMany('tripMember', { where: { userId, deletedAt: null } });
-    const managed = await this.o.ctx.read.findMany('tripMember', { where: { managedBy: userId, deletedAt: null } });
+    const mine = await this.o.ctx.read.findMany('tripMember', {
+      where: { userId, deletedAt: null },
+    });
+    const managed = await this.o.ctx.read.findMany('tripMember', {
+      where: { managedBy: userId, deletedAt: null },
+    });
     const s = new Set<bigint>();
     for (const m of mine) s.add(m['tripId'] as bigint);
     for (const m of managed) s.add(m['tripId'] as bigint);
     return s;
+  }
+
+  /**
+   * 契约对齐（#4）：响应同时携带 `title` / `done`（前端 ApiClient 契约为 title/done），
+   * 与存储字段 `name` / `checked` 并存；存储层零改动、零迁移，仅展示层加别名。
+   */
+  private withChecklistAliases(row: Record<string, unknown>): Record<string, unknown> {
+    return {
+      ...row,
+      title: typeof row['name'] === 'string' ? row['name'] : '',
+      done: Boolean(row['checked']),
+    };
   }
 
   private async change(

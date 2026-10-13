@@ -36,6 +36,8 @@ export interface MediaDomainOptions {
   fetchObject?: (fileKey: string) => Promise<Buffer>;
   putObject?: (fileKey: string, data: Buffer, mimeType: string) => Promise<void>;
   allowedMimePrefixes?: readonly string[];
+  /** 媒体公网访问基址（方案 A：list 响应拼可访问 URL） */
+  mediaPublicBaseUrl?: string;
 }
 
 export interface MediaDomain {
@@ -51,6 +53,7 @@ export function createMediaDomain(o: MediaDomainOptions): MediaDomain {
     ...(o.fetchObject !== undefined ? { fetchObject: o.fetchObject } : {}),
     ...(o.putObject !== undefined ? { putObject: o.putObject } : {}),
     ...(o.allowedMimePrefixes !== undefined ? { allowedMimePrefixes: o.allowedMimePrefixes } : {}),
+    ...(o.mediaPublicBaseUrl !== undefined ? { mediaPublicBaseUrl: o.mediaPublicBaseUrl } : {}),
   });
 
   /**
@@ -121,7 +124,10 @@ export function createMediaDomain(o: MediaDomainOptions): MediaDomain {
       schema: stripExifSchema as never,
       handler: async (ctx, input) => {
         const b = input as StripExifInput;
-        const r = await service.stripExif(ctx.userId!, { fileKey: b.fileKey, mimeType: b.mimeType });
+        const r = await service.stripExif(ctx.userId!, {
+          fileKey: b.fileKey,
+          mimeType: b.mimeType,
+        });
         return { data: r };
       },
     },

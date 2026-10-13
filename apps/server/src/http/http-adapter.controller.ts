@@ -33,9 +33,14 @@ export class HttpAdapterController {
    * 通配所有方法 + 所有子路径，交给派发器按路由表匹配。
    *
    * ⚠️ NestJS 的 `@All('*')` 在 Express 5 下需要 `'{*path}'` 语法；
-   *    这里兼容两种写法，取到的路径自行剥掉前缀。
+   * ⚠️ 必须用裸 `'*'`，不能用 `'*path'`：
+   *    express 4.22.1 的 path-to-regexp 已是 0.1.13，`*name` 语义从「纯通配」
+   *    变为「`.*` + 字面量 name」——`'/api/*path'` 编译为
+   *    `/^\/api\/(.*)path\/?$/i`，要求 URL 以 "path" 结尾，一切真实请求 miss。
+   *    （`'{*path}'` 是 path-to-regexp v6+ 语法，0.1.13 不识别，同样不可用。）
+   *    本 controller 自行从 originalUrl 剥前缀，不依赖 req.params，裸通配即足。
    */
-  @All('*path')
+  @All('*')
   async handle(@Req() req: Request, @Res() res: Response): Promise<void> {
     const prefix = `/${API_PREFIX}`;
     const full = req.originalUrl ?? req.url ?? '/';
