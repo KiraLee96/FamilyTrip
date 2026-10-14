@@ -11,12 +11,17 @@
  *   /plan        → pages/PlanPage      （tab：规划）
  *   /trips       → pages/TripsPage     （tab：行程）
  *   /items       → pages/ItemsPage     （tab：物品）
- *   /memory      → pages/MemoryPage    （tab：回忆，2026-10-13 设计稿改版新增）
- *   /profile     → pages/ProfilePage   （非 tab：我的，从总览页头像进入）
+ *   /profile     → pages/ProfilePage   （tab：我的，2026-10-14 账号管理回归）
+ *   /memory      → pages/MemoryPage    （非 tab：回忆墙，从总览页「最近回忆」进入）
  *   /wishes      → pages/WishPoolPage  （非 tab，从首页/规划页心愿区块进入）
  *   /trips/new   → pages/TripCreatePage（非 tab，须先于 /trips/:id 匹配）
  *   /trips/:id   → pages/TripDetailPage（非 tab，带 query 参数，?tab=expense 可定位花销）
- *   /join        → pages/JoinFamilyPage（非 tab，?invite=CODE 凭邀请码加入）
+ *   /trips/join  → pages/JoinTripPage  （非 tab，?invite=CODE 凭行程邀请码加入）
+ *   /join        → pages/JoinFamilyPage（非 tab，?invite=CODE 凭邀请码加入家庭）
+ *
+ * 2026-10-14 修复：此前非 tab 页（/profile /wishes /memory）落在 fallback
+ * `return { url: to }`，产出 `/profile` 这类非法页面路径，navigateTo 静默
+ * 失败（.catch 吞错）——表现为「头像点了没反应」。现全部显式映射。
  */
 
 import Taro from '@tarojs/taro';
@@ -27,7 +32,17 @@ const TAB_PAGE: Record<string, string> = {
   '/plan': 'pages/PlanPage',
   '/trips': 'pages/TripsPage',
   '/items': 'pages/ItemsPage',
+  '/profile': 'pages/ProfilePage',
+};
+
+/** 非 tab 页：显式映射，禁止再落 fallback（防静默失败） */
+const NON_TAB_PAGE: Record<string, string> = {
   '/memory': 'pages/MemoryPage',
+  '/wishes': 'pages/WishPoolPage',
+  '/profile': 'pages/ProfilePage',
+  '/trips/new': 'pages/TripCreatePage',
+  '/trips/join': 'pages/JoinTripPage',
+  '/join': 'pages/JoinFamilyPage',
 };
 
 function toTaroUrl(to: string): { url: string; tab: boolean } {
@@ -35,18 +50,21 @@ function toTaroUrl(to: string): { url: string; tab: boolean } {
   const qIndex = to.indexOf('?');
   const path = qIndex >= 0 ? to.slice(0, qIndex) : to;
   const qs = qIndex >= 0 ? to.slice(qIndex) : '';
-  if (path === '/trips/new') {
-    return { url: `/pages/TripCreatePage${qs}`, tab: false };
-  }
-  if (path === '/join') {
-    return { url: `/pages/JoinFamilyPage${qs}`, tab: false };
-  }
-  if (path.startsWith('/trips/')) {
+
+  // 行程详情：/trips/:id → /pages/TripDetailPage?id=:id（须先于 /trips 前缀判断）
+  if (path.startsWith('/trips/') && path !== '/trips/new' && path !== '/trips/join') {
     const id = encodeURIComponent(path.slice('/trips/'.length));
     return { url: `/pages/TripDetailPage?id=${id}`, tab: false };
   }
-  const page = TAB_PAGE[path];
-  if (page) return { url: `/${page}`, tab: true };
+
+  const tabPage = TAB_PAGE[path];
+  if (tabPage) return { url: `/${tabPage}`, tab: true };
+
+  const nonTabPage = NON_TAB_PAGE[path];
+  if (nonTabPage) return { url: `/${nonTabPage}${qs}`, tab: false };
+
+  // 未登记的逻辑路径：开发期配置疏漏，显式告警而不是静默跳转一个死链
+  console.error(`[nav] 未登记的路由：${to}（请在 nav/index.ts 补全映射）`);
   return { url: to, tab: false };
 }
 

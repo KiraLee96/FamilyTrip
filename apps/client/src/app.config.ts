@@ -5,10 +5,10 @@
  * - tabBar 用「纯文字」五标签，刻意不配 iconPath，避免引入 PNG 资源
  *   （小程序要求 tabBar 图标必须是本地图片，原型期不增加资源维护面；
  *    设计稿中的线性图标待图标资源就位后再补）
- * - 2026-10-13 设计稿改版：tab 顺序 = 总览 / 规划 / 行程 / 物品 / 回忆，
- *   「我的」（ProfilePage）降级为非 tab 页，从总览页头像进入；
- *   新增「回忆墙」MemoryPage 占「回忆」tab
- * - 视觉：米纸底 #F5F0E4 + 深绿主色 #1E5B45（微信 tabBar 上限 5 个）
+ * - 2026-10-14 账号管理回归：tab 顺序 = 总览 / 规划 / 行程 / 物品 / 我的。
+ *   微信 tabBar 硬上限 5 个，「回忆」让位给「我的」——回忆墙 MemoryPage
+ *   保留为完整页面，从总览页「最近回忆 → 回忆墙」入口进入（非 tab）。
+ * - 视觉：米纸底 #F5F0E4 + 深绿主色 #1E5B45
  */
 
 export default {
@@ -17,12 +17,13 @@ export default {
     'pages/PlanPage',
     'pages/TripsPage',
     'pages/ItemsPage',
-    'pages/MemoryPage',
     'pages/ProfilePage',
+    'pages/MemoryPage',
     'pages/WishPoolPage',
     'pages/TripDetailPage',
     'pages/TripCreatePage',
     'pages/JoinFamilyPage',
+    'pages/JoinTripPage',
   ],
   window: {
     backgroundTextStyle: 'light',
@@ -41,7 +42,7 @@ export default {
       { pagePath: 'pages/PlanPage', text: '规划' },
       { pagePath: 'pages/TripsPage', text: '行程' },
       { pagePath: 'pages/ItemsPage', text: '物品' },
-      { pagePath: 'pages/MemoryPage', text: '回忆' },
+      { pagePath: 'pages/ProfilePage', text: '我的' },
     ],
   },
 };

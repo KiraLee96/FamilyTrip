@@ -89,6 +89,48 @@ export type TripStatus = 'DRAFT' | 'PLANNED' | 'ONGOING' | 'FINISHED' | 'CANCELL
 /** 交通方式（行程安排内选择；地图连线按此着色） */
 export type TransportMode = 'WALK' | 'BIKE' | 'CAR' | 'BUS' | 'TRAIN' | 'FLIGHT';
 
+/** 出行成员角色（LEADER=主导者；经 addTripMember 加入的只能是 MEMBER） */
+export type TripMemberRole = 'LEADER' | 'MEMBER';
+
+/** 出行成员访问级别（出行结束后转 HISTORICAL_READONLY，历史只读保留，B6） */
+export type TripAccessLevel = 'ACTIVE' | 'HISTORICAL_READONLY';
+
+/**
+ * 出行成员（对齐后端 tripMember 行 + MEMBER_BIGINT_FIELDS 序列化）。
+ * 虚拟成员（无微信账号的家人）userId 为 null；外部同行者 isExternal=true。
+ */
+export interface TripMember {
+  id: string;
+  tripId: string;
+  /** 真实用户为用户 id；虚拟成员为 null */
+  userId: string | null;
+  role: TripMemberRole;
+  /** 外部同行者（如朋友），不属家庭（PRD §2.6 临时家庭模型） */
+  isExternal: boolean;
+  accessLevel: TripAccessLevel;
+  displayName: string;
+  /** 代管人 memberId（虚拟成员必有；真实成员为 null） */
+  managedBy: string | null;
+  joinedAt: string;
+}
+
+/** 行程邀请码（GET /trips/:id/invite 的 data；新端点见后端派发单） */
+export interface TripInvite {
+  tripId: string;
+  /** 邀请码（建行程时按需生成；重置后旧码作废） */
+  inviteCode: string;
+  /** 码最近重置时间（无重置记录时等于行程创建时间） */
+  updatedAt: string;
+}
+
+/** 凭行程邀请码加入的结果（POST /trips/join 的 data） */
+export interface JoinTripResult {
+  trip: Trip;
+  member: TripMember;
+  /** 已是成员时幂等返回 true（不重复插入） */
+  alreadyMember: boolean;
+}
+
 /** 目的地 */
 export interface Destination {
   name: string;

@@ -26,6 +26,7 @@ import type {
   ItineraryItem,
   Item,
   JoinFamilyResult,
+  JoinTripResult,
   MediaAsset,
   MemoryArchive,
   MemorySnapshot,
@@ -33,6 +34,10 @@ import type {
   PresignUploadResult,
   TransportMode,
   Trip,
+  TripAccessLevel,
+  TripInvite,
+  TripMember,
+  TripMemberRole,
   User,
   Wish,
 } from './types';
@@ -92,6 +97,53 @@ export interface ApiClient {
     startDate?: string;
     endDate?: string;
   }): Promise<Trip>;
+  /**
+   * POST /trips/:id/members —— 加出行成员（PRD GRP-02：创建行程时可邀请
+   * 家庭成员或外部用户）。家庭成员传 userId；无账号家人（虚拟成员）传
+   * displayName + isVirtual + managedBy（代管人 memberId）。
+   * 🔴 role 经本接口只能是 MEMBER，设主导者走 setLeader（后端 403 拒绝）。
+   */
+  addTripMember(
+    tripId: string,
+    input: {
+      userId?: string;
+      displayName?: string;
+      isVirtual?: boolean;
+      /** 外部同行者（如朋友），不属家庭 */
+      isExternal?: boolean;
+      role?: TripMemberRole;
+      managedBy?: string;
+      accessLevel?: TripAccessLevel;
+    },
+  ): Promise<TripMember>;
+  /** PATCH /trips/members/:id（改角色/访问级别/昵称/代管；仅主导者） */
+  updateTripMember(
+    id: string,
+    input: {
+      role?: TripMemberRole;
+      accessLevel?: TripAccessLevel;
+      displayName?: string;
+      managedBy?: string | null;
+    },
+  ): Promise<TripMember>;
+  /** DELETE /trips/members/:id（移除出行成员） */
+  removeTripMember(id: string): Promise<void>;
+  /**
+   * GET /trips/:id/invite —— 取行程邀请码（外部成员凭码加入）。
+   * 🆕 新端点（后端派发单 D-2026-10-14-02 待落地）；Mock 已就绪。
+   */
+  getTripInvite(tripId: string): Promise<TripInvite>;
+  /**
+   * POST /trips/:id/invite/reset —— 重置行程邀请码（旧码作废；仅主导者/创建者）。
+   * 🆕 新端点（后端派发单 D-2026-10-14-02 待落地）；Mock 已就绪。
+   */
+  resetTripInvite(tripId: string): Promise<TripInvite>;
+  /**
+   * POST /trips/join —— 凭行程邀请码加入出行（外部同行者）。
+   * 幂等：已是成员直接返回（alreadyMember=true）。
+   * 🆕 新端点（后端派发单 D-2026-10-14-02 待落地）；Mock 已就绪。
+   */
+  joinTrip(input: { inviteCode: string; displayName?: string }): Promise<JoinTripResult>;
 
   // ---- wish ----
   /** GET /wishes */

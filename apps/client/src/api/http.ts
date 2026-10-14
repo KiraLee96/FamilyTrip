@@ -29,12 +29,17 @@ import type {
   ItineraryItem,
   Item,
   JoinFamilyResult,
+  JoinTripResult,
   MediaAsset,
   MemoryArchive,
   MemorySnapshot,
   PresignUploadResult,
   TransportMode,
   Trip,
+  TripAccessLevel,
+  TripInvite,
+  TripMember,
+  TripMemberRole,
   User,
   Wish,
 } from './types';
@@ -271,6 +276,32 @@ function toMember(raw: Record<string, unknown>): FamilyMember {
   };
 }
 
+/** 后端 tripMember 行 → 客户端 TripMember（对齐 MEMBER_BIGINT_FIELDS 序列化） */
+function toTripMember(raw: Record<string, unknown>): TripMember {
+  const userId = raw['userId'];
+  const managedBy = raw['managedBy'];
+  return {
+    id: asString(raw['id']),
+    tripId: asString(raw['tripId']),
+    userId: userId === null || userId === undefined ? null : asString(userId),
+    role: (asString(raw['role']) || 'MEMBER') as TripMemberRole,
+    isExternal: asBoolean(raw['isExternal']),
+    accessLevel: (asString(raw['accessLevel']) || 'ACTIVE') as TripAccessLevel,
+    displayName: asString(raw['displayName']),
+    managedBy: managedBy === null || managedBy === undefined ? null : asString(managedBy),
+    joinedAt: asString(raw['joinedAt']),
+  };
+}
+
+/** 后端行程邀请码行 → 客户端 TripInvite */
+function toTripInvite(raw: Record<string, unknown>): TripInvite {
+  return {
+    tripId: asString(raw['tripId']),
+    inviteCode: asString(raw['inviteCode']),
+    updatedAt: asString(raw['updatedAt']),
+  };
+}
+
 function toItem(raw: Record<string, unknown>): Item {
   return {
     id: asString(raw['id']),
@@ -447,6 +478,50 @@ export function createHttpClient(): ApiClient {
     createTrip: async (input) => {
       const r = await request<{ trip: Record<string, unknown> }>('POST', '/trips', input);
       return toTrip(r.trip);
+    },
+    addTripMember: async (tripId, input) => {
+      // 信封 { member }；家庭成员传 userId，虚拟成员传 displayName+isVirtual+managedBy
+      const r = await request<{ member: Record<string, unknown> }>(
+        'POST',
+        `/trips/${tripId}/members`,
+        input,
+      );
+      return toTripMember(r.member);
+    },
+    updateTripMember: async (id, input) => {
+      const r = await request<{ member: Record<string, unknown> }>(
+        'PATCH',
+        `/trips/members/${id}`,
+        input,
+      );
+      return toTripMember(r.member);
+    },
+    removeTripMember: async (id) => {
+      await request<null>('DELETE', `/trips/members/${id}`);
+    },
+    getTripInvite: async (tripId) => {
+      // 🆕 新端点（派发单 D-2026-10-14-02）；后端未落地时此处 404，
+      // 界面按「邀请功能未就绪」降级展示，不阻塞行程创建主流程
+      const r = await request<Record<string, unknown>>('GET', `/trips/${tripId}/invite`);
+      return toTripInvite(r);
+    },
+    resetTripInvite: async (tripId) => {
+      const r = await request<Record<string, unknown>>('POST', `/trips/${tripId}/invite/reset`);
+      return toTripInvite(r);
+    },
+    joinTrip: async (input) => {
+      // 幂等：已是成员直接返回（alreadyMember=true），不重复插入
+      const r = await request<{
+        trip: Record<string, unknown>;
+        member: Record<string, unknown>;
+        alreadyMember: boolean;
+      }>('POST', '/trips/join', input);
+      const result: JoinTripResult = {
+        trip: toTrip(r.trip),
+        member: toTripMember(r.member),
+        alreadyMember: asBoolean(r.alreadyMember),
+      };
+      return result;
     },
     listWishes: async (familyId) => {
       const rows = await requestList<Record<string, unknown>>(

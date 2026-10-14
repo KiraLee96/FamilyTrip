@@ -1,10 +1,11 @@
 /**
- * 我的页 —— 账号态 + 我的家庭（反馈 #1）
+ * 我的页 —— 账号态 + 我的家庭（tab：2026-10-14 账号管理回归）
  * ============================================================================
  * 能力：
  *   · 登录状态：展示当前用户；未登录可「重新登录」（微信生态无显式登出，重回无感态）
  *   · 我的家庭：增（新建）/ 删（解散）/ 改（改名）/ 查（成员列表）
- *   · 成员管理：无角色概念、无人数上限；邀请制 —— 展示邀请码 / 复制 / 分享，
+ *   · 成员管理：**不区分爸爸妈妈等角色、无人数上限**，仅区分「管理员 / 成员」——
+ *     创建家庭者即管理员；邀请制新增成员：展示邀请码 / 复制 / 分享，
  *     对方点开分享链接即落到 JoinFamilyPage 凭码加入
  *
  * 数据源：api.listFamilies / getFamily / createFamily / updateFamily / dissolveFamily
@@ -25,6 +26,7 @@ import { SectionTitle } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
 import { retryLogin } from '../api/session';
 import { useSession } from '../hooks/useSession';
+import { copyText } from '../utils/clipboard';
 
 export function ProfilePage() {
   const user = useSession();
@@ -269,7 +271,7 @@ function MemberRow({ member, onRemoved }: { member: FamilyMember; onRemoved: () 
       <View className="member__body">
         <Text className="member__name">{member.displayName}</Text>
         <Text className="member__sub">
-          {member.role === 'OWNER' ? '户主' : '成员'}
+          {member.role === 'OWNER' ? '管理员' : '成员'}
           {member.isVirtual ? ' · 代管' : ''}
         </Text>
       </View>
@@ -434,18 +436,12 @@ function CreateFamilyForm({ onCreated }: { onCreated: () => void }) {
   );
 }
 
-/** 复制邀请码到剪贴板（H5 / 小程序共用 Taro API） */
+/** 复制邀请码到剪贴板（H5 / 小程序共用 Taro API，实现见 utils/clipboard） */
 function copyCode(code: string): void {
-  void Taro.setClipboardData({ data: code })
-    .then(() => {
-      void Taro.showToast({ title: '邀请码已复制', icon: 'none' });
-    })
-    .catch(() => {
-      void Taro.showToast({ title: '复制失败，请手动记录', icon: 'none' });
-    });
+  copyText(code, '邀请码已复制');
 }
 
-/** 解散家庭：二次确认后调用（仅户主可操作，后端校验） */
+/** 解散家庭：二次确认后调用（仅管理员可操作，后端校验） */
 function dissolve(familyId: string, name: string, onDone: () => void): void {
   void Taro.showModal({
     title: '解散家庭',

@@ -21,11 +21,14 @@ import type {
   ItineraryItem,
   Item,
   JoinFamilyResult,
+  JoinTripResult,
   MediaAsset,
   MemoryArchive,
   MemorySnapshot,
   PresignUploadResult,
   Trip,
+  TripInvite,
+  TripMember,
   User,
   Wish,
 } from './types';
@@ -122,6 +125,61 @@ const TRIPS: Trip[] = [
     destinations: [{ name: '大理' }, { name: '丽江' }, { name: '香格里拉' }],
     version: 7,
   },
+];
+
+/** 出行成员种子（对齐后端 tripMember 行：create 时创建者自动为 LEADER） */
+const TRIP_MEMBERS: TripMember[] = [
+  {
+    id: '9001',
+    tripId: '101',
+    userId: '1',
+    role: 'LEADER',
+    isExternal: false,
+    accessLevel: 'ACTIVE',
+    displayName: '爸爸',
+    managedBy: null,
+    joinedAt: '2026-09-01T00:00:00.000Z',
+  },
+  {
+    id: '9002',
+    tripId: '101',
+    userId: null,
+    role: 'MEMBER',
+    isExternal: false,
+    accessLevel: 'ACTIVE',
+    displayName: '妈妈',
+    managedBy: '7001',
+    joinedAt: '2026-09-01T00:00:00.000Z',
+  },
+  {
+    id: '9003',
+    tripId: '101',
+    userId: null,
+    role: 'MEMBER',
+    isExternal: false,
+    accessLevel: 'ACTIVE',
+    displayName: '爷爷',
+    managedBy: '7001',
+    joinedAt: '2026-09-01T00:00:00.000Z',
+  },
+  {
+    // 已结束的出行：成员转 HISTORICAL_READONLY（B6 历史只读保留）
+    id: '9004',
+    tripId: '103',
+    userId: '1',
+    role: 'LEADER',
+    isExternal: false,
+    accessLevel: 'HISTORICAL_READONLY',
+    displayName: '爸爸',
+    managedBy: null,
+    joinedAt: '2026-07-10T00:00:00.000Z',
+  },
+];
+
+/** 行程邀请码种子（与家庭邀请码同规则：8 位、去易混字符） */
+const TRIP_INVITES: TripInvite[] = [
+  { tripId: '101', inviteCode: 'TRIP7QM2', updatedAt: '2026-09-01T00:00:00.000Z' },
+  { tripId: '103', inviteCode: 'TRIP4KX9', updatedAt: '2026-07-10T00:00:00.000Z' },
 ];
 
 const WISHES: Wish[] = [
@@ -506,6 +564,7 @@ const seq = {
   family: 10,
   member: 7004,
   trip: 103,
+  tripMember: 9004,
   itinerary: 305,
   checklist: 406,
   expense: 504,
@@ -527,6 +586,17 @@ function genInviteCode(): string {
     code = '';
     for (let i = 0; i < 8; i++) code += alphabet[Math.floor(Math.random() * alphabet.length)];
   } while (state.families.some((f) => f.inviteCode === code));
+  return code;
+}
+
+/** 行程邀请码：同一字母表，唯一性在行程域内校验 */
+function genTripInviteCode(): string {
+  const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  let code = '';
+  do {
+    code = '';
+    for (let i = 0; i < 8; i++) code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  } while (state.tripInvites.some((t) => t.inviteCode === code));
   return code;
 }
 
@@ -562,6 +632,8 @@ const state = {
   families: [{ ...FAMILY }],
   members: [...MEMBERS],
   trips: [...TRIPS],
+  tripMembers: [...TRIP_MEMBERS],
+  tripInvites: [...TRIP_INVITES],
   wishes: [...WISHES],
   itinerary: [...ITINERARY],
   checklist: [...CHECKLIST],
@@ -707,7 +779,125 @@ export function createMockClient(): ApiClient {
         version: 1,
       };
       state.trips.push(t);
+      // 与后端 create 同行为：创建者自动成为 LEADER 成员 + 生成行程邀请码
+      state.tripMembers.push({
+        id: nextId('tripMember'),
+        tripId: t.id,
+        userId: ME.id,
+        role: 'LEADER',
+        isExternal: false,
+        accessLevel: 'ACTIVE',
+        displayName: ME.nickname,
+        managedBy: null,
+        joinedAt: new Date().toISOString(),
+      });
+      state.tripInvites.push({
+        tripId: t.id,
+        inviteCode: genTripInviteCode(),
+        updatedAt: new Date().toISOString(),
+      });
       return respond(t);
+    },
+    async addTripMember(tripId, input) {
+      const trip = state.trips.find((t) => t.id === tripId);
+      if (!trip) throw new ApiError(404, '出行不存在');
+      // 与后端同规则：未传 userId 即虚拟成员；虚拟成员必须带 displayName
+      const isVirtual = (input.isVirtual ?? false) || input.userId === undefined;
+      if (isVirtual && !input.displayName) {
+        throw new ApiError(400, '虚拟成员必须提供 displayName');
+      }
+      if (!isVirtual && input.userId !== undefined) {
+        const dup = state.tripMembers.find((m) => m.tripId === tripId && m.userId === input.userId);
+        if (dup) throw new ApiError(409, '该用户已在出行中');
+      }
+      const member: TripMember = {
+        id: nextId('tripMember'),
+        tripId,
+        userId: isVirtual ? null : (input.userId ?? null),
+        role: 'MEMBER',
+        isExternal: input.isExternal ?? false,
+        accessLevel: input.accessLevel ?? 'ACTIVE',
+        displayName: input.displayName ?? '同行者',
+        managedBy: isVirtual ? (input.managedBy ?? null) : null,
+        joinedAt: new Date().toISOString(),
+      };
+      state.tripMembers.push(member);
+      return respond(member);
+    },
+    async updateTripMember(id, input) {
+      const m = state.tripMembers.find((x) => x.id === id);
+      if (!m) throw new ApiError(404, '成员不存在');
+      if (input.role !== undefined) m.role = input.role;
+      if (input.accessLevel !== undefined) m.accessLevel = input.accessLevel;
+      if (input.displayName !== undefined) m.displayName = input.displayName;
+      if (input.managedBy !== undefined) m.managedBy = input.managedBy;
+      return respond({ ...m });
+    },
+    async removeTripMember(id) {
+      const i = state.tripMembers.findIndex((m) => m.id === id);
+      if (i < 0) throw new ApiError(404, '成员不存在');
+      state.tripMembers.splice(i, 1);
+      await delay();
+    },
+    async getTripInvite(tripId) {
+      // 建行程时已生成；兜底按需补发（与后端「没有则生成」语义一致）
+      let inv = state.tripInvites.find((x) => x.tripId === tripId);
+      if (!inv) {
+        inv = {
+          tripId,
+          inviteCode: genTripInviteCode(),
+          updatedAt: new Date().toISOString(),
+        };
+        state.tripInvites.push(inv);
+      }
+      return respond({ ...inv });
+    },
+    async resetTripInvite(tripId) {
+      let inv = state.tripInvites.find((x) => x.tripId === tripId);
+      if (!inv) {
+        inv = {
+          tripId,
+          inviteCode: genTripInviteCode(),
+          updatedAt: new Date().toISOString(),
+        };
+        state.tripInvites.push(inv);
+      } else {
+        // 重置即作废旧码（后端唯一索引约束由 gen 内校验保证）
+        inv.inviteCode = genTripInviteCode();
+        inv.updatedAt = new Date().toISOString();
+      }
+      return respond({ ...inv });
+    },
+    async joinTrip(input) {
+      const inv = state.tripInvites.find((x) => x.inviteCode === input.inviteCode);
+      if (!inv) throw new ApiError(404, '邀请码无效，请核对后重试');
+      const trip = state.trips.find((t) => t.id === inv.tripId);
+      if (!trip) throw new ApiError(404, '出行不存在');
+      // GRP-08：已结束/取消的出行不再接受加入（历史记录对既有成员只读保留）
+      if (trip.status === 'FINISHED' || trip.status === 'CANCELLED') {
+        throw new ApiError(409, '该出行已结束，无法加入');
+      }
+      // 幂等：已是成员直接返回，不重复插入
+      const mine = state.tripMembers.find((m) => m.tripId === trip.id && m.userId === ME.id);
+      if (mine) {
+        const dup: JoinTripResult = { trip, member: mine, alreadyMember: true };
+        return respond(dup);
+      }
+      const member: TripMember = {
+        id: nextId('tripMember'),
+        tripId: trip.id,
+        userId: ME.id,
+        role: 'MEMBER',
+        // 外部同行者：不属本家庭，仅可访问该次出行（PRD §2.6）
+        isExternal: true,
+        accessLevel: 'ACTIVE',
+        displayName: input.displayName ?? ME.nickname,
+        managedBy: null,
+        joinedAt: new Date().toISOString(),
+      };
+      state.tripMembers.push(member);
+      const result: JoinTripResult = { trip, member, alreadyMember: false };
+      return respond(result);
     },
     async listWishes(familyId) {
       const list = familyId ? state.wishes.filter((w) => w.familyId === familyId) : state.wishes;

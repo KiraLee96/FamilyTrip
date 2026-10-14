@@ -5,9 +5,9 @@
  * 路由参数从 react-router 的 useParams 改为 nav 抽象层的 useRouteParams。
  */
 
-import { useCallback, useMemo, useState } from 'react';
-import type { ReactNode } from 'react';
-import { Image, Input, Map, Picker, Text, View } from '@tarojs/components';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { MutableRefObject, ReactNode } from 'react';
+import { Button, Image, Input, Map, Picker, Text, View } from '@tarojs/components';
 import Taro from '@tarojs/taro';
 import { Link } from '../nav/Link';
 import { useRouteParams } from '../nav';
@@ -20,6 +20,7 @@ import type {
   MemoryArchive,
   MemorySnapshot,
   TransportMode,
+  TripInvite,
 } from '../api/types';
 import { Icon, TRANSPORT_ICON } from '../components/Icon';
 import { MemoryCard } from '../components/MemoryCard';
@@ -28,6 +29,7 @@ import { PageLayout } from '../components/PageLayout';
 import { Progress, StatusChip, dateRange, shortDate, weekday } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
 import { EXPENSE_CATEGORIES, TRANSPORT_LABEL, TRANSPORT_MODES, todayYmd } from '../utils/constants';
+import { copyText } from '../utils/clipboard';
 import { pickAndUploadPhotos } from '../utils/upload';
 
 type Tab = 'itinerary' | 'checklist' | 'expense' | 'photo' | 'memory';
@@ -84,6 +86,16 @@ export function TripDetailPage() {
     [tripId],
   );
 
+  // 分享卡片携带的行程邀请信息（由 TripInviteCard 回填；
+  // 微信 useShareAppMessage 是页面级钩子，必须在组件顶层、提前返回之前调用）
+  const tripShareRef = useRef<{ code: string; title: string } | null>(null);
+  Taro.useShareAppMessage(() => {
+    const s = tripShareRef.current;
+    return s
+      ? { title: `加入「${s.title}」`, path: `/pages/JoinTripPage?invite=${s.code}` }
+      : { title: '来看看这场家庭出行', path: '/pages/JoinTripPage' };
+  });
+
   if (trip.loading) return <Loading />;
   if (trip.error) return <ErrorBox message={trip.error} onRetry={trip.reload} />;
   const t = trip.data!;
@@ -133,6 +145,8 @@ export function TripDetailPage() {
         </Text>
       </View>
 
+      <TripInviteCard tripId={tripId} tripTitle={t.title} shareRef={tripShareRef} />
+
       <View className="tabs">
         {(
           [
@@ -165,6 +179,102 @@ export function TripDetailPage() {
       {tab === 'photo' && <PhotoTab tripId={tripId} />}
       {tab === 'memory' && <MemoryTab tripId={tripId} tripTitle={t.title} />}
     </PageLayout>
+  );
+}
+
+/**
+ * 行程邀请卡 —— 邀请码 + 复制 / 分享 / 重置（GRP-02 外部成员邀请落地）
+ * ============================================================================
+ * 邀请码在建行程时自动生成（Mock 已就绪；真后端三端点见派发单
+ * D-2026-10-14-02）。外部朋友凭码在 JoinTripPage 加入，成为 isExternal
+ * 行程成员（PRD §2.6 临时家庭模型，不占家庭名额）。
+ * 接口未就绪时降级：码位显示「——」，操作键置灰，错误信息内联展示，
+ * 不阻断详情页其余内容。
+ */
+function TripInviteCard({
+  tripId,
+  tripTitle,
+  shareRef,
+}: {
+  tripId: string;
+  tripTitle: string;
+  shareRef: MutableRefObject<{ code: string; title: string } | null>;
+}) {
+  const invite = useAsync(
+    useCallback(() => api.getTripInvite(tripId), [tripId]),
+    [tripId],
+  );
+  const [resetBusy, setResetBusy] = useState(false);
+  const code = invite.data?.inviteCode ?? null;
+
+  // 邀请码就位后回填分享信息（父页 useShareAppMessage 在分享时读取）
+  useEffect(() => {
+    shareRef.current = code ? { code, title: tripTitle } : null;
+  }, [code, tripTitle, shareRef]);
+
+  const onReset = (): void => {
+    void Taro.showModal({
+      title: '重置邀请码',
+      content: '重置后旧邀请码立即作废，确定重置？',
+      confirmText: '重置',
+      confirmColor: '#e5484d',
+    }).then(async (res) => {
+      if (!res.confirm) return;
+      setResetBusy(true);
+      try {
+        const next: TripInvite = await api.resetTripInvite(tripId);
+        invite.reload();
+        void Taro.showToast({ title: `新邀请码 ${next.inviteCode}`, icon: 'none' });
+      } catch (e: unknown) {
+        void Taro.showToast({ title: e instanceof Error ? e.message : '重置失败', icon: 'none' });
+      } finally {
+        setResetBusy(false);
+      }
+    });
+  };
+
+  return (
+    <View className="card">
+      <View className="invite">
+        <View className="invite__body">
+          <Text className="invite__label">同行邀请码</Text>
+          <Text className="invite__code">{code ?? '——'}</Text>
+        </View>
+        <View className="invite__ops">
+          <View
+            className={`btn btn--ghost invite__btn ${code ? '' : 'btn--busy'}`}
+            onClick={code ? () => copyText(code, '邀请码已复制') : undefined}
+          >
+            <Icon name="copy" size={14} />
+            复制
+          </View>
+          <Button className="btn btn--ghost invite__btn invite__share" openType="share">
+            <Icon name="share" size={14} />
+            分享
+          </Button>
+        </View>
+      </View>
+      <View className="invite__ops" style={{ marginTop: 8 }}>
+        <View
+          className={`btn btn--ghost invite__btn ${resetBusy || !code ? 'btn--busy' : ''}`}
+          onClick={resetBusy || !code ? undefined : onReset}
+        >
+          重置邀请码
+        </View>
+        <Link to="/trips/join" className="btn btn--ghost invite__btn">
+          <Icon name="link" size={14} />
+          凭码加入
+        </Link>
+      </View>
+      <Text className="invite__hint">
+        把邀请码或分享链接发给朋友，对方点开即可加入这场行程，不占家庭名额
+      </Text>
+      {invite.error ? (
+        <Text className="form-error" style={{ marginTop: 6 }}>
+          {invite.error}
+        </Text>
+      ) : null}
+    </View>
   );
 }
 
