@@ -15,6 +15,9 @@ coverage/
 .env.*.local
 !.env.example
 
+# 微信小程序私钥配置（含 appid / privateKey / uploadKey 等，禁止提交）
+apps/client/project.private.config.json
+
 # Prisma
 apps/server/prisma/*.db
 apps/server/prisma/*.db-journal

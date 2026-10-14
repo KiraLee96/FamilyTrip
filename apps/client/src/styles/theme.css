@@ -48,6 +48,14 @@ page {
 }
 /* #endif */
 
+/* WXSS 选择器白名单：.class / #id / element（仅小程序原生组件）/ element,element /
+   ::before / ::after / :first-child / :last-child / :active / a>b / a b / a+b。
+   明确不支持：* 通配（含 > *、* + *）、html/body/p/div/span/small/b 等 HTML 标签、
+   属性选择器。误用即报 [ WXSS 文件编译错误] unexpected token '*'。
+   以下对 H5 专属 reset 做条件编译分流，两端行为不变。 */
+
+/* H5：标准 CSS reset 原样保留 */
+/* #ifdef H5 */
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
@@ -69,6 +77,30 @@ page {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
+/* #endif */
+
+/* 小程序：* 通配改显式原生组件列举；html/body reset 不需要（page 默认无外边距），
+   页面级字体/背景挂 page 选择器 */
+/* #ifndef H5 */
+view,
+text,
+button,
+input,
+textarea,
+image,
+scroll-view {
+  box-sizing: border-box;
+}
+
+page {
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue',
+    Arial, sans-serif;
+  background: #e6e9f0;
+  color: var(--text);
+  font-size:15px;
+  line-height: 1.5;
+}
+/* #endif */
 
 button {
   font-family: inherit;
@@ -79,6 +111,8 @@ button {
   color: inherit;
 }
 
+/* ul/ol/h1~p 为 HTML 标签 reset：WXSS 不支持，且小程序页面内无这些元素，仅 H5 需要 */
+/* #ifdef H5 */
 ul,
 ol {
   margin: 0;
@@ -93,6 +127,7 @@ h4,
 p {
   margin: 0;
 }
+/* #endif */
 
 /* ---------- 手机外壳（桌面浏览时居中成 375px） ---------- */
 
@@ -108,6 +143,8 @@ p {
   overflow: hidden;
 }
 
+/* 桌面「手机外壳」适配仅 H5 需要；块内 body 为 HTML 标签，WXSS 不支持 */
+/* #ifdef H5 */
 @media (min-width: 420px) {
   body {
     padding: 20px 0;
@@ -118,6 +155,7 @@ p {
     box-shadow: 0 12px 40px rgba(24, 32, 54, 0.16);
   }
 }
+/* #endif */
 
 /* ---------- 顶部导航 ---------- */
 
@@ -295,11 +333,22 @@ p {
   color: var(--text-2);
 }
 
+/* > * 通配为 WXSS 非法语法；小程序端子元素是 text/view 组件，H5 端保留 * */
+/* #ifndef H5 */
+.trip__meta > view,
+.trip__meta > text {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+/* #endif */
+/* #ifdef H5 */
 .trip__meta > * {
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
+/* #endif */
 
 .trip__dest {
   display: flex;
@@ -632,12 +681,15 @@ p {
   color: var(--text);
 }
 
+/* small 为 HTML 标签，WXSS 不支持；仅 H5 保留 */
+/* #ifdef H5 */
 .money__num small {
   font-size: 14px;
   font-weight: 500;
   color: var(--text-3);
   margin-right: 5px;
 }
+/* #endif */
 
 .money__cap {
   font-size: 12px;
@@ -768,6 +820,8 @@ p {
   padding: 9px 10px;
 }
 
+/* b/span 为 HTML 标签，WXSS 不支持；仅 H5 保留 */
+/* #ifdef H5 */
 .year__stat b {
   display: block;
   font-size: 19px;
@@ -778,6 +832,7 @@ p {
   font-size: 11px;
   opacity: 0.9;
 }
+/* #endif */
 
 .q {
   display: flex;
@@ -1298,6 +1353,11 @@ p {
   transform: rotate(180deg);
 }
 
-.stack-8 > * + * {
-  margin-top: 8px;
-}
+/* .stack-8 > * + * 已移除：全工程零使用（H5 原型遗留类），且 * 通配为 WXSS 非法语法 */
+
+/* #ifdef H5 */
+.probe-h5mark { color: rgb(1, 1, 1); }
+/* #endif */
+/* #ifndef H5 */
+.probe-weappmark { color: rgb(2, 2, 2); }
+/* #endif */

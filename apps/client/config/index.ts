@@ -19,7 +19,7 @@ export default defineConfig({
     375: 2,
   },
   sourceRoot: 'src',
-  outputRoot: 'dist',
+  outputRoot: 'dist-h5',
   plugins: [],
   defineConstants: {
     'process.env.API_BASE_URL': JSON.stringify(process.env.API_BASE_URL ?? ''),

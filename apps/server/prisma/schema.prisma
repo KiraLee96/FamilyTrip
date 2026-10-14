@@ -4,7 +4,11 @@
 //      + 技术方案 v1.3/v1.4（M2 关系型栈）+ TP-02C（加密/权限）+ N11 增补
 //
 // 全库规范（不得违反）：
-//   · 软删除：每张业务表带 `deletedAt`，唯一键一律为 `(业务键..., deletedAt)` 复合键
+//   · 软删除：每张业务表带 `deletedAt` 软删标记 + `deletedToken` 令牌列；
+//     唯一键一律为 `(业务键..., deletedToken)` 复合键（活跃行 deletedToken='' 恒相等→正确挡重；
+//     软删由 Repository 写 UUID→(biz_key,<uuid>) 不再阻塞重建，见 B1 漂移裁决书 §五）。
+//     ⚠ 例外：notify_subscription（状态机表，无软删，唯一键纯 (user_id,template_id)）；
+//        trip_member / family_member（成员关系，唯一键纯 (biz_key)，无重建语义）。
 //   · 时间戳：`createdAt` / `updatedAt`（DATETIME(3)），时间以 DB 为源
 //   · 主键：雪花 ID BIGINT（应用侧生成，非自增）
 //   · 金额：DECIMAL(18,4) 展示口径；落库以「最小单位整数 BIGINT」为准（见 amount.ts）
@@ -22,6 +26,21 @@ generator client {
 datasource db {
   provider = "mysql"
   url      = env("DATABASE_URL")
+  collation = "utf8mb4_0900_ai_ci"
+}
+
+/// B1 漂移修正（三确认项①）：notify_subscription 状态机枚举（收敛 TP-02A + Prisma 之长）
+enum NotifySubStatus {
+  ACCEPTED
+  REVOKED
+  BANNED
+  EXPIRED
+}
+
+/// C6：长期订阅优先 + 降级
+enum NotifySubType {
+  ONCE
+  LONG_TERM
 }
 
 // ============================================================================
@@ -45,6 +64,8 @@ model User {
   updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
   /// 软删除：注销后保留骨架（B6 历史只读）
   deletedAt    DateTime? @map("deleted_at") @db.DateTime(3)
+  /// B1：软删令牌（活跃行 ''；软删由 Repository 写 UUID，见 §五）
+  deletedToken String @default("") @map("deleted_token") @db.Char(36)
 
   families      FamilyMember[]
   createdFamilies Family[]   @relation("FamilyOwner")
@@ -66,8 +87,8 @@ model User {
   mediaAssets   MediaAsset[]
   expenses      Expense[]
 
-  @@unique([openid, deletedAt], name: "uk_openid")
-  @@unique([unionid, deletedAt], name: "uk_unionid")
+  @@unique([openid, deletedToken], name: "uk_openid")
+  @@unique([unionid, deletedToken], name: "uk_unionid")
   @@unique([phone], name: "uk_phone")
   @@index([createdAt], name: "idx_users_created_at")
   @@map("user")
@@ -86,6 +107,8 @@ model Family {
   createdAt  DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt  DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
   deletedAt  DateTime? @map("deleted_at") @db.DateTime(3)
+  /// B1：软删令牌（活跃行 ''；软删由 Repository 写 UUID）
+  deletedToken String @default("") @map("deleted_token") @db.Char(36)
 
   owner    User           @relation("FamilyOwner", fields: [ownerId], references: [id])
   members  FamilyMember[]
@@ -98,7 +121,7 @@ model Family {
   memoryArchives MemoryArchive[]
   mediaAssets MediaAsset[]
 
-  @@unique([inviteCode, deletedAt], name: "uk_invite_code")
+  @@unique([inviteCode, deletedToken], name: "uk_invite_code")
   @@index([ownerId], name: "idx_family_owner")
   @@map("family")
 }
@@ -125,7 +148,7 @@ model FamilyMember {
   user   User?  @relation(fields: [userId], references: [id])
   managedByUser User? @relation("FamilyMemberManagedBy", fields: [managedBy], references: [id])
 
-  @@unique([familyId, userId, deletedAt], name: "uk_family_user")
+  @@unique([familyId, userId], name: "uk_family_user")
   @@index([userId, deletedAt], name: "idx_user_alive")
   @@index([familyId, deletedAt], name: "idx_family_alive")
   @@index([managedBy], name: "idx_fm_managed_by")
@@ -172,11 +195,13 @@ model WishVote {
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
   /// 取消投票走软删（保证审计可回溯 + 唯一键可重建）
   deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+  /// B1：软删令牌（活跃行 ''；软删由 Repository 写 UUID）
+  deletedToken String @default("") @map("deleted_token") @db.Char(36)
 
   wish Wish @relation(fields: [wishId], references: [id])
   user User @relation(fields: [userId], references: [id])
 
-  @@unique([wishId, userId, deletedAt], name: "uk_wish_user")
+  @@unique([wishId, userId, deletedToken], name: "uk_wish_user")
   @@index([userId, deletedAt], name: "idx_wish_vote_user")
   @@map("wish_vote")
 }
@@ -205,7 +230,7 @@ model Trip {
   /// 行程实际内容（结构化 JSON；并发写保护见 E7/E8 行锁增量）
   actualJson   Json? @map("actual_json")
   /// A18：乐观锁版本号（保护 actual_json 并发写）
-  version      Int    @default(0)
+  version      BigInt @default(1) @db.UnsignedBigInt
   createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
   deletedAt    DateTime? @map("deleted_at") @db.DateTime(3)
@@ -257,7 +282,7 @@ model TripMember {
   user      User? @relation(fields: [userId], references: [id])
   managedByUser User? @relation("TripMemberManagedBy", fields: [managedBy], references: [id])
 
-  @@unique([tripId, userId, deletedAt], name: "uk_trip_user")
+  @@unique([tripId, userId], name: "uk_trip_user")
   @@index([tripId, isExternal], name: "idx_trip_external")
   @@index([managedBy], name: "idx_managed_by")
   @@index([userId, accessLevel], name: "idx_tm_user_level")
@@ -285,6 +310,8 @@ model TripDestination {
 model TripHistory {
   hid          BigInt @id
   tripId       BigInt @map("trip_id")
+  /// B1：快照对应的 trip.version（A18）；0=修正前存量快照
+  version      BigInt @default(0) @map("version") @db.UnsignedBigInt
   /// trip 整行快照（JSON）
   snapshotJson Json   @map("snapshot_json")
   changedBy    BigInt @map("changed_by")
@@ -293,6 +320,7 @@ model TripHistory {
   trip Trip @relation(fields: [tripId], references: [id])
 
   @@index([tripId], name: "idx_trip_history_trip")
+  @@index([tripId, version], name: "idx_trip_version")
   @@map("trip_history")
 }
 
@@ -326,6 +354,7 @@ model ItineraryItem {
 
   @@index([tripId, date, sort], name: "idx_itinerary_trip_date")
   @@index([updatedAt], name: "idx_itinerary_updated")
+  @@check([rateSource == "AUTO" || rateBy != null], name: "chk_ii_rate_by")
   @@map("itinerary_item")
 }
 
@@ -367,6 +396,7 @@ model Booking {
   @@index([tripId, type, deletedAt], name: "idx_booking_trip_type")
   @@index([createdBy], name: "idx_created_by")
   @@index([orderNoBlind], name: "idx_booking_blind")
+  @@check([rateSource == "AUTO" || rateBy != null], name: "chk_bk_rate_by")
   @@map("booking")
 }
 
@@ -391,7 +421,7 @@ model TripChecklistItem {
   checkedAt DateTime? @map("checked_at") @db.DateTime(3)
   sort      Int    @default(0)
   /// A19：CAS 乐观锁版本（勾选并发，E7）
-  version   Int    @default(0)
+  version   BigInt @default(1) @db.UnsignedBigInt
   createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
   deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
@@ -404,6 +434,7 @@ model TripChecklistItem {
   @@index([tripId, scope, deletedAt], name: "idx_tci_trip_scope")
   @@index([ownerId, deletedAt], name: "idx_tci_owner")
   @@index([updatedAt], name: "idx_tci_updated")
+  @@check([(scope == "SHARED" && ownerId == null) || (scope == "PERSONAL" && ownerId != null)], name: "chk_tci_scope_owner")
   @@map("trip_checklist_item")
 }
 
@@ -575,11 +606,11 @@ model ReminderTask {
   /// A13：存 UTC（C5：接收人本地 09:00 折算）
   remindAt     DateTime @map("remind_at") @db.DateTime(3)
   /// A13：C13 用户常驻地时区快照
-  tz           String? @db.VarChar(32)
+  tz           String @default("Asia/Shanghai") @db.VarChar(64)
   /// A13：SUBSCRIBE / IN_APP_TODO
-  channel      String @default("SUBSCRIBE") @db.VarChar(16)
+  channel      String @default("IN_APP_TODO") @db.VarChar(16)
   /// A13：NORMAL / TODO_ONLY（C6 降级）
-  delivery     String @default("NORMAL") @db.VarChar(16)
+  delivery     String @default("SUBSCRIBE_FIRST") @db.VarChar(16)
   /// A13：同人同时刻合并组
   mergedGroupId BigInt? @map("merged_group_id")
   /// PENDING / SENT / READ / FAILED
@@ -602,27 +633,28 @@ model ReminderTask {
   @@map("reminder_task")
 }
 
-/// A2：订阅消息授权状态（C6 长期订阅 + 降级）
+/// A2 + B1 三确认项①：订阅消息授权状态机（收敛枚举 + 状态机表无软删）
 model NotifySubscription {
   id          BigInt @id
   userId      BigInt @map("user_id")
   /// 微信订阅消息模板 ID
   templateId  String @map("template_id") @db.VarChar(64)
-  /// GRANTED / EXPIRED / REVOKED
-  status      String @default("GRANTED") @db.VarChar(16)
+  /// B1 收敛状态机：ACCEPTED(活跃) / REVOKED(撤回) / BANNED(封禁) / EXPIRED(过期)
+  status      NotifySubStatus @default(ACCEPTED) @map("status")
+  /// B1：订阅类型（C6 长期订阅优先 + 降级）
+  subType     NotifySubType @default(ONCE) @map("sub_type")
   grantedAt   DateTime? @map("granted_at") @db.DateTime(3)
   /// C6：长期订阅默认 3 个月有效期
   expireAt    DateTime? @map("expire_at") @db.DateTime(3)
-  /// 一次性订阅剩余条数（长期订阅为 NULL）
-  remainCount Int? @map("remain_count")
+  /// 一次性订阅剩余条数（长期订阅为 0=不限）
+  remainCount Int @default(0) @map("remain_count")
   createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
-  deletedAt   DateTime? @map("deleted_at") @db.DateTime(3)
 
   user User @relation(fields: [userId], references: [id])
   reminderTasks ReminderTask[]
 
-  @@unique([userId, templateId, deletedAt], name: "uk_user_tpl")
+  @@unique([userId, templateId], name: "uk_user_template")
   @@index([userId], name: "idx_notify_sub_user")
   @@map("notify_subscription")
 }
@@ -664,7 +696,7 @@ model MediaAsset {
   @@map("media_asset")
 }
 
-/// A6：回忆只读快照（C8 已决：建表存快照，防历史漂移）
+/// A6 + B1 三确认项②：回忆只读快照（允许多次快照；snap_key 由 Repository 维护，见裁决）
 model MemoryArchive {
   id           BigInt @id
   familyId     BigInt @map("family_id")
@@ -675,13 +707,24 @@ model MemoryArchive {
   refId        BigInt? @map("ref_id")
   /// 回忆只读快照（防历史漂移）
   snapshotJson Json   @map("snapshot_json")
+  /// B1：引用照片 COS 键列表（C12 对象不归档）
+  photoKeys    Json?  @map("photo_keys")
+  /// B1：快照 SHA-256 防漂移
+  checksum     String? @map("checksum") @db.Char(64)
+  /// B1：归档时刻
+  archivedAt   DateTime @default(now()) @map("archived_at") @db.DateTime(3)
+  /// B1：唯一键合成列 —— TRIP→`T:<refId>` / ANNUAL→`A:<familyId>:<year>`（Repository 写入，非 DB 生成）
+  snapKey      String @map("snap_key") @db.VarChar(80)
   createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
 
   family Family @relation(fields: [familyId], references: [id])
   trip   Trip?  @relation(fields: [refId], references: [id])
 
-  @@unique([familyId, year, type], name: "uk_family_year_type")
+  @@unique([snapKey], name: "uk_snap")
   @@index([familyId], name: "idx_memory_family")
+  @@check([type == "TRIP" || type == "ANNUAL"], name: "chk_ma_type")
+  @@check([type != "TRIP" || (refId != null && familyId != null)], name: "chk_ma_trip")
+  @@check([type != "ANNUAL" || (familyId != null && year != null)], name: "chk_ma_annual")
   @@map("memory_archive")
 }
 
@@ -737,7 +780,9 @@ model Holiday {
 model ChangeLog {
   id         BigInt @id
   /// wish / trip / itinerary_item / booking / trip_checklist_item / ...
-  entityType String @map("entity_type") @db.VarChar(32)
+  actorId    BigInt? @map("actor_id")
+  traceId    String? @map("trace_id") @db.VarChar(64)
+  entityType String @map("entity_type") @db.VarChar(64)
   entityId   BigInt @map("entity_id")
   familyId   BigInt? @map("family_id")
   tripId     BigInt? @map("trip_id")
