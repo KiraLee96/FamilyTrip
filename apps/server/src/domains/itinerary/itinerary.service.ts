@@ -27,19 +27,27 @@ const ITEM_BIGINT_FIELDS = ['id', 'tripId', 'createdBy', 'amount', 'amountBase']
 export class ItineraryService {
   constructor(private readonly o: ItineraryServiceOptions) {}
 
-  async create(userId: bigint, input: {
-    tripId: bigint;
-    familyId: bigint;
-    title: string;
-    startAt: string;
-    endAt?: string;
-    location?: string;
-    note?: string;
-    sort: number;
-    amount?: string;
-    currency?: string;
-    rateSource: 'AUTO' | 'MANUAL';
-  }): Promise<Record<string, unknown>> {
+  async create(
+    userId: bigint,
+    input: {
+      tripId: bigint;
+      familyId: bigint;
+      title: string;
+      startAt: string;
+      endAt?: string;
+      location?: string;
+      note?: string;
+      sort: number;
+      /** M-Client-2：地图标记坐标（chooseLocation 带回） */
+      lat?: number;
+      lng?: number;
+      /** M-Client-2：交通方式 */
+      transport?: 'WALK' | 'BIKE' | 'CAR' | 'BUS' | 'TRAIN' | 'FLIGHT';
+      amount?: string;
+      currency?: string;
+      rateSource: 'AUTO' | 'MANUAL';
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const t = await tx.db.findUnique('trip', { id: input.tripId, deletedAt: null });
       if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -63,12 +71,16 @@ export class ItineraryService {
         location: input.location ?? null,
         note: input.note ?? null,
         sort: input.sort,
+        // M-Client-2：地图坐标与交通方式（未选点/未选方式 → NULL）
+        lat: input.lat ?? null,
+        lng: input.lng ?? null,
+        transport: input.transport ?? null,
         amount: amountMinor,
         currency: input.currency?.toUpperCase() ?? null,
         amountBase: null, // 由 expense 域汇总时统一折算；日程层不做汇率依赖
         rateSource: input.rateSource,
         rateBy: input.rateSource === 'MANUAL' ? userId : null,
-        version: 0,
+        version: 1,
         createdAt: now,
         updatedAt: now,
         deletedAt: null,
@@ -80,20 +92,29 @@ export class ItineraryService {
     });
   }
 
-  async list(userId: bigint, q: {
-    tripId: bigint;
-    date?: string;
-    from?: string;
-    to?: string;
-    page?: unknown;
-    pageSize?: unknown;
-  }): Promise<{ items: Record<string, unknown>[]; days: { date: string; items: Record<string, unknown>[]; }[]; meta: Record<string, unknown>; }> {
+  async list(
+    userId: bigint,
+    q: {
+      tripId: bigint;
+      date?: string;
+      from?: string;
+      to?: string;
+      page?: unknown;
+      pageSize?: unknown;
+    },
+  ): Promise<{
+    items: Record<string, unknown>[];
+    days: { date: string; items: Record<string, unknown>[] }[];
+    meta: Record<string, unknown>;
+  }> {
     const page = normalizePageQuery(q.page, q.pageSize);
     const t = await this.o.ctx.read.findUnique('trip', { id: q.tripId, deletedAt: null });
     if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
     await this.assertTripVisible(this.o.ctx, t, userId);
 
-    const all = await this.o.ctx.read.findMany('itineraryItem', { where: { tripId: q.tripId, deletedAt: null } });
+    const all = await this.o.ctx.read.findMany('itineraryItem', {
+      where: { tripId: q.tripId, deletedAt: null },
+    });
     let rows = all;
     if (q.date !== undefined) rows = rows.filter((r) => localYmd(r['startAt']) === q.date);
     if (q.from !== undefined) rows = rows.filter((r) => localYmd(r['startAt']) >= q.from!);
@@ -136,16 +157,24 @@ export class ItineraryService {
     return serializeRow(r, ITEM_BIGINT_FIELDS);
   }
 
-  async update(userId: bigint, itemId: bigint, patch: {
-    version: number;
-    title?: string;
-    startAt?: string;
-    endAt?: string | null;
-    location?: string | null;
-    note?: string | null;
-    sort?: number;
-    rateSource?: 'AUTO' | 'MANUAL';
-  }): Promise<Record<string, unknown>> {
+  async update(
+    userId: bigint,
+    itemId: bigint,
+    patch: {
+      version: number;
+      title?: string;
+      startAt?: string;
+      endAt?: string | null;
+      location?: string | null;
+      note?: string | null;
+      sort?: number;
+      /** M-Client-2：坐标/交通方式；null = 清除标记 */
+      lat?: number | null;
+      lng?: number | null;
+      transport?: 'WALK' | 'BIKE' | 'CAR' | 'BUS' | 'TRAIN' | 'FLIGHT' | null;
+      rateSource?: 'AUTO' | 'MANUAL';
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const r = await tx.db.findUnique('itineraryItem', { id: itemId, deletedAt: null });
       if (!r) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -158,10 +187,15 @@ export class ItineraryService {
       const data: Row = { updatedAt: now, version: patch.version + 1 };
       if (patch.title !== undefined) data['title'] = patch.title;
       if (patch.startAt !== undefined) data['startAt'] = parseLocal(patch.startAt);
-      if (patch.endAt !== undefined) data['endAt'] = patch.endAt === null ? null : parseLocal(patch.endAt);
+      if (patch.endAt !== undefined)
+        data['endAt'] = patch.endAt === null ? null : parseLocal(patch.endAt);
       if (patch.location !== undefined) data['location'] = patch.location;
       if (patch.note !== undefined) data['note'] = patch.note;
       if (patch.sort !== undefined) data['sort'] = patch.sort;
+      // M-Client-2：坐标/交通方式（null 显式清除标记）
+      if (patch.lat !== undefined) data['lat'] = patch.lat;
+      if (patch.lng !== undefined) data['lng'] = patch.lng;
+      if (patch.transport !== undefined) data['transport'] = patch.transport;
       if (patch.rateSource !== undefined) {
         data['rateSource'] = patch.rateSource;
         data['rateBy'] = patch.rateSource === 'MANUAL' ? userId : null;
@@ -176,7 +210,15 @@ export class ItineraryService {
         throw new AppError(ErrorCode.VERSION_CONFLICT, '该日程已被他人修改，请刷新后重试');
       }
 
-      await this.change(tx, 'itinerary_item', itemId, t['familyId'] as bigint, t['id'] as bigint, 'UPDATE', now);
+      await this.change(
+        tx,
+        'itinerary_item',
+        itemId,
+        t['familyId'] as bigint,
+        t['id'] as bigint,
+        'UPDATE',
+        now,
+      );
       const row = await tx.db.findUnique('itineraryItem', { id: itemId });
       return serializeRow(row ?? {}, ITEM_BIGINT_FIELDS);
     });
@@ -192,13 +234,24 @@ export class ItineraryService {
 
       const now = await tx.db.dbNow();
       await tx.db.update('itineraryItem', { id: itemId }, { deletedAt: now, updatedAt: now });
-      await this.change(tx, 'itinerary_item', itemId, t['familyId'] as bigint, t['id'] as bigint, 'DELETE', now);
+      await this.change(
+        tx,
+        'itinerary_item',
+        itemId,
+        t['familyId'] as bigint,
+        t['id'] as bigint,
+        'DELETE',
+        now,
+      );
       return now;
     });
   }
 
   /** 拖动排序 —— 批量更新 sort，不触发 CAS（排序是幂等的最终态） */
-  async reorder(userId: bigint, input: { tripId: bigint; orders: Array<{ id: string; sort: number }> }): Promise<{ updated: number; updatedAt: string; }> {
+  async reorder(
+    userId: bigint,
+    input: { tripId: bigint; orders: Array<{ id: string; sort: number }> },
+  ): Promise<{ updated: number; updatedAt: string }> {
     return this.o.ctx.tx(async (tx) => {
       const t = await tx.db.findUnique('trip', { id: input.tripId, deletedAt: null });
       if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -208,10 +261,22 @@ export class ItineraryService {
       let updated = 0;
       for (const o of input.orders) {
         const id = BigInt(o.id);
-        const r = await tx.db.findUnique('itineraryItem', { id, tripId: input.tripId, deletedAt: null });
+        const r = await tx.db.findUnique('itineraryItem', {
+          id,
+          tripId: input.tripId,
+          deletedAt: null,
+        });
         if (!r) continue;
         await tx.db.update('itineraryItem', { id }, { sort: o.sort, updatedAt: now });
-        await this.change(tx, 'itinerary_item', id, t['familyId'] as bigint, input.tripId, 'UPDATE', now);
+        await this.change(
+          tx,
+          'itinerary_item',
+          id,
+          t['familyId'] as bigint,
+          input.tripId,
+          'UPDATE',
+          now,
+        );
         updated += 1;
       }
       return { updated, updatedAt: now.toISOString() };
@@ -220,11 +285,19 @@ export class ItineraryService {
 
   // ── 内部 ────────────────────────────────────────────────
 
-  private async assertTripVisible(src: TxHandle | DomainContext, t: Row, userId: bigint): Promise<void> {
+  private async assertTripVisible(
+    src: TxHandle | DomainContext,
+    t: Row,
+    userId: bigint,
+  ): Promise<void> {
     const db = 'db' in src ? src.db : src.read;
     const m = await db.findUnique('tripMember', { tripId: t['id'], userId, deletedAt: null });
     if (m) return;
-    const fm = await db.findUnique('familyMember', { familyId: t['familyId'], userId, deletedAt: null });
+    const fm = await db.findUnique('familyMember', {
+      familyId: t['familyId'],
+      userId,
+      deletedAt: null,
+    });
     if (fm) return;
     throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
   }

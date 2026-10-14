@@ -26,7 +26,7 @@ generator client {
 datasource db {
   provider = "mysql"
   url      = env("DATABASE_URL")
-  collation = "utf8mb4_0900_ai_ci"
+  // [联调临时注释·datasource 不支持 collation 属性，库表 collation 已由 DDL 设定] collation = "utf8mb4_0900_ai_ci"
 }
 
 /// B1 漂移修正（三确认项①）：notify_subscription 状态机枚举（收敛 TP-02A + Prisma 之长）
@@ -330,18 +330,39 @@ model TripHistory {
 
 /// A9：idx_updated。A21：rate_source / rate_by（手动覆盖审计）
 /// B2：补 deleted_at（与全库软删原则对齐）
+/// M-Client-2：补 start_at/end_at/amount/currency/amount_base/version（服务实际读写列，
+///   历史 schema 缺失导致建安排路径从未在真实 MySQL 上打过）+ lat/lng/transport（地图选点）。
+///   注：date/start_time/end_time 为早期死列（无任何代码引用），保留不删（纯加法迁移）。
 model ItineraryItem {
   id         BigInt @id
   tripId     BigInt @map("trip_id")
   createdBy  BigInt @map("created_by")
   title      String @db.VarChar(128)
-  /// 日程日期（当地日期，T-5 与时区解耦）
+  /// 日程日期（当地日期，T-5 与时区解耦）—— 死列，服务实际读写 start_at
   date       DateTime? @db.Date
   startTime  DateTime? @map("start_time") @db.DateTime(3)
   endTime    DateTime? @map("end_time") @db.DateTime(3)
+  /// M-Client-2：安排开始（本地时间 YYYY-MM-DDTHH:mm，服务实际读写列）
+  startAt    DateTime? @map("start_at") @db.DateTime(3)
+  /// M-Client-2：安排结束（本地时间）
+  endAt      DateTime? @map("end_at") @db.DateTime(3)
   location   String? @db.VarChar(256)
   note       String? @db.Text
   sort       Int    @default(0)
+  /// M-Client-2：日程内记账金额（最小货币单位整数）
+  amount     BigInt?
+  /// M-Client-2：币种（ISO-4217）
+  currency   String? @db.VarChar(3)
+  /// M-Client-2：人民币折算额（最小货币单位；由汇总层统一折算）
+  amountBase BigInt? @map("amount_base")
+  /// M-Client-2：CAS 乐观锁版本（E7）
+  version    BigInt @default(1) @db.UnsignedBigInt
+  /// M-Client-2：地图标记纬度（chooseLocation 带回；未选点为空）
+  lat        Float?
+  /// M-Client-2：地图标记经度
+  lng        Float?
+  /// M-Client-2：交通方式 WALK/BIKE/CAR/BUS/TRAIN/FLIGHT（连线着色）
+  transport  String? @db.VarChar(8)
   /// A21：AUTO / MANUAL（汇率来源）
   rateSource String @default("AUTO") @map("rate_source") @db.VarChar(8)
   /// A21：手动覆盖汇率操作人（审计）
@@ -354,7 +375,7 @@ model ItineraryItem {
 
   @@index([tripId, date, sort], name: "idx_itinerary_trip_date")
   @@index([updatedAt], name: "idx_itinerary_updated")
-  @@check([rateSource == "AUTO" || rateBy != null], name: "chk_ii_rate_by")
+// [联调临时注释·Prisma 6.19.3 不支持 @@check，约束已由迁移 SQL 落地，待 Prisma 支持后恢复] @@check([rateSource == "AUTO" || rateBy != null], name: "chk_ii_rate_by")
   @@map("itinerary_item")
 }
 
@@ -396,7 +417,7 @@ model Booking {
   @@index([tripId, type, deletedAt], name: "idx_booking_trip_type")
   @@index([createdBy], name: "idx_created_by")
   @@index([orderNoBlind], name: "idx_booking_blind")
-  @@check([rateSource == "AUTO" || rateBy != null], name: "chk_bk_rate_by")
+// [联调临时注释·Prisma 6.19.3 不支持 @@check，约束已由迁移 SQL 落地，待 Prisma 支持后恢复] @@check([rateSource == "AUTO" || rateBy != null], name: "chk_bk_rate_by")
   @@map("booking")
 }
 
@@ -434,7 +455,7 @@ model TripChecklistItem {
   @@index([tripId, scope, deletedAt], name: "idx_tci_trip_scope")
   @@index([ownerId, deletedAt], name: "idx_tci_owner")
   @@index([updatedAt], name: "idx_tci_updated")
-  @@check([(scope == "SHARED" && ownerId == null) || (scope == "PERSONAL" && ownerId != null)], name: "chk_tci_scope_owner")
+// [联调临时注释·Prisma 6.19.3 不支持 @@check，约束已由迁移 SQL 落地，待 Prisma 支持后恢复] @@check([(scope == "SHARED" && ownerId == null) || (scope == "PERSONAL" && ownerId != null)], name: "chk_tci_scope_owner")
   @@map("trip_checklist_item")
 }
 
@@ -467,6 +488,8 @@ model Item {
   category  String? @db.VarChar(32)
   quantity  Int    @default(1)
   note      String? @db.VarChar(256)
+  /// M-Client-2：CAS 乐观锁版本（E7；服务实际读写列，历史 schema 缺失）
+  version   BigInt @default(1) @db.UnsignedBigInt
   createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
   deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
@@ -722,9 +745,9 @@ model MemoryArchive {
 
   @@unique([snapKey], name: "uk_snap")
   @@index([familyId], name: "idx_memory_family")
-  @@check([type == "TRIP" || type == "ANNUAL"], name: "chk_ma_type")
-  @@check([type != "TRIP" || (refId != null && familyId != null)], name: "chk_ma_trip")
-  @@check([type != "ANNUAL" || (familyId != null && year != null)], name: "chk_ma_annual")
+// [联调临时注释·Prisma 6.19.3 不支持 @@check，约束已由迁移 SQL 落地，待 Prisma 支持后恢复] @@check([type == "TRIP" || type == "ANNUAL"], name: "chk_ma_type")
+// [联调临时注释·Prisma 6.19.3 不支持 @@check，约束已由迁移 SQL 落地，待 Prisma 支持后恢复] @@check([type != "TRIP" || (refId != null && familyId != null)], name: "chk_ma_trip")
+// [联调临时注释·Prisma 6.19.3 不支持 @@check，约束已由迁移 SQL 落地，待 Prisma 支持后恢复] @@check([type != "ANNUAL" || (familyId != null && year != null)], name: "chk_ma_annual")
   @@map("memory_archive")
 }
 

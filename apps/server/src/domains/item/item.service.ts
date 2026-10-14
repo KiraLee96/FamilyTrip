@@ -26,14 +26,17 @@ export class ItemService {
   constructor(private readonly o: ItemServiceOptions) {}
 
   /** 新增个人物品 */
-  async create(userId: bigint, input: {
-    familyId: bigint;
-    name: string;
-    category?: string;
-    quantity: number;
-    note?: string;
-    ownerId?: bigint;
-  }): Promise<Record<string, unknown>> {
+  async create(
+    userId: bigint,
+    input: {
+      familyId: bigint;
+      name: string;
+      category?: string;
+      quantity: number;
+      note?: string;
+      ownerId?: bigint;
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const ownerId = input.ownerId ?? userId;
       if (ownerId !== userId) {
@@ -50,7 +53,8 @@ export class ItemService {
         category: input.category ?? null,
         quantity: input.quantity,
         note: input.note ?? null,
-        version: 0,
+        // M-Client-2：CAS 版本起值 1（与 mock / checklist A19 口径一致）
+        version: 1,
         createdAt: now,
         updatedAt: now,
         deletedAt: null,
@@ -70,13 +74,16 @@ export class ItemService {
    *
    * ⛔ 任何情况下都**不**返回其他家庭成员的个人物品。
    */
-  async list(userId: bigint, q: {
-    familyId?: bigint;
-    category?: string;
-    mineOnly: boolean;
-    page?: unknown;
-    pageSize?: unknown;
-  }): Promise<{ items: Record<string, unknown>[]; meta: Record<string, unknown>; }> {
+  async list(
+    userId: bigint,
+    q: {
+      familyId?: bigint;
+      category?: string;
+      mineOnly: boolean;
+      page?: unknown;
+      pageSize?: unknown;
+    },
+  ): Promise<{ items: Record<string, unknown>[]; meta: Record<string, unknown> }> {
     const page = normalizePageQuery(q.page, q.pageSize);
 
     // 我可见的 owner 集合（PRIVATE 短路口径）
@@ -113,13 +120,17 @@ export class ItemService {
     return serializeRow(r, ITEM_BIGINT_FIELDS);
   }
 
-  async update(userId: bigint, itemId: bigint, patch: {
-    version: number;
-    name?: string;
-    category?: string | null;
-    quantity?: number;
-    note?: string | null;
-  }): Promise<Record<string, unknown>> {
+  async update(
+    userId: bigint,
+    itemId: bigint,
+    patch: {
+      version: number;
+      name?: string;
+      category?: string | null;
+      quantity?: number;
+      note?: string | null;
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const r = await tx.db.findUnique('item', { id: itemId, deletedAt: null });
       if (!r) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -132,7 +143,11 @@ export class ItemService {
       if (patch.quantity !== undefined) data['quantity'] = patch.quantity;
       if (patch.note !== undefined) data['note'] = patch.note;
 
-      const affected = await tx.db.update('item', { id: itemId, version: patch.version, deletedAt: null }, data);
+      const affected = await tx.db.update(
+        'item',
+        { id: itemId, version: patch.version, deletedAt: null },
+        data,
+      );
       if (affected === 0) {
         throw new AppError(ErrorCode.VERSION_CONFLICT, '该物品已被修改，请刷新后重试');
       }
@@ -162,15 +177,23 @@ export class ItemService {
    * PRIVATE 短路口径的访问校验。
    * ⛔ 不回落到家庭维度 —— 这是本域的存在意义。
    */
-  private async assertOwnerAccess(src: TxHandle | DomainContext, r: Row, userId: bigint): Promise<void> {
+  private async assertOwnerAccess(
+    src: TxHandle | DomainContext,
+    r: Row,
+    userId: bigint,
+  ): Promise<void> {
     const ownerId = (r['ownerId'] ?? null) as bigint | null;
     if (ownerId === userId) return;
 
     const db = 'db' in src ? src.db : src.read;
     if (ownerId !== null) {
-      const managed = await db.findMany('familyMember', { where: { id: ownerId, managedBy: userId, deletedAt: null } });
+      const managed = await db.findMany('familyMember', {
+        where: { id: ownerId, managedBy: userId, deletedAt: null },
+      });
       if (managed.length > 0) return;
-      const tripManaged = await db.findMany('tripMember', { where: { id: ownerId, managedBy: userId, deletedAt: null } });
+      const tripManaged = await db.findMany('tripMember', {
+        where: { id: ownerId, managedBy: userId, deletedAt: null },
+      });
       if (tripManaged.length > 0) return;
     }
     throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');

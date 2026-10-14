@@ -12,7 +12,7 @@ import {
   updateItineraryItemSchema,
   type CreateItineraryItemInput,
   type ListItineraryQueryInput,
-  type ReorderItineraryInput
+  type ReorderItineraryInput,
 } from './itinerary.schema.js';
 
 export interface ItineraryDomainOptions {
@@ -26,7 +26,9 @@ export interface ItineraryDomain {
 
 export function createItineraryDomain(o: ItineraryDomainOptions): ItineraryDomain {
   const service = new ItineraryService({ ctx: o.ctx });
-  const itemRef = (id: bigint): { type: 'itinerary_item'; id: bigint; familyId: null; tripId: null } => ({
+  const itemRef = (
+    id: bigint,
+  ): { type: 'itinerary_item'; id: bigint; familyId: null; tripId: null } => ({
     type: 'itinerary_item',
     id,
     familyId: null,
@@ -51,6 +53,10 @@ export function createItineraryDomain(o: ItineraryDomainOptions): ItineraryDomai
           location: b.location,
           note: b.note,
           sort: b.sort,
+          // M-Client-2：地图选点坐标 + 交通方式
+          lat: b.lat,
+          lng: b.lng,
+          transport: b.transport,
           amount: b.amount,
           currency: b.currency,
           rateSource: b.rateSource,
@@ -62,7 +68,12 @@ export function createItineraryDomain(o: ItineraryDomainOptions): ItineraryDomai
     {
       method: 'GET',
       path: '/itineraries',
-      auth: { public: false, resourceType: 'trip', mode: 'READ', ref: (id, _req, r) => ({ type: 'trip', id, familyId: r.familyId, tripId: r.tripId ?? id }) },
+      auth: {
+        public: false,
+        resourceType: 'trip',
+        mode: 'READ',
+        ref: (id, _req, r) => ({ type: 'trip', id, familyId: r.familyId, tripId: r.tripId ?? id }),
+      },
       idParam: '__none__',
       schema: listItineraryQuerySchema as never,
       handler: async (ctx, input) => {
@@ -118,7 +129,10 @@ export function createItineraryDomain(o: ItineraryDomainOptions): ItineraryDomai
       schema: reorderItinerarySchema as never,
       handler: async (ctx, input) => {
         const b = input as ReorderItineraryInput;
-        const r = await service.reorder(ctx.userId!, { tripId: BigInt(b.tripId), orders: b.orders });
+        const r = await service.reorder(ctx.userId!, {
+          tripId: BigInt(b.tripId),
+          orders: b.orders,
+        });
         return { data: r, meta: { updatedAt: r.updatedAt } };
       },
     },
