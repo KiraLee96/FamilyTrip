@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>family-trip · M1 交付看板</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --border: #e3e6ea;
+    --text: #1f2430;
+    --muted: #6b7280;
+    --accent: #2f6df6;
+    --green: #12a150;
+    --green-bg: #e8f7ee;
+    --amber: #b7791f;
+    --amber-bg: #fdf4e3;
+    --red: #d64545;
+    --red-bg: #fdeaea;
+    --gray-bg: #eef0f3;
+    --code-bg: #f2f4f7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.6; padding: 32px 20px 64px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  header { margin-bottom: 28px; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: .2px; }
+  .sub { color: var(--muted); font-size: 14px; }
+  .sub code { background: var(--code-bg); padding: 1px 6px; border-radius: 4px; font-size: 12.5px; }
+  .grid { display: grid; gap: 16px; }
+  .stats { grid-template-columns: repeat(4, 1fr); margin: 22px 0 26px; }
+  .stat {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px;
+  }
+  .stat .n { font-size: 28px; font-weight: 700; letter-spacing: .5px; }
+  .stat .l { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .stat.ok .n { color: var(--green); }
+  section { margin-bottom: 26px; }
+  h2 { font-size: 17px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  h2::before { content: ""; width: 4px; height: 16px; background: var(--accent); border-radius: 2px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { background: #fafbfc; color: var(--muted); font-weight: 600; font-size: 12.5px; text-transform: uppercase; letter-spacing: .4px; }
+  tr:last-child td { border-bottom: none; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+  .tag.pass { background: var(--green-bg); color: var(--green); }
+  .tag.prog { background: var(--amber-bg); color: var(--amber); }
+  .tag.wait { background: var(--gray-bg); color: var(--muted); }
+  .tag.urgent { background: var(--red-bg); color: var(--red); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  .commit td:first-child { color: var(--accent); font-weight: 600; }
+  .note { background: var(--amber-bg); border: 1px solid #f0dcb4; border-radius: 10px; padding: 12px 16px; font-size: 13.5px; color: #6b5417; }
+  .note b { color: #8a6512; }
+  .checklist { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 22px; padding: 14px 18px; }
+  .checklist .item { display: flex; gap: 8px; align-items: flex-start; font-size: 13.5px; }
+  .checklist .mark { color: var(--green); font-weight: 700; flex: none; }
+  footer { color: var(--muted); font-size: 12.5px; text-align: center; margin-top: 34px; }
+  @media (max-width: 760px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .checklist { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>家庭出行计划 · M1 交付看板</h1>
+    <div class="sub">
+      派发单 <code>DISPATCH-M1-CODE-2026-10-09</code> ·
+      分支 <code>main</code> · 生成于 2026-10-09 19:49 · 更新于 2026-10-10 11:17（v1.4 完成）
+    </div>
+  </header>
+
+  <div class="grid stats">
+    <div class="stat ok"><div class="n">3</div><div class="l">提交（commits）</div></div>
+    <div class="stat ok"><div class="n">61</div><div class="l">入库文件</div></div>
+    <div class="stat ok"><div class="n">90</div><div class="l">测试通过</div></div>
+    <div class="stat ok"><div class="n">0</div><div class="l">门禁失败（lint/tsc）</div></div>
+  </div>
+
+  <section>
+    <h2>门禁与冒烟</h2>
+    <div class="card">
+      <table>
+        <tr><th>检查项</th><th>命令</th><th>结果</th></tr>
+        <tr><td>Lint</td><td class="mono">eslint .</td><td><span class="tag pass">通过 0</span></td></tr>
+        <tr><td>Typecheck</td><td class="mono">tsc -p tsconfig.json --noEmit</td><td><span class="tag pass">通过 0</span></td></tr>
+        <tr><td>测试</td><td class="mono">vitest run</td><td><span class="tag pass">90 passed / 5 文件</span></td></tr>
+        <tr><td>构建</td><td class="mono">tsc -p tsconfig.build.json</td><td><span class="tag pass">通过</span></td></tr>
+        <tr><td>M3 冒烟 · 生产</td><td class="mono">NODE_ENV=production（无授权源）</td><td><span class="tag pass">fail-fast 拒绝启动</span></td></tr>
+        <tr><td>M3 冒烟 · 开发</td><td class="mono">GET /health</td><td><span class="tag pass">200 统一信封</span></td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Commit 历史</h2>
+    <div class="card">
+      <table class="commit">
+        <tr><th>hash</th><th>时间</th><th>说明</th></tr>
+        <tr><td class="mono">84c4dcb</td><td>10-09 16:00</td><td>首次基线：工程骨架 + M2/M3/M4 公共层</td></tr>
+        <tr><td class="mono">76ffb4c</td><td>10-09 19:10</td><td>修复 pnpm 11 构建脚本拦阻（allowBuilds 置 true）</td></tr>
+        <tr><td class="mono">9d51d0d</td><td>10-09 19:23</td><td>补齐 common/ 分页 + 事务 + 14 业务域目录骨架</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>交付内容（派发单 §八 #1–9）</h2>
+    <div class="card">
+      <table>
+        <tr><th>#</th><th>交付物</th><th>状态</th></tr>
+        <tr><td>1</td><td>工程骨架（pnpm workspace · NestJS + Taro 占位）</td><td><span class="tag pass">完成</span></td></tr>
+        <tr><td>2</td><td><code>common/</code> 公共层：鉴权 / 加解密 / 幂等 / 错误码 / 分页 / 汇率精度 / 事务</td><td><span class="tag pass">完成</span></td></tr>
+        <tr><td>3</td><td>统一中间件链（8 段完整实现）</td><td><span class="tag pass">完成</span></td></tr>
+        <tr><td>4</td><td><code>toBuffer()</code> 适配层 + 单测（含跨表搬运拒绝）</td><td><span class="tag pass">完成</span></td></tr>
+        <tr><td>5</td><td>M3 fail-fast 分支 + 单测</td><td><span class="tag pass">完成</span></td></tr>
+        <tr><td>6</td><td>M4 汇率口径 + 缓存键 + 单测（含切档不污染历史）</td><td><span class="tag pass">完成</span></td></tr>
+        <tr><td>7</td><td>M5 审计三列 + 清理任务</td><td><span class="tag pass">完成</span></td></tr>
+        <tr><td>8</td><td>M6 EXIF 服务端兜底</td><td><span class="tag pass">完成</span></td></tr>
+        <tr><td>9</td><td>第一次 commit（可运行，M2/M3/M4 全含）</td><td><span class="tag pass">完成</span></td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>验收口径（§六 8 项）</h2>
+    <div class="card">
+      <div class="checklist">
+        <div class="item"><span class="mark">✓</span><span>1. M2 GCM 往返明文一致</span></div>
+        <div class="item"><span class="mark">✓</span><span>2. M2 AAD 跨表搬运 → 认证失败</span></div>
+        <div class="item"><span class="mark">✓</span><span>3. M2 无静默失败（不裸传 Uint8Array）</span></div>
+        <div class="item"><span class="mark">✓</span><span>4. M3 生产 fail-fast</span></div>
+        <div class="item"><span class="mark">✓</span><span>5. M4 切档位不污染历史</span></div>
+        <div class="item"><span class="mark">✓</span><span>6. M4 缓存键含档位</span></div>
+        <div class="item"><span class="mark">✓</span><span>7. M5 保留期 ≥2 年可查</span></div>
+        <div class="item"><span class="mark">✓</span><span>8. M6 EXIF 剥离 + 记审计</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>红线（§七 9 条 · 已封死）</h2>
+    <div class="card">
+      <div class="checklist">
+        <div class="item"><span class="mark">✓</span><span>R1 加密读取必经 <code>toBuffer()</code></span></div>
+        <div class="item"><span class="mark">✓</span><span>R2 盲索引仅等值检索 + 命中后全省鉴权</span></div>
+        <div class="item"><span class="mark">✓</span><span>R3 盲索引与加密列同事务写入</span></div>
+        <div class="item"><span class="mark">✓</span><span>R4 AAD recordId 含表标识</span></div>
+        <div class="item"><span class="mark">✓</span><span>R5 汇率唯一档位 SPOT_SELL + 键含档位</span></div>
+        <div class="item"><span class="mark">✓</span><span>R6 切档默认不重算历史</span></div>
+        <div class="item"><span class="mark">✓</span><span>R7 生产禁止抓取汇率</span></div>
+        <div class="item"><span class="mark">✓</span><span>R8 密文头长唯一 15B</span></div>
+        <div class="item"><span class="mark">✓</span><span>R9 不依赖运行时密钥擦除</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>待办（v1.4 已完成 · 阻塞重评）</h2>
+    <div class="card">
+      <table>
+        <tr><th>事项</th><th>前置</th><th>状态</th></tr>
+        <tr><td>Prisma 建表 / migrate</td><td>v1.4 数据模型 ✅</td><td><span class="tag prog">可开始</span></td></tr>
+        <tr><td>14 业务域 handler</td><td>权限矩阵 82 格</td><td><span class="tag wait">等权限矩阵</span></td></tr>
+        <tr><td>KMS 接入 DEK 生命周期</td><td>KMS 凭证</td><td><span class="tag wait">等接入</span></td></tr>
+        <tr><td>合规汇率授权源接入（解除 M3 fail-fast）</td><td>商务采购</td><td><span class="tag urgent">上线前必做</span></td></tr>
+        <tr><td>Taro 客户端 14 域 UI + 小程序发布</td><td>后端就绪（#1/#2）</td><td><span class="tag wait">等后端</span></td></tr>
+      </table>
+    </div>
+  </section>
+
+  <div class="note">
+    <b>注意</b>：当前无对外可访问网页 —— 服务端仅 <code>/health</code> 一个接口（返回 JSON），
+    客户端 <code>apps/client</code> 为占位。v1.4 数据模型已交付：<b>Prisma 建表可开始</b>，
+    14 域 handler 仍待权限矩阵 82 格，Taro 14 域 UI 待后端（#1/#2）就绪，三者不再因 v1.4 返工。
+    KMS 仍等凭证、合规汇率仍等商务采购（<b>上线前必做</b>）。本地运行：<code>pnpm dev:server</code> → <code>http://localhost:3000/health</code>。
+  </div>
+
+  <footer>
+    family-trip · M1 编码派发单交付看板 · 数据源：git log / vitest · 2026-10-09 生成 · 2026-10-10 更新
+  </footer>
+</div>
+</body>
+</html>

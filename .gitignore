@@ -17,6 +17,11 @@ coverage/
 
 # 微信小程序私钥配置（含 appid / privateKey / uploadKey 等，禁止提交）
 apps/client/project.private.config.json
+# monorepo 根入口的本地私有配置（libVersion 等 IDE 状态，非资产）
+/project.private.config.json
+
+# WorkBuddy 工作区记忆（Agent 内部资产，非仓库内容）
+.workbuddy/
 
 # Prisma
 apps/server/prisma/*.db
