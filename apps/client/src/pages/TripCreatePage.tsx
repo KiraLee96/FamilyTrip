@@ -17,6 +17,7 @@ import { ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
 import { navigate } from '../nav';
 import { useAsync } from '../hooks/useAsync';
+import { defaultChecklistFor } from '../utils/constants';
 
 export function TripCreatePage() {
   const families = useAsync(
@@ -54,6 +55,22 @@ export function TripCreatePage() {
         ...(startDate ? { startDate } : {}),
         ...(endDate ? { endDate } : {}),
       });
+      // 播种默认清单（反馈 #5：新行程不该沿用上一个清单）
+      // 往返票 / 住宿（按天算晚数）/ 证件 / 充电 —— 失败不阻塞跳转
+      try {
+        await Promise.all(
+          defaultChecklistFor(startDate || null, endDate || null).map((seed) =>
+            api.createChecklistItem({
+              tripId: trip.id,
+              familyId,
+              name: seed.title,
+              scope: seed.scope,
+            }),
+          ),
+        );
+      } catch (e) {
+        console.warn('[trip-create] 默认清单播种失败（不影响行程创建）：', e);
+      }
       void Taro.showToast({ title: '已创建', icon: 'success' });
       navigate(`/trips/${trip.id}`);
     } catch (e) {
@@ -111,7 +128,7 @@ export function TripCreatePage() {
           {submitting ? '创建中…' : '创建行程'}
         </Button>
         <Text className="muted" style={{ marginTop: 10, textAlign: 'center' }}>
-          创建后可在详情页补充日程、清单与花销
+          创建后会带上往返票 / 住宿 / 证件等默认清单，可再补充日程与花销
         </Text>
       </View>
     </PageLayout>

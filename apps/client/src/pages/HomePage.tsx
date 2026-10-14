@@ -1,16 +1,19 @@
 /**
- * 首页 —— 当前主出行 + 备选行程 + 待办提醒（Taro 同构版）
+ * 首页 —— 当前主出行 + 心愿池区块 + 备选行程 + 待办提醒（Taro 同构版）
  * ============================================================================
  * 信息优先级：正在筹备的出行放最上面，做成「主卡」；
  * 其余行程收成紧凑列表；清单未完成项当作提醒露出。
+ *
+ * M-Client-2：心愿池由独立 tab 降级为首页区块（微信 tabBar 上限 5 个），
+ *   投票能力保留；完整心愿池仍可从区块底部进入（/wishes，非 tab 页）。
  */
 
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Text, View } from '@tarojs/components';
 import { Link } from '../nav/Link';
 
 import { api, DATA_SOURCE } from '../api/index';
-import type { ChecklistItem, Trip } from '../api/types';
+import type { ChecklistItem, Trip, Wish } from '../api/types';
 import { retryLogin } from '../api/session';
 import { Icon } from '../components/Icon';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
@@ -26,9 +29,23 @@ export function HomePage() {
     useCallback(() => api.listTrips(), []),
     [],
   );
+
+  // 主行程 id（供清单按行程收敛；hooks 需无条件执行，故用 useMemo 从数据推导）
+  const primaryId = useMemo(() => {
+    const list = trips.data ?? [];
+    const p =
+      list.find((t) => t.status === 'ONGOING') ??
+      list.find((t) => t.status === 'PLANNED') ??
+      list[0];
+    return p?.id ?? '';
+  }, [trips.data]);
+
   const checks = useAsync(
-    useCallback(() => api.listChecklist('SHARED'), []),
-    [],
+    useCallback(
+      async () => (primaryId === '' ? [] : api.listTripChecklist(primaryId, 'SHARED')),
+      [primaryId],
+    ),
+    [primaryId],
   );
 
   // http 模式且未拿到登录态：bootstrap 静默登录失败，给手动重试入口。
@@ -72,7 +89,13 @@ export function HomePage() {
     return (
       <>
         {sessionCard}
-        <Empty text="还没有出行计划，先去心愿池挑一个吧" />
+        <Empty text="还没有出行计划，先建一个行程吧" />
+        <View style={{ marginBottom: 12 }}>
+          <Link to="/trips/new" className="btn btn--block">
+            新建行程
+          </Link>
+        </View>
+        <WishBlock />
       </>
     );
 
@@ -145,12 +168,80 @@ export function HomePage() {
         </>
       )}
 
+      <WishBlock />
+
       <View style={{ marginTop: 4 }}>
         <Link to="/trips" className="btn btn--ghost btn--block">
           查看全部行程
         </Link>
       </View>
     </PageLayout>
+  );
+}
+
+/**
+ * 心愿池区块（首页内）—— 保留投票能力
+ * 展示票数最高的若干心愿，点「想去」即投票（乐观更新 + 服务端确认）。
+ */
+function WishBlock() {
+  const q = useAsync(
+    useCallback(() => api.listWishes(), []),
+    [],
+  );
+  /** 投票的本地覆盖（id → Wish），避免整块重拉 */
+  const [local, setLocal] = useState<Record<string, Wish>>({});
+  const [busyId, setBusyId] = useState('');
+
+  if (q.loading) return <Loading />;
+  if (q.error) return <ErrorBox message={q.error} onRetry={q.reload} />;
+
+  const list = (q.data ?? []).map((w) => local[w.id] ?? w);
+  const open = list
+    .filter((w) => w.status === 'OPEN')
+    .sort((a, b) => b.votes - a.votes)
+    .slice(0, 3);
+
+  if (open.length === 0) return null;
+
+  const vote = async (id: string) => {
+    setBusyId(id);
+    try {
+      const next = await api.voteWish(id);
+      setLocal((m) => ({ ...m, [id]: next }));
+    } catch {
+      /* 忽略：保持服务端状态 */
+    } finally {
+      setBusyId('');
+    }
+  };
+
+  return (
+    <>
+      <SectionTitle icon="sparkles">家庭心愿池</SectionTitle>
+      <View className="card card--flush">
+        {open.map((w) => (
+          <View className="wish" key={w.id}>
+            <View className="wish__body">
+              <Text className="wish__title">{w.title}</Text>
+              {w.note ? <Text className="wish__note">{w.note}</Text> : null}
+            </View>
+            <View
+              className={w.votedByMe ? 'vote vote--on' : 'vote'}
+              onClick={busyId === w.id ? undefined : () => void vote(w.id)}
+            >
+              <Text className="vote__n">
+                <Icon name="heart" size={14} />
+                {w.votes}
+              </Text>
+              <Text className="vote__cap">{w.votedByMe ? '已投' : '想去'}</Text>
+            </View>
+          </View>
+        ))}
+      </View>
+      <Link to="/wishes" className="btn btn--ghost btn--block">
+        查看全部心愿
+      </Link>
+    </>
   );
 }
 

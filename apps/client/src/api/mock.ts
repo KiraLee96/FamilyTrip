@@ -3,6 +3,11 @@
  * ============================================================================
  * 数据形状严格对齐后端契约（字段名/枚举值取自 apps/server 各域 schema）。
  * 时间用固定值而非 new Date()，保证每次打开界面一致，方便比对设计稿。
+ *
+ * M-Client-2 起，可变状态从「只有投票/勾选/上传」扩展为全域：
+ *   families / members / trips / itinerary / checklist / expenses / items
+ * 均可在会话内增删改；itinerary / item 更新走 E7 CAS（version 不匹配 → 409），
+ * expenseSummary 由当前 expenses 动态重算（不再是写死的汇总常量）。
  */
 
 import { ApiError, unwrap, type ApiClient } from './client';
@@ -11,7 +16,11 @@ import type {
   Expense,
   ExpenseSummary,
   Family,
+  FamilyDetail,
+  FamilyMember,
   ItineraryItem,
+  Item,
+  JoinFamilyResult,
   MediaAsset,
   MemoryArchive,
   MemorySnapshot,
@@ -23,7 +32,58 @@ import type {
 
 const ME: User = { id: '1', nickname: '小珂', avatarUrl: undefined, homeTimezone: 'Asia/Shanghai' };
 
-const FAMILY: Family = { id: '10', name: '我们一家', ownerUserId: '1', memberCount: 4 };
+const FAMILY: Family = {
+  id: '10',
+  name: '我们一家',
+  ownerUserId: '1',
+  memberCount: 4,
+  // 建家庭时后端自动生成的 8 位邀请码（去易混字符字母表）
+  inviteCode: 'QM2K7X9W',
+};
+
+/** 家庭成员种子（爸爸=户主；妈妈/爷爷/宝宝为无微信账号的虚拟成员） */
+const MEMBERS: FamilyMember[] = [
+  {
+    id: '7001',
+    familyId: '10',
+    userId: '1',
+    role: 'OWNER',
+    isVirtual: false,
+    managedBy: null,
+    displayName: '爸爸',
+    joinedAt: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    id: '7002',
+    familyId: '10',
+    userId: null,
+    role: 'MEMBER',
+    isVirtual: true,
+    managedBy: '7001',
+    displayName: '妈妈',
+    joinedAt: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    id: '7003',
+    familyId: '10',
+    userId: null,
+    role: 'MEMBER',
+    isVirtual: true,
+    managedBy: '7001',
+    displayName: '爷爷',
+    joinedAt: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    id: '7004',
+    familyId: '10',
+    userId: null,
+    role: 'MEMBER',
+    isVirtual: true,
+    managedBy: '7001',
+    displayName: '小珂',
+    joinedAt: '2026-01-01T00:00:00.000Z',
+  },
+];
 
 const TRIPS: Trip[] = [
   {
@@ -115,6 +175,10 @@ const WISHES: Wish[] = [
   },
 ];
 
+/**
+ * 行程安排种子（青岛行程，带地图坐标与交通方式 —— 供地图标记/连线演示）。
+ * 坐标取各地点大致位置（精度到演示足够，真后端由 chooseLocation 回传）。
+ */
 const ITINERARY: ItineraryItem[] = [
   {
     id: '301',
@@ -125,6 +189,10 @@ const ITINERARY: ItineraryItem[] = [
     location: '北京南站',
     note: 'G179 次，09:30 发车',
     sortOrder: 1,
+    version: 1,
+    lat: 39.865,
+    lng: 116.378,
+    transport: 'TRAIN',
   },
   {
     id: '302',
@@ -134,6 +202,10 @@ const ITINERARY: ItineraryItem[] = [
     title: '入住海景民宿',
     location: '栈桥附近',
     sortOrder: 2,
+    version: 1,
+    lat: 36.057,
+    lng: 120.316,
+    transport: 'CAR',
   },
   {
     id: '303',
@@ -144,6 +216,10 @@ const ITINERARY: ItineraryItem[] = [
     location: '市南区',
     note: '步行游览，穿舒适鞋',
     sortOrder: 1,
+    version: 1,
+    lat: 36.058,
+    lng: 120.317,
+    transport: 'WALK',
   },
   {
     id: '304',
@@ -153,6 +229,10 @@ const ITINERARY: ItineraryItem[] = [
     title: '赶海捡贝壳',
     location: '燕儿岛山公园',
     sortOrder: 2,
+    version: 1,
+    lat: 36.055,
+    lng: 120.412,
+    transport: 'BUS',
   },
   {
     id: '305',
@@ -163,16 +243,88 @@ const ITINERARY: ItineraryItem[] = [
     location: '崂山区',
     note: '带足水和防晒',
     sortOrder: 1,
+    version: 1,
+    lat: 36.12,
+    lng: 120.6,
+    transport: 'CAR',
   },
 ];
 
+/** 清单种子（归属行程 101 —— 修复「清单默认是之前一个」的跨行程串数据问题） */
 const CHECKLIST: ChecklistItem[] = [
-  { id: '401', scope: 'SHARED', title: '预订往返高铁票', done: true },
-  { id: '402', scope: 'SHARED', title: '订海景民宿（3 晚）', done: false, assigneeName: '爸爸' },
-  { id: '403', scope: 'SHARED', title: '查潮汐表（赶海用）', done: false, assigneeName: '妈妈' },
-  { id: '404', scope: 'PERSONAL', title: '给孩子准备晕车药', done: false },
-  { id: '405', scope: 'PERSONAL', title: '充电宝 + 数据线', done: true },
-  { id: '406', scope: 'SHARED', title: '崂山门票预约', done: false, assigneeName: '爸爸' },
+  { id: '401', tripId: '101', scope: 'SHARED', title: '预订往返高铁票', done: true },
+  {
+    id: '402',
+    tripId: '101',
+    scope: 'SHARED',
+    title: '订海景民宿（3 晚）',
+    done: false,
+    assigneeName: '爸爸',
+  },
+  {
+    id: '403',
+    tripId: '101',
+    scope: 'SHARED',
+    title: '查潮汐表（赶海用）',
+    done: false,
+    assigneeName: '妈妈',
+  },
+  { id: '404', tripId: '101', scope: 'PERSONAL', title: '给孩子准备晕车药', done: false },
+  { id: '405', tripId: '101', scope: 'PERSONAL', title: '充电宝 + 数据线', done: true },
+  {
+    id: '406',
+    tripId: '101',
+    scope: 'SHARED',
+    title: '崂山门票预约',
+    done: false,
+    assigneeName: '爸爸',
+  },
+];
+
+/** 个人物品库种子（PRIVATE 域；分类整理 + 必带物品用 category/note 承载） */
+const ITEMS: Item[] = [
+  {
+    id: '801',
+    familyId: '10',
+    name: '身份证（全家 4 人）',
+    category: '证件',
+    quantity: 4,
+    note: '每次出行必带，出发前一晚再确认',
+    version: 1,
+  },
+  {
+    id: '802',
+    familyId: '10',
+    name: '充电宝 + 数据线',
+    category: '电子',
+    quantity: 2,
+    version: 1,
+  },
+  {
+    id: '803',
+    familyId: '10',
+    name: '常备药（晕车 / 感冒 / 腹泻）',
+    category: '药品',
+    quantity: 1,
+    note: '孩子晕车药必带',
+    version: 1,
+  },
+  {
+    id: '804',
+    familyId: '10',
+    name: '防晒霜 + 墨镜',
+    category: '洗护',
+    quantity: 2,
+    version: 1,
+  },
+  {
+    id: '805',
+    familyId: '10',
+    name: '孩子安抚玩具',
+    category: '母婴',
+    quantity: 1,
+    version: 1,
+  },
 ];
 
 const EXPENSES: Expense[] = [
@@ -219,23 +371,9 @@ const EXPENSES: Expense[] = [
     payerName: '爷爷',
     spentAt: '2026-10-02',
     category: '餐饮',
+    note: '退潮后现捞，味道不错',
   },
 ];
-
-const EXPENSE_SUMMARY: ExpenseSummary = {
-  totalCny: '4988.00',
-  byMember: [
-    { memberName: '爸爸', amountCny: '2640.00' },
-    { memberName: '妈妈', amountCny: '1980.00' },
-    { memberName: '爷爷', amountCny: '368.00' },
-  ],
-  byCategory: [
-    { category: '交通', amountCny: '2160.00' },
-    { category: '住宿', amountCny: '1980.00' },
-    { category: '门票', amountCny: '480.00' },
-    { category: '餐饮', amountCny: '368.00' },
-  ],
-};
 
 /**
  * 预置媒体资产（云南行程的 3 张照片）。
@@ -363,10 +501,72 @@ async function respond<T>(data: T): Promise<T> {
   return unwrap({ code: 0, message: 'ok', data });
 }
 
-/** 可变的 Mock 状态（投票/勾选/上传改这里，刷新后重置） */
+/** 各域自增 id 计数器（初值 = 种子最大 id，保证新 id 不与种子碰撞） */
+const seq = {
+  family: 10,
+  member: 7004,
+  trip: 103,
+  itinerary: 305,
+  checklist: 406,
+  expense: 504,
+  item: 805,
+  media: 603,
+  memory: 901,
+};
+
+function nextId(key: keyof typeof seq): string {
+  seq[key] += 1;
+  return String(seq[key]);
+}
+
+/** 8 位邀请码（去易混字符：0/O、1/I/L 不入库） */
+function genInviteCode(): string {
+  const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  let code = '';
+  do {
+    code = '';
+    for (let i = 0; i < 8; i++) code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  } while (state.families.some((f) => f.inviteCode === code));
+  return code;
+}
+
+/** 今日日期 YYYY-MM-DD（本地时区） */
+function today(): string {
+  const d = new Date();
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** 金额汇总（分两组：按垫付人 / 按分类；未分类归「未分类」） */
+function summarizeExpenses(list: Expense[]): ExpenseSummary {
+  const byMember = new Map<string, number>();
+  const byCategory = new Map<string, number>();
+  let total = 0;
+  for (const e of list) {
+    const v = Number(e.amountCny ?? e.amount);
+    total += v;
+    byMember.set(e.payerName, (byMember.get(e.payerName) ?? 0) + v);
+    const cat = e.category ?? '未分类';
+    byCategory.set(cat, (byCategory.get(cat) ?? 0) + v);
+  }
+  const fmt = (n: number): string => n.toFixed(2);
+  return {
+    totalCny: fmt(total),
+    byMember: [...byMember].map(([memberName, v]) => ({ memberName, amountCny: fmt(v) })),
+    byCategory: [...byCategory].map(([category, v]) => ({ category, amountCny: fmt(v) })),
+  };
+}
+
+/** 可变的 Mock 状态（全域增删改 + 投票/勾选/上传均改这里，刷新后重置） */
 const state = {
+  families: [{ ...FAMILY }],
+  members: [...MEMBERS],
+  trips: [...TRIPS],
   wishes: [...WISHES],
+  itinerary: [...ITINERARY],
   checklist: [...CHECKLIST],
+  expenses: [...EXPENSES],
+  items: [...ITEMS],
   media: [...MEDIA],
   memories: [...MEMORIES],
   memorySnapshots: { ...MEMORY_SNAPSHOTS },
@@ -380,30 +580,133 @@ export function createMockClient(): ApiClient {
     async me() {
       return respond(ME);
     },
+    // ---- family ----
     async listFamilies() {
-      return respond([FAMILY]);
+      return respond([...state.families]);
     },
+    async getFamily(id) {
+      const family = state.families.find((f) => f.id === id);
+      if (!family) throw new ApiError(404, '家庭不存在');
+      const detail: FamilyDetail = {
+        family,
+        members: state.members.filter((m) => m.familyId === id),
+      };
+      return respond(detail);
+    },
+    async createFamily(input) {
+      const family: Family = {
+        id: nextId('family'),
+        name: input.name,
+        ownerUserId: ME.id,
+        memberCount: 1,
+        inviteCode: genInviteCode(),
+      };
+      state.families.push(family);
+      // 创建者自动成为户主（与后端 createFamily 同行为）
+      state.members.push({
+        id: nextId('member'),
+        familyId: family.id,
+        userId: ME.id,
+        role: 'OWNER',
+        isVirtual: false,
+        managedBy: null,
+        displayName: ME.nickname,
+        joinedAt: new Date().toISOString(),
+      });
+      return respond(family);
+    },
+    async updateFamily(id, input) {
+      const family = state.families.find((f) => f.id === id);
+      if (!family) throw new ApiError(404, '家庭不存在');
+      // timezone 客户端模型不承载（后端存储）；Mock 只改 name
+      if (input.name !== undefined) family.name = input.name;
+      return respond(family);
+    },
+    async dissolveFamily(id) {
+      const i = state.families.findIndex((f) => f.id === id);
+      if (i < 0) throw new ApiError(404, '家庭不存在');
+      state.families.splice(i, 1);
+      for (let j = state.members.length - 1; j >= 0; j--) {
+        if (state.members[j]!.familyId === id) state.members.splice(j, 1);
+      }
+      await delay();
+    },
+    async joinFamily(input) {
+      const family = state.families.find((f) => f.inviteCode === input.inviteCode);
+      if (!family) throw new ApiError(404, '邀请码无效，请核对后重试');
+      // 幂等：已是成员直接返回，不重复插入
+      const mine = state.members.find((m) => m.familyId === family.id && m.userId === ME.id);
+      if (mine) {
+        const dup: JoinFamilyResult = { family, alreadyMember: true };
+        return respond(dup);
+      }
+      const member: FamilyMember = {
+        id: nextId('member'),
+        familyId: family.id,
+        userId: ME.id,
+        role: 'MEMBER',
+        isVirtual: false,
+        managedBy: null,
+        displayName: input.displayName ?? ME.nickname,
+        joinedAt: new Date().toISOString(),
+      };
+      state.members.push(member);
+      family.memberCount += 1;
+      const result: JoinFamilyResult = { family, alreadyMember: false };
+      return respond(result);
+    },
+    async addFamilyMember(familyId, input) {
+      const family = state.families.find((f) => f.id === familyId);
+      if (!family) throw new ApiError(404, '家庭不存在');
+      const isVirtual = input.isVirtual ?? true;
+      const owner = state.members.find((m) => m.familyId === familyId && m.role === 'OWNER');
+      const memberId = nextId('member');
+      const member: FamilyMember = {
+        id: memberId,
+        familyId,
+        // Mock 无法真实注册微信账号：非虚拟成员用占位 userId（真后端走 openid 绑定）
+        userId: isVirtual ? null : `wx_${memberId}`,
+        role: 'MEMBER',
+        isVirtual,
+        // 虚拟成员必须有所属代管人（户主）；真实成员为 null
+        managedBy: isVirtual ? (owner?.id ?? null) : null,
+        displayName: input.displayName,
+        joinedAt: new Date().toISOString(),
+      };
+      state.members.push(member);
+      family.memberCount += 1;
+      return respond(member);
+    },
+    async removeFamilyMember(memberId) {
+      const i = state.members.findIndex((m) => m.id === memberId);
+      if (i < 0) throw new ApiError(404, '成员不存在');
+      const [removed] = state.members.splice(i, 1);
+      const family = state.families.find((f) => f.id === removed!.familyId);
+      if (family) family.memberCount = Math.max(1, family.memberCount - 1);
+      await delay();
+    },
+    // ---- trip ----
     async listTrips(familyId) {
-      const list = familyId ? TRIPS.filter((t) => t.familyId === familyId) : TRIPS;
+      const list = familyId ? state.trips.filter((t) => t.familyId === familyId) : state.trips;
       return respond(list);
     },
     async getTrip(id) {
-      const t = TRIPS.find((x) => x.id === id);
+      const t = state.trips.find((x) => x.id === id);
       if (!t) throw new ApiError(404, '出行不存在');
       return respond(t);
     },
     async createTrip(input) {
       const t: Trip = {
-        id: String(1000 + Math.floor(Math.random() * 9000)),
+        id: nextId('trip'),
         familyId: input.familyId,
         title: input.title,
         status: 'DRAFT',
         startDate: input.startDate ?? null,
         endDate: input.endDate ?? null,
         destinations: [],
-        version: 0,
+        version: 1,
       };
-      TRIPS.push(t);
+      state.trips.push(t);
       return respond(t);
     },
     async listWishes(familyId) {
@@ -417,15 +720,71 @@ export function createMockClient(): ApiClient {
       w.votes += w.votedByMe ? 1 : -1;
       return respond(w);
     },
+    // ---- itinerary ----
     async listItineraries(tripId) {
-      const list = ITINERARY.filter((i) => i.tripId === tripId).sort(
-        (a, b) => a.date.localeCompare(b.date) || a.sortOrder - b.sortOrder,
+      const list = state.itinerary
+        .filter((i) => i.tripId === tripId)
+        .sort((a, b) => a.date.localeCompare(b.date) || a.sortOrder - b.sortOrder);
+      return respond(list);
+    },
+    async createItineraryItem(input) {
+      // startAt 为本地时间 YYYY-MM-DDTHH:mm → 拆出 date/startTime（与后端落库口径一致）
+      const sameDay = state.itinerary.filter(
+        (i) => i.tripId === input.tripId && i.date === input.startAt.slice(0, 10),
       );
+      const item: ItineraryItem = {
+        id: nextId('itinerary'),
+        tripId: input.tripId,
+        date: input.startAt.slice(0, 10),
+        ...(input.startAt.length >= 16 ? { startTime: input.startAt.slice(11, 16) } : {}),
+        title: input.title,
+        ...(input.location !== undefined ? { location: input.location } : {}),
+        ...(input.note !== undefined ? { note: input.note } : {}),
+        // 未显式指定 sort 时追加到当日末尾
+        sortOrder: input.sort ?? sameDay.reduce((m, i) => Math.max(m, i.sortOrder), 0) + 1,
+        version: 1,
+        ...(input.lat !== undefined ? { lat: input.lat } : {}),
+        ...(input.lng !== undefined ? { lng: input.lng } : {}),
+        ...(input.transport !== undefined ? { transport: input.transport } : {}),
+      };
+      state.itinerary.push(item);
+      return respond(item);
+    },
+    async updateItineraryItem(id, input) {
+      const it = state.itinerary.find((x) => x.id === id);
+      if (!it) throw new ApiError(404, '安排不存在');
+      // E7 CAS：version 不匹配 → 409，界面提示刷新重试
+      if (it.version !== input.version) throw new ApiError(409, '版本冲突，请刷新后重试');
+      if (input.startAt !== undefined) {
+        it.date = input.startAt.slice(0, 10);
+        if (input.startAt.length >= 16) it.startTime = input.startAt.slice(11, 16);
+      }
+      if (input.title !== undefined) it.title = input.title;
+      if (input.location !== undefined) it.location = input.location ?? undefined;
+      if (input.note !== undefined) it.note = input.note ?? undefined;
+      if (input.sort !== undefined) it.sortOrder = input.sort;
+      if (input.lat !== undefined) it.lat = input.lat ?? undefined;
+      if (input.lng !== undefined) it.lng = input.lng ?? undefined;
+      if (input.transport !== undefined) it.transport = input.transport ?? undefined;
+      it.version += 1;
+      return respond(it);
+    },
+    async deleteItineraryItem(id) {
+      const i = state.itinerary.findIndex((x) => x.id === id);
+      if (i < 0) throw new ApiError(404, '安排不存在');
+      state.itinerary.splice(i, 1);
+      await delay();
+    },
+    // ---- checklist ----
+    async listChecklist(scope) {
+      const list = scope ? state.checklist.filter((c) => c.scope === scope) : state.checklist;
       return respond(list);
     },
     async createChecklistItem(input) {
+      // tripId 必须落库：修复「清单默认是之前一个」的跨行程串数据问题
       const item: ChecklistItem = {
-        id: `c${Date.now().toString(36)}`,
+        id: nextId('checklist'),
+        tripId: input.tripId,
         scope: input.scope ?? 'SHARED',
         title: input.name,
         done: false,
@@ -433,34 +792,120 @@ export function createMockClient(): ApiClient {
       state.checklist.push(item);
       return respond(item);
     },
-    async listChecklist(scope) {
-      const list = scope ? state.checklist.filter((c) => c.scope === scope) : state.checklist;
-      return respond(list);
-    },
     async toggleChecklistItem(id) {
       const c = state.checklist.find((x) => x.id === id);
       if (!c) throw new ApiError(404, '清单项不存在');
       c.done = !c.done;
       return respond(c);
     },
-    async listExpenses(tripId) {
-      return respond(EXPENSES.filter((e) => e.tripId === tripId));
+    async listTripChecklist(tripId, scope) {
+      const list = state.checklist.filter(
+        (c) => c.tripId === tripId && (scope === undefined || c.scope === scope),
+      );
+      return respond(list);
     },
-    async expenseSummary() {
-      return respond(EXPENSE_SUMMARY);
+    async deleteChecklistItem(id) {
+      const i = state.checklist.findIndex((x) => x.id === id);
+      if (i < 0) throw new ApiError(404, '清单项不存在');
+      state.checklist.splice(i, 1);
+      await delay();
+    },
+    // ---- expense ----
+    async listExpenses(tripId) {
+      return respond(state.expenses.filter((e) => e.tripId === tripId));
+    },
+    async expenseSummary(tripId) {
+      // 动态重算：增删花销后汇总即时跟随（不再是写死的常量）
+      return respond(summarizeExpenses(state.expenses.filter((e) => e.tripId === tripId)));
+    },
+    async createExpense(input) {
+      const e: Expense = {
+        id: nextId('expense'),
+        tripId: input.tripId,
+        title: input.title,
+        amount: input.amount,
+        currency: input.currency ?? 'CNY',
+        // Mock 不做汇率折算：amountCny 直接等同主币种金额（真后端走 fx 域）
+        amountCny: input.amount,
+        // 垫付人缺省 = 当前操作者（后端同口径）
+        payerName: ME.nickname,
+        spentAt: input.spentAt ?? today(),
+        ...(input.category !== undefined ? { category: input.category } : {}),
+        ...(input.note !== undefined ? { note: input.note } : {}),
+      };
+      state.expenses.push(e);
+      return respond(e);
+    },
+    async updateExpense(id, input) {
+      const e = state.expenses.find((x) => x.id === id);
+      if (!e) throw new ApiError(404, '花销不存在');
+      if (input.title !== undefined) e.title = input.title;
+      if (input.amount !== undefined) {
+        e.amount = input.amount;
+        if ((input.currency ?? e.currency) === 'CNY') e.amountCny = input.amount;
+      }
+      if (input.currency !== undefined) e.currency = input.currency;
+      if (input.category !== undefined) e.category = input.category ?? undefined;
+      if (input.spentAt !== undefined) e.spentAt = input.spentAt ?? today();
+      if (input.note !== undefined) e.note = input.note ?? undefined;
+      return respond(e);
+    },
+    async deleteExpense(id) {
+      const i = state.expenses.findIndex((x) => x.id === id);
+      if (i < 0) throw new ApiError(404, '花销不存在');
+      state.expenses.splice(i, 1);
+      await delay();
+    },
+    // ---- item（个人物品库，PRIVATE 域） ----
+    async listItems(query) {
+      let list = state.items;
+      if (query?.category !== undefined) list = list.filter((i) => i.category === query.category);
+      // Mock 数据全部归属本人（PRIVATE 域无他人数据），mineOnly 真假结果一致
+      return respond([...list]);
+    },
+    async createItem(input) {
+      const item: Item = {
+        id: nextId('item'),
+        familyId: input.familyId,
+        name: input.name,
+        ...(input.category !== undefined ? { category: input.category } : {}),
+        quantity: input.quantity ?? 1,
+        ...(input.note !== undefined ? { note: input.note } : {}),
+        version: 1,
+      };
+      state.items.push(item);
+      return respond(item);
+    },
+    async updateItem(id, input) {
+      const it = state.items.find((x) => x.id === id);
+      if (!it) throw new ApiError(404, '物品不存在');
+      // E7 CAS：version 不匹配 → 409
+      if (it.version !== input.version) throw new ApiError(409, '版本冲突，请刷新后重试');
+      if (input.name !== undefined) it.name = input.name;
+      if (input.category !== undefined) it.category = input.category ?? undefined;
+      if (input.quantity !== undefined) it.quantity = input.quantity;
+      if (input.note !== undefined) it.note = input.note ?? undefined;
+      it.version += 1;
+      return respond(it);
+    },
+    async deleteItem(id) {
+      const i = state.items.findIndex((x) => x.id === id);
+      if (i < 0) throw new ApiError(404, '物品不存在');
+      state.items.splice(i, 1);
+      await delay();
     },
     // ---- media ----
     async presignUpload(input) {
       // Mock 无对象存储：uploadUrl 置空即「跳过直传」（上传工具依此判断），
       // fileKey 仍按后端规则生成，保证 confirm 链路形状一致。
       const ext = /\.[A-Za-z0-9]{1,8}$/.exec(input.fileName)?.[0].toLowerCase() ?? '';
-      const fileKey = `f/${FAMILY.id}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
+      const fileKey = `f/${state.families[0]?.id ?? FAMILY.id}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
       return respond<PresignUploadResult>({ uploadUrl: '', expiresIn: 0, fileKey });
     },
     async confirmMediaAsset(input) {
       const asset: MediaAsset = {
-        id: `m${Date.now().toString(36)}`,
-        familyId: FAMILY.id,
+        id: nextId('media'),
+        familyId: state.families[0]?.id ?? FAMILY.id,
         tripId: input.tripId ?? null,
         ownerId: ME.id,
         fileKey: input.fileKey,
@@ -509,7 +954,7 @@ export function createMockClient(): ApiClient {
       return respond({ memory, snapshot });
     },
     async generateTripMemory(tripId) {
-      const trip = TRIPS.find((t) => t.id === tripId);
+      const trip = state.trips.find((t) => t.id === tripId);
       if (!trip) throw new ApiError(404, '出行不存在');
       const year =
         Number((trip.endDate ?? trip.startDate ?? '').slice(0, 4)) || new Date().getFullYear();
@@ -522,11 +967,9 @@ export function createMockClient(): ApiClient {
         return respond({ memory: existing, snapshot, created: false });
       }
 
-      const itinerary = ITINERARY.filter((i) => i.tripId === tripId);
-      const expenses = EXPENSES.filter((e) => e.tripId === tripId);
-      const totalMinor = expenses
-        .reduce((sum, e) => sum + Math.round(Number(e.amountCny ?? e.amount) * 100), 0)
-        .toString();
+      const itinerary = state.itinerary.filter((i) => i.tripId === tripId);
+      const summary = summarizeExpenses(state.expenses.filter((e) => e.tripId === tripId));
+      const totalMinor = String(Math.round(Number(summary.totalCny) * 100));
       const snapshot: MemorySnapshot = {
         schemaVersion: 1,
         type: 'TRIP',
@@ -539,8 +982,10 @@ export function createMockClient(): ApiClient {
           startDate: trip.startDate ?? null,
           endDate: trip.endDate ?? null,
           timezone: trip.timezone ?? 'Asia/Shanghai',
-          memberCount: 4,
-          memberNames: ['爸爸', '妈妈', '爷爷', '小珂'],
+          memberCount: state.members.filter((m) => m.familyId === trip.familyId).length,
+          memberNames: state.members
+            .filter((m) => m.familyId === trip.familyId)
+            .map((m) => m.displayName),
         },
         itinerary: itinerary.map((i) => ({
           date: i.date,
@@ -551,13 +996,18 @@ export function createMockClient(): ApiClient {
           currency: 'CNY',
           totalMinor,
           pendingRateCount: 0,
-          byCategory: {},
+          byCategory: Object.fromEntries(
+            summary.byCategory.map((c) => [
+              c.category,
+              String(Math.round(Number(c.amountCny) * 100)),
+            ]),
+          ),
         },
         mediaCount: state.media.filter((m) => m.tripId === tripId).length,
         generatedAt: new Date().toISOString(),
       };
       const memory: MemoryArchive = {
-        id: `r${Date.now().toString(36)}`,
+        id: nextId('memory'),
         familyId: trip.familyId,
         year,
         type: 'TRIP',
@@ -583,30 +1033,41 @@ export function createMockClient(): ApiClient {
         if (!snapshot) throw new ApiError(500, '回忆快照缺失');
         return respond({ memory: existing, snapshot, created: false });
       }
-      const trips = TRIPS.filter(
-        (t) => t.familyId === FAMILY.id && (t.startDate ?? '').startsWith(String(year)),
+      const familyId = state.families[0]?.id ?? FAMILY.id;
+      const trips = state.trips.filter(
+        (t) => t.familyId === familyId && (t.startDate ?? '').startsWith(String(year)),
       );
-      const expenses = EXPENSES.filter((e) => e.spentAt.startsWith(String(year)));
-      const totalMinor = expenses
-        .reduce((sum, e) => sum + Math.round(Number(e.amountCny ?? e.amount) * 100), 0)
-        .toString();
+      const summary = summarizeExpenses(
+        state.expenses.filter((e) => e.spentAt.startsWith(String(year))),
+      );
+      const totalMinor = String(Math.round(Number(summary.totalCny) * 100));
       const snapshot: MemorySnapshot = {
         schemaVersion: 1,
         type: 'ANNUAL',
         year,
-        familyId: FAMILY.id,
+        familyId,
         itinerary: trips.map((t) => ({
           date: t.startDate ?? null,
           title: t.title,
           location: t.destinations?.[0]?.name ?? null,
         })),
-        expenseSummary: { currency: 'CNY', totalMinor, pendingRateCount: 0, byCategory: {} },
+        expenseSummary: {
+          currency: 'CNY',
+          totalMinor,
+          pendingRateCount: 0,
+          byCategory: Object.fromEntries(
+            summary.byCategory.map((c) => [
+              c.category,
+              String(Math.round(Number(c.amountCny) * 100)),
+            ]),
+          ),
+        },
         mediaCount: state.media.length,
         generatedAt: new Date().toISOString(),
       };
       const memory: MemoryArchive = {
-        id: `r${Date.now().toString(36)}`,
-        familyId: FAMILY.id,
+        id: nextId('memory'),
+        familyId,
         year,
         type: 'ANNUAL',
         refId: null,

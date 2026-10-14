@@ -24,11 +24,16 @@ import type {
   Envelope,
   Expense,
   Family,
+  FamilyDetail,
+  FamilyMember,
   ItineraryItem,
+  Item,
+  JoinFamilyResult,
   MediaAsset,
   MemoryArchive,
   MemorySnapshot,
   PresignUploadResult,
+  TransportMode,
   Trip,
   User,
   Wish,
@@ -36,7 +41,7 @@ import type {
 
 const BASE = process.env.API_BASE_URL ?? 'http://127.0.0.1:34570/api';
 
-type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
+type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /** token 持久化 key（A6：与 session.ts 共用，登出/401 时同步清除） */
 export const TOKEN_KEY = 'auth_token';
@@ -156,6 +161,13 @@ function optString(v: unknown): string | undefined {
   return s === '' ? undefined : s;
 }
 
+/** 可选数字：null/undefined/空串归一为 undefined（区别于 asNumber 的 0 兜底） */
+function optNumber(v: unknown): number | undefined {
+  if (v === null || v === undefined || v === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 function toTrip(raw: Record<string, unknown>): Trip {
   return {
     id: asString(raw['id']),
@@ -194,6 +206,9 @@ function toWish(raw: Record<string, unknown>): Wish {
 
 function toItineraryItem(raw: Record<string, unknown>): ItineraryItem {
   const startAt = asString(raw['startAt']);
+  const transport = optString(raw['transport']);
+  const lat = optNumber(raw['lat']);
+  const lng = optNumber(raw['lng']);
   return {
     id: asString(raw['id']),
     tripId: asString(raw['tripId']),
@@ -203,6 +218,10 @@ function toItineraryItem(raw: Record<string, unknown>): ItineraryItem {
     ...(optString(raw['location']) !== undefined ? { location: optString(raw['location']) } : {}),
     ...(optString(raw['note']) !== undefined ? { note: optString(raw['note']) } : {}),
     sortOrder: asNumber(raw['sort']),
+    version: asNumber(raw['version']),
+    ...(lat !== undefined ? { lat } : {}),
+    ...(lng !== undefined ? { lng } : {}),
+    ...(transport !== undefined ? { transport: transport as TransportMode } : {}),
   };
 }
 
@@ -220,6 +239,7 @@ function toExpense(raw: Record<string, unknown>): Expense {
     payerName: asString(raw['payerName']),
     spentAt: asDate(raw['spentAt']) ?? asString(raw['spentAt']),
     ...(optString(raw['category']) !== undefined ? { category: optString(raw['category']) } : {}),
+    ...(optString(raw['note']) !== undefined ? { note: optString(raw['note']) } : {}),
   };
 }
 
@@ -230,6 +250,36 @@ function toFamily(raw: Record<string, unknown>): Family {
     // 服务端字段名 ownerId；客户端契约 ownerUserId
     ownerUserId: asString(raw['ownerId']),
     memberCount: asNumber(raw['memberCount']) || 1,
+    ...(optString(raw['inviteCode']) !== undefined
+      ? { inviteCode: optString(raw['inviteCode']) }
+      : {}),
+  };
+}
+
+function toMember(raw: Record<string, unknown>): FamilyMember {
+  const userId = raw['userId'];
+  const managedBy = raw['managedBy'];
+  return {
+    id: asString(raw['id']),
+    familyId: asString(raw['familyId']),
+    userId: userId === null || userId === undefined ? null : asString(userId),
+    role: (asString(raw['role']) || 'MEMBER') as FamilyMember['role'],
+    isVirtual: asBoolean(raw['isVirtual']),
+    managedBy: managedBy === null || managedBy === undefined ? null : asString(managedBy),
+    displayName: asString(raw['displayName']),
+    joinedAt: asString(raw['joinedAt']),
+  };
+}
+
+function toItem(raw: Record<string, unknown>): Item {
+  return {
+    id: asString(raw['id']),
+    familyId: asString(raw['familyId']),
+    name: asString(raw['name']),
+    ...(optString(raw['category']) !== undefined ? { category: optString(raw['category']) } : {}),
+    quantity: asNumber(raw['quantity']) || 1,
+    ...(optString(raw['note']) !== undefined ? { note: optString(raw['note']) } : {}),
+    version: asNumber(raw['version']),
   };
 }
 
@@ -238,6 +288,7 @@ function toChecklistItem(raw: Record<string, unknown>): ChecklistItem {
   // 投影时别名优先、存储字段兜底——无论哪边定稿都不破界面
   return {
     id: asString(raw['id']),
+    ...(optString(raw['tripId']) !== undefined ? { tripId: optString(raw['tripId']) } : {}),
     scope: (asString(raw['scope']) || 'SHARED') as ChecklistItem['scope'],
     title: asString(raw['title']) || asString(raw['name']),
     done: asBoolean(raw['done']) || asBoolean(raw['checked']),
@@ -334,6 +385,54 @@ export function createHttpClient(): ApiClient {
       const rows = await requestList<Record<string, unknown>>('GET', '/families');
       return rows.map(toFamily);
     },
+    getFamily: async (id) => {
+      const r = await request<{
+        family: Record<string, unknown>;
+        members: Array<Record<string, unknown>>;
+      }>('GET', `/families/${id}`);
+      const detail: FamilyDetail = { family: toFamily(r.family), members: r.members.map(toMember) };
+      return detail;
+    },
+    createFamily: async (input) => {
+      const r = await request<{ family: Record<string, unknown> }>('POST', '/families', input);
+      return toFamily(r.family);
+    },
+    updateFamily: async (id, input) => {
+      const r = await request<{ family: Record<string, unknown> }>(
+        'PATCH',
+        `/families/${id}`,
+        input,
+      );
+      return toFamily(r.family);
+    },
+    dissolveFamily: async (id) => {
+      await request<null>('DELETE', `/families/${id}`);
+      // 家庭解散后 familyId 兜底缓存必须失效，否则后续请求仍解析到已解散家庭
+      resetFamilyIdCache();
+    },
+    joinFamily: async (input) => {
+      const r = await request<{ family: Record<string, unknown>; alreadyMember: boolean }>(
+        'POST',
+        '/families/join',
+        input,
+      );
+      const result: JoinFamilyResult = {
+        family: toFamily(r.family),
+        alreadyMember: asBoolean(r.alreadyMember),
+      };
+      return result;
+    },
+    addFamilyMember: async (familyId, input) => {
+      const r = await request<{ member: Record<string, unknown> }>(
+        'POST',
+        `/families/${familyId}/members`,
+        input,
+      );
+      return toMember(r.member);
+    },
+    removeFamilyMember: async (memberId) => {
+      await request<null>('DELETE', `/families/members/${memberId}`);
+    },
     listTrips: async (familyId) => {
       const rows = await requestList<Record<string, unknown>>(
         'GET',
@@ -370,6 +469,23 @@ export function createHttpClient(): ApiClient {
       );
       return rows.map(toItineraryItem);
     },
+    createItineraryItem: async (input) => {
+      // 后端 create 信封为 { item }；lat/lng/transport 为新增可空字段（老后端忽略未知键）
+      const r = await request<{ item: Record<string, unknown> }>('POST', '/itineraries', input);
+      return toItineraryItem(r.item);
+    },
+    updateItineraryItem: async (id, input) => {
+      // E7 CAS：version 必传，冲突（409）由信封上抛，界面提示刷新重试
+      const r = await request<{ item: Record<string, unknown> }>(
+        'PATCH',
+        `/itineraries/${id}`,
+        input,
+      );
+      return toItineraryItem(r.item);
+    },
+    deleteItineraryItem: async (id) => {
+      await request<null>('DELETE', `/itineraries/${id}`);
+    },
     listChecklist: async (scope) => {
       // checklist 域直接回裸数组（不套 items），逐行投影取 title/done 别名
       const rows = await request<Array<Record<string, unknown>>>(
@@ -393,6 +509,17 @@ export function createHttpClient(): ApiClient {
       });
       return toChecklistItem(r);
     },
+    listTripChecklist: async (tripId, scope) => {
+      // checklist 域直接回裸数组（不套 items）；必须带 tripId，否则跨行程全量返回
+      const rows = await request<Array<Record<string, unknown>>>(
+        'GET',
+        `/checklists/items?tripId=${tripId}${scope ? `&scope=${scope}` : ''}`,
+      );
+      return rows.map(toChecklistItem);
+    },
+    deleteChecklistItem: async (id) => {
+      await request<null>('DELETE', `/checklists/items/${id}`);
+    },
     listExpenses: async (tripId) => {
       const rows = await requestList<Record<string, unknown>>('GET', `/expenses?tripId=${tripId}`);
       return rows.map(toExpense);
@@ -414,6 +541,45 @@ export function createHttpClient(): ApiClient {
           amountCny: minorToYuan(c.totalMinor),
         })),
       };
+    },
+    createExpense: async (input) => {
+      // 信封 { expense }；amount 为主单位字符串（后端 toMinorUnits 按币种精度换算）
+      const r = await request<{ expense: Record<string, unknown> }>('POST', '/expenses', input);
+      return toExpense(r.expense);
+    },
+    updateExpense: async (id, input) => {
+      // version 缺省时服务端 requireVersionOrSkip 跳过 CAS 校验
+      const r = await request<{ expense: Record<string, unknown> }>(
+        'PATCH',
+        `/expenses/${id}`,
+        input,
+      );
+      return toExpense(r.expense);
+    },
+    deleteExpense: async (id) => {
+      await request<null>('DELETE', `/expenses/${id}`);
+    },
+    listItems: async (query) => {
+      // 信封 { items, meta }；mineOnly 服务端默认 true（PRIVATE 短路域只认 ownerId）
+      const parts: string[] = [];
+      if (query?.category !== undefined)
+        parts.push(`category=${encodeURIComponent(query.category)}`);
+      if (query?.mineOnly !== undefined) parts.push(`mineOnly=${query.mineOnly}`);
+      const qs = parts.length > 0 ? `?${parts.join('&')}` : '';
+      const rows = await requestList<Record<string, unknown>>('GET', `/items${qs}`);
+      return rows.map(toItem);
+    },
+    createItem: async (input) => {
+      const r = await request<{ item: Record<string, unknown> }>('POST', '/items', input);
+      return toItem(r.item);
+    },
+    updateItem: async (id, input) => {
+      // E7 CAS：version 必传，冲突（409）由信封上抛
+      const r = await request<{ item: Record<string, unknown> }>('PATCH', `/items/${id}`, input);
+      return toItem(r.item);
+    },
+    deleteItem: async (id) => {
+      await request<null>('DELETE', `/items/${id}`);
     },
 
     // ---- media ----

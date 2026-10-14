@@ -2,6 +2,8 @@
 
 > 里程碑：**M-Client-1** —— 微信开发者工具（测试号 AppID）打开后，首页 / 心愿池 / 行程 / 年度规划 四页面可显示、可交互、控制台 0 error。
 > 交付范围：仅 `apps/client`（红线 #4，`apps/server/**` 未触碰）。
+>
+> 📌 **最新交付见文末「M-Client-2」段**：5 tab 改造 + 用户测试 7 条反馈全量修复 + 后端最小加法迁移。
 
 ## 一、交付物
 
@@ -167,3 +169,156 @@ H5 本地预览（live 模式）：`API_BASE_URL=http://127.0.0.1:3000/api` 打 
 - **H5 二期**：`build:h5` 已可用（`dev:h5`/`build:h5` 脚本就绪），同构无需再改。
 - 小程序端截图仍需在开发者工具内人工截取（待补项）；H5 端截图已由无头浏览器产出。
 - `resolveFamilyId()`（`GET /families` 取首个，模块级缓存）解析 familyId，界面零感知；登出/401 时缓存联动失效（`resetFamilyIdCache`）。新用户无家庭时抛 404「尚未加入任何家庭」，前端无建家庭 UI（后端已建联调家庭）。
+
+---
+
+# M-Client-2 交付交接清单（用户小程序测试 7 条反馈 · 全量修复）
+
+> 里程碑：**M-Client-2** —— 微信开发者工具打开 `apps/client/dist` 后，**5 个 tab**（首页 / 行程 / 物品 / 年度规划 / 我的）逐页可用，用户反馈的 7 条问题全部闭环，控制台 0 error。
+> 交付范围：`apps/client`（主要）+ `apps/server`（**最小加法迁移**，见 §五）。
+
+## 一、7 条反馈 → 根因 → 修复 → 证据
+
+| #   | 反馈（原文要点）                                                          | 根因定位                                                                                                                | 修复                                                                                                                                                     | 验证                                                                                                   |
+| --- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| 1   | 缺「我的」tab：登录、我的家庭（增删改查、无角色、无上限）、邀请制新增成员 | tabBar 无该页；`ApiClient` 无 family/member 写方法                                                                      | 新增 `ProfilePage`（登录态 + 家庭 CRUD + 成员增删 + 邀请码/复制/分享）、`JoinFamilyPage`（凭码加入）；`ApiClient` 纯加法 7 方法                          | H5 无头：我的页登录态 + 家庭卡展开 → 邀请码 `QM2K7X9W` + 4 位成员 + 分享按钮 + 添加成员入口 ✅         |
+| 2   | 缺「物品」tab：每次必带物品、分类整理                                     | 同上，且无 item 域客户端方法                                                                                            | 新增 `ItemsPage`（分类筛选胶囊 + 分组列表 + 增/删/改内联表单 + 只看我的开关）；`ApiClient` 纯加法 4 方法（`listItems/createItem/updateItem/deleteItem`） | H5 无头：标题=物品、物品行=5、分类 9 个胶囊、每项 2 个操作按钮、新增表单可展开 ✅                      |
+| 3   | 查看行程不能修改安排，不合理；行程页要地图控件、地图标记、连线、交通方式  | `ItineraryTab` 只有只读列表，无任何写入入口；契约无坐标/交通字段                                                        | 行程 tab 全量改造：每条可编辑/删除；新增/编辑表单含日期·时间 Picker、地点选点（`Taro.chooseLocation`）、交通方式胶囊；地图控件按时间序标记 + 连线        | H5 无头：地图块=1、标记行=5、交通标签=5、操作区=5/5、新增表单（日期时间选择器=2 + 交通方式 6 胶囊）✅  |
+| 4   | 新建行程后，安排无法添加                                                  | 同 #3（前端无入口）；**并且真实 MySQL 上该写路径从未通过**（service 早已读写 `start_at/end_at/...`，schema 与迁移缺列） | 前端补 UI；后端一次性补齐漂移列（见 §五）                                                                                                                | H5 无头「新增安排」全流程可达 ✅；后端 `tsc` + 259 测试全绿 ✅                                         |
+| 5   | 清单默认的是之前一个                                                      | `ChecklistTab` 调 `listChecklist()`（**不带 tripId**）→ 跨行程全量返回                                                  | 改用纯加法新方法 `listTripChecklist(tripId)`；新增时显式带 `tripId`；新建行程播种默认 4 项（往返票 / 住宿（N 晚）/ 证件 / 充电）                         | H5 无头：清单项=6 且全属行程 101（往返高铁票/海景民宿/潮汐表…）、作用域=[共享,仅我自己]、删除按钮=6 ✅ |
+| 6   | 花销没地方记                                                              | `ExpenseTab` 只有汇总 + 明细，无记账入口                                                                                | 新增「记一笔花销」表单（名称/金额/日期/类目/备注）+ 明细行内编辑/删除；汇总随写操作重算                                                                  | H5 无头：汇总块=1、明细=4、记账表单输入框=3、类目 6 个 ✅                                              |
+| 7   | 年度要支持选择年份（回顾/提前计划）                                       | `PlanPage` 写死 `new Date().getFullYear()`                                                                              | 年份胶囊切换（候选 = 行程出现过的年份 ∪ {今年±1}），整页按所选年份聚合                                                                                   | H5 无头：年份=[2025,2026,2027] 当前=2026 → 切到 2025 生效 ✅                                           |
+
+## 二、tabBar 结构变更（微信硬上限 5）
+
+|        | M-Client-1                           | M-Client-2                                                                         |
+| ------ | ------------------------------------ | ---------------------------------------------------------------------------------- |
+| tab 数 | 4（首页 / 心愿池 / 行程 / 年度规划） | **5（首页 / 行程 / 物品 / 年度规划 / 我的）**                                      |
+| 心愿池 | 独立 tab                             | **降级为首页内区块**（投票能力保留），完整页仍可从区块底部进入 `/wishes`（非 tab） |
+
+> 原因：4 + 物品 + 我的 = 6 > 微信 tabBar 硬上限 5，构建期会被拒。经用户确认采用「心愿池降级首页区块」方案。
+
+## 三、新增/改动文件清单
+
+### 新增
+
+| 文件                           | 说明                                                                      |
+| ------------------------------ | ------------------------------------------------------------------------- |
+| `src/pages/ProfilePage.tsx`    | 「我的」页：账号态 + 家庭 CRUD + 成员管理 + 邀请码复制/分享               |
+| `src/pages/JoinFamilyPage.tsx` | 凭邀请码加入家庭（分享链接落地页，`?invite=CODE` 预填）                   |
+| `src/pages/ItemsPage.tsx`      | 「物品」页：分类筛选 + 分组列表 + 增删改 + 只看我的                       |
+| `src/utils/constants.ts`       | 交通方式标签/顺序、物品分类、记账分类、默认清单种子、`todayYmd`           |
+| `src/assets/marker.png`        | 地图标记图标（36×36，182B；小程序 Map 的 `iconPath` 必填且不吃 data URI） |
+
+### 改动（前端）
+
+| 文件                           | 变更                                                                                                                                                                         |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/api/types.ts`             | 新增 `FamilyMember/FamilyDetail/JoinFamilyResult/Item/TransportMode`；`Family.inviteCode`、`ItineraryItem.version/lat/lng/transport`、`ChecklistItem.tripId`、`Expense.note` |
+| `src/api/client.ts`            | `ApiClient` **纯加法** 16 方法：family 7 + itinerary 3 + checklist 2 + expense 3 + item 4（既有签名一字未改）                                                                |
+| `src/api/http.ts`              | 上述方法实现；新增 `optNumber` + `toMember/toItem` 投影；`HttpMethod` 补 `PATCH`                                                                                             |
+| `src/api/mock.ts`              | 可变状态扩至全域（families/members/trips/itinerary/checklist/expenses/items）；E7 CAS（version 不匹配 → 409）；`expenseSummary` 动态重算                                     |
+| `src/app.config.ts`            | pages 6 → 9；tabBar 4 → 5                                                                                                                                                    |
+| `src/nav/index.ts`             | 路由表补 `/items`、`/profile`、`/join`；`/wishes` 降为非 tab；查询串透传                                                                                                     |
+| `src/components/Icon.tsx`      | 补 16 个图标 + `TRANSPORT_ICON` 映射                                                                                                                                         |
+| `src/pages/TripDetailPage.tsx` | 行程 tab 重写（增删改 + 地图 + 交通）、清单 tab 改按 tripId、花销 tab 加记账                                                                                                 |
+| `src/pages/TripCreatePage.tsx` | 建行程后播种默认清单                                                                                                                                                         |
+| `src/pages/PlanPage.tsx`       | 年份切换 + 按年聚合                                                                                                                                                          |
+| `src/pages/HomePage.tsx`       | 心愿池区块（投票保留）+ 待办收敛到主行程                                                                                                                                     |
+| `src/styles/theme.css`         | 新增约 470 行（物品/我的/邀请/地图/时间轴操作/开关等）+ H5 tabBar 图标占位隐藏；**13 处条件编译平台名统一改为小写**（见 §四-3，修复 H5 丢失页面内边距）                      |
+| `config/index.ts`              | ⚠️ 见 §四「工程修复」                                                                                                                                                        |
+
+## 四、⚠️ 顺带修掉的四个工程缺陷（必读）
+
+1. **`outputRoot` 写死 `dist-h5`，小程序产物没进 `dist/`**
+   `project.config.json` 的 `miniprogramRoot` 指向 `dist/`，而构建配置把**任何**平台都输出到 `dist-h5/` → 微信开发者工具打开的是**上一次的旧产物**（表现为「改了 app.config 但工具里 tab 没变」）。
+   已改为按平台分流：`TARO_ENV=h5 → dist-h5`，否则 → `dist`（H5 预览路径不变）。
+
+2. **地图标记图标被内联成 base64**
+   webpack 会把 182B 的 `marker.png` 内联为 `data:image/png;base64,...`，而小程序 `<map>` 的 `marker.iconPath` **只认包内文件路径/网络地址**，data URI 会导致标记图标不显示（Taro 4 的 `mini.imageUrlLoaderOption.limit` 对小图未生效）。
+   改为 `copy.patterns` 静态拷贝到 `<outputRoot>/assets/marker.png`，代码侧用包内绝对路径 `/assets/marker.png` 引用。构建产物已验证：`dist/assets/marker.png` 存在，JS 内 `iconPath:"/assets/marker.png"`。
+
+3. **CSS 条件编译平台名大小写错误 → H5 丢失全部页面内边距**（影响面最大）
+   Taro 的 CSS 条件编译（`postcss-pxtransform`）用 `comment.text.split(' ').indexOf(platform)` 判断，`platform` 是**小写**的 `h5` / `weapp`。而 `theme.css` 原先一律写大写 `H5` → 恒不匹配：本该给 H5 的块被整体删除、本该给小程序端的块反被 H5 保留。
+   直接后果：H5 侧 `--safe-b` 无人定义（唯一来源是只在小程序生效的 `page` 选择器）→ `.screen` 的 `padding: 14px 14px calc(20px + var(--safe-b))` 因 `var()` 解析失败**整条声明失效** → 所有页面内容贴边（新页面的开关控件被视口裁切）。
+   已把 `theme.css` 中 13 处条件编译点统一改为小写平台名；修复后 H5 恢复 `* { box-sizing: border-box }` / `html,body{margin:0}` reset 与安全区变量，**与小程序端盒模型终于一致**。
+
+4. **后端契约漂移**（详见 §五）：`itinerary_item` / `item` 的服务层早已读写若干列，但 schema 与历史迁移都没有 → 该写路径从未在真实 MySQL 上打过。
+
+## 五、后端最小加法迁移（`apps/server`）
+
+| 文件                                                                | 变更                                                                                                                                                                                                      |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prisma/migrations/20261014120000_m_client_2_map_cas/migration.sql` | **纯加法**（仅 `ADD COLUMN`，不删不改、无需回填）：<br>`itinerary_item` + `start_at` / `end_at` / `amount` / `currency` / `amount_base` / `version` / `lat` / `lng` / `transport`；<br>`item` + `version` |
+| `prisma/schema.prisma`                                              | 同步两个模型字段（`lat/lng` 用 `Float`，Prisma 6 无 `Double`；死列 `date/start_time/end_time` 保留不删，守纯加法）                                                                                        |
+| `src/domains/itinerary/itinerary.schema.ts`                         | create/update 增 `lat/lng/transport`（坐标范围校验 −90~90 / −180~180）                                                                                                                                    |
+| `src/domains/itinerary/itinerary.controller.ts` · `.service.ts`     | 透传并落库坐标/交通方式；`version` 起始值 0 → 1（与 checklist A19 / mock 口径统一）                                                                                                                       |
+| `src/domains/item/item.service.ts`                                  | `version` 起始值 0 → 1                                                                                                                                                                                    |
+
+> 迁移为**纯加法**：旧列 `date/start_time/end_time` 无任何代码引用（service 一律走 `start_at/end_at`），保留待后续单独清理；因该写路径从未在 MySQL 落过行，无需数据回填。
+
+## 六、质量门禁（可复现）
+
+```bash
+cd apps/client
+./node_modules/.bin/tsc --noEmit -p tsconfig.json    # ✅ exit 0（strict + noUncheckedIndexedAccess）
+./node_modules/.bin/taro build --type weapp          # ✅ Compiled successfully, exit 0
+./node_modules/.bin/taro build --type h5             # ✅ exit 0（仅 bundle 体积建议性 warning）
+cd .. && cd .. && ./node_modules/.bin/eslint apps/client/src apps/server/src
+                                                     # ✅ 0 error（54 warning 均为 explicit-function-return-type，项目基线）
+cd apps/server
+./node_modules/.bin/tsc -p tsconfig.json --noEmit    # ✅ exit 0
+./node_modules/.bin/vitest run                       # ✅ 259 passed / 14 files
+./node_modules/.bin/prisma validate                  # ✅ schema valid
+./node_modules/.bin/prisma generate                  # ✅ Prisma Client 6.19.3 已刷新
+```
+
+### H5 端到端无头验收（25/25 通过，console error 0）
+
+脚本与证据：工作区 `.workbuddy/2026-10-14-10-35-17/`（`smoke.cjs` + `serve.mjs` + `shots/`，含 13 张逐页截图与 `report.json`）。
+
+| 组         | 断言                                                         | 结果    |
+| ---------- | ------------------------------------------------------------ | ------- |
+| 首页       | 渲染 + 心愿池区块 + 投票入口                                 | PASS ×3 |
+| 物品页     | 标题/列表 + 分类胶囊 + 编辑删除入口 + 新增表单               | PASS ×4 |
+| 我的页     | 登录态/家庭卡 + 邀请码与成员 + 分享与添加成员 + 加入家庭入口 | PASS ×4 |
+| 加入家庭页 | 邀请码从链接预填                                             | PASS    |
+| 行程详情   | 5 tab + 地图块 + 标记行 + 交通标签/操作入口 + 新增安排表单   | PASS ×5 |
+| 清单 tab   | 按行程隔离 + 作用域/删除                                     | PASS ×2 |
+| 花销 tab   | 汇总+明细 + 记账表单                                         | PASS ×2 |
+| 年度规划   | 年份胶囊 + 切换生效                                          | PASS ×2 |
+| tabBar     | 5 项且含 物品/我的                                           | PASS    |
+| 全局       | 控制台 0 error                                               | PASS    |
+
+> ⚠️ **测试侧踩坑记录**：Taro H5 的 tab 页是 keep-alive —— 访问过的页面 DOM 常驻（含隐藏页），且 `.taro_page_show` 会同时匹配多个页面。所有断言必须限定在 `.taro_page_show:visible` 内，否则会读到隐藏页元素（本次先出现「清单项=3（其实是首页待办）= 假失败」，加 `:visible` 后恢复 6）。另外 `<Input>` 的 `className` 在 H5 挂在 `taro-input-core` 自定义元素上，计数要用 `.input` 而非 `input.input`。
+
+## 七、微信开发者工具验证步骤（M-Client-2 验收）
+
+1. `cd apps/client && ./node_modules/.bin/taro build --type weapp`（产物落到 `dist/`）。
+2. 微信开发者工具「导入项目」选 **`apps/client`**（`miniprogramRoot=dist/`），测试号 AppID 即可。
+3. 首页 → 底部 5 个 tab 逐一点开：首页 / 行程 / 物品 / 年度规划 / 我的。
+4. 「我的 → 我们一家」展开 → 复制邀请码 → 分享按钮（真机/工具内可分享）。
+5. 「物品」→ 添加物品 → 选分类 → 提交；列表按分类分组出现。
+6. 「行程 → 国庆 · 青岛看海」→ 行程 tab：**地图控件**应显示 5 个蓝色标记并连线；点某条安排的铅笔 → 改标题/时间/交通方式 → 保存；垃圾桶 → 删除。
+7. 同页「添加安排」→ 点地点行的 📍 → 调起微信选点；选点后显示「已标记 lat, lng」。
+8. 清单 tab 应只显示本次行程的 6 项；「花销」→ 记一笔 → 汇总数字即时变化。
+9. 「年度规划」→ 切 2025/2026/2027 年份胶囊，内容随之切换。
+10. 控制台 0 error。
+
+## 八、红线自查
+
+| 红线                              | 是否守住 | 说明                                                                                                                      |
+| --------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
+| #1 `ApiClient` 既有签名一字不改   | ✅       | 16 个新方法全部纯加法；`listChecklist` 保留未删，新功能走 `listTripChecklist`                                             |
+| #2 组件不 fork（H5 与小程序共用） | ✅       | 唯一多端分支是地图控件（`process.env.TARO_ENV` 编译期内联，小程序原生 Map / H5 路线列表降级），逻辑与数据同源，非双份组件 |
+| #3 不写死环境相关值               | ✅       | API 地址仍走 `process.env.API_BASE_URL`；AppID 仍在 `project.config.json`；标记图标路径为包内资源路径                     |
+| #4 前端提交不混后端               | ⚠️ 见下  | 本次因 #4 反馈需要后端补列才能真跑通，已按「单独 commit」切分（前后端各一个 commit）                                      |
+| #5 Mock 优先                      | ✅       | 全部新功能在 Mock 下可完整体验（H5 验收即跑在 Mock 上）                                                                   |
+
+## 九、遗留与后续
+
+- **真机/工具内截图待补**：H5 截图已由无头浏览器产出；小程序端「地图标记 + 连线」的实际渲染需在微信开发者工具里人工确认（本环境无法启动工具）。地图坐标用的是演示级固定值，真机 `chooseLocation` 回传后由后端持久化。
+- **后端迁移未在 MySQL 上实跑**：本环境无可用 MySQL 实例，迁移 SQL 仅通过 `prisma validate` + `migrate diff` 结构一致性自查；首次部署请在有库环境执行 `prisma migrate deploy` 并核对 `itinerary_item` / `item` 的新列。
+- `prisma migrate` 的 `_prisma_migrations` 校验和：本迁移为手写 SQL（与既有 `b1_drift_fix` 同做法），若历史库已有手写迁移记录，注意保持一致。
+- 心愿池完整页（`/wishes`）当前无 tab 入口，仅从首页区块底部按钮进入；如需独立入口可后续加到「我的」页或首页顶栏。
+- 家庭成员「真实成员（非虚拟）」在 Mock 下用占位 `userId`，真机需走微信 openid 绑定链路（后端已有 `family_member` 结构）。

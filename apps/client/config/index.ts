@@ -8,6 +8,15 @@
 
 import { defineConfig } from '@tarojs/cli';
 
+/**
+ * 产物目录按平台分流。
+ * 小程序必须落在 `dist/` —— project.config.json 的 miniprogramRoot 指向 dist/，
+ * 否则微信开发者工具打开的是上一次的旧产物（曾出现「改了 app.config 但工具里 tab 没变」的假象）。
+ * H5 保持 dist-h5/ 不变（沿用既有预览脚本）。
+ */
+const isH5 = process.env.TARO_ENV === 'h5';
+const outputRoot = isH5 ? 'dist-h5' : 'dist';
+
 export default defineConfig({
   projectName: 'family-trip-client',
   date: '2026-10-12',
@@ -19,13 +28,20 @@ export default defineConfig({
     375: 2,
   },
   sourceRoot: 'src',
-  outputRoot: 'dist-h5',
+  outputRoot,
   plugins: [],
   defineConstants: {
     'process.env.API_BASE_URL': JSON.stringify(process.env.API_BASE_URL ?? ''),
   },
   copy: {
-    patterns: [],
+    /**
+     * 地图标记图标按「静态拷贝」处理，不走 webpack 图片管线。
+     * 原因：小程序 <map> 的 marker.iconPath 只认包内文件路径 / 网络地址，
+     * webpack 默认把小图内联成 base64 data URI（Taro 4 的 imageUrlLoaderOption
+     * 对小图内联未生效），会导致标记图标不显示。
+     * 拷贝后以包内绝对路径 `/assets/marker.png` 引用（见 TripDetailPage）。
+     */
+    patterns: [{ from: 'src/assets/marker.png', to: `${outputRoot}/assets/marker.png` }],
     options: {},
   },
   framework: 'react',

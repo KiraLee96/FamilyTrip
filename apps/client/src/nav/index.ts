@@ -8,11 +8,14 @@
  *
  * 路由映射（逻辑路径 → Taro 页面，与 app.config.ts 的 pages 一一对应）：
  *   /            → pages/HomePage      （tab）
- *   /wishes      → pages/WishPoolPage  （tab）
  *   /trips       → pages/TripsPage     （tab）
+ *   /items       → pages/ItemsPage     （tab，M-Client-2 新增）
  *   /plan        → pages/PlanPage      （tab）
+ *   /profile     → pages/ProfilePage   （tab，M-Client-2 新增）
+ *   /wishes      → pages/WishPoolPage  （M-Client-2 起降级为非 tab，从首页区块进入）
  *   /trips/new   → pages/TripCreatePage（非 tab，须先于 /trips/:id 匹配）
  *   /trips/:id   → pages/TripDetailPage（非 tab，带 query 参数）
+ *   /join        → pages/JoinFamilyPage（非 tab，?invite=CODE 凭邀请码加入）
  */
 
 import Taro from '@tarojs/taro';
@@ -20,20 +23,28 @@ import Taro from '@tarojs/taro';
 /** tab 页：用 switchTab 切换；非 tab 页：用 navigateTo 压栈 */
 const TAB_PAGE: Record<string, string> = {
   '/': 'pages/HomePage',
-  '/wishes': 'pages/WishPoolPage',
   '/trips': 'pages/TripsPage',
+  '/items': 'pages/ItemsPage',
   '/plan': 'pages/PlanPage',
+  '/profile': 'pages/ProfilePage',
 };
 
 function toTaroUrl(to: string): { url: string; tab: boolean } {
-  if (to === '/trips/new') {
-    return { url: '/pages/TripCreatePage', tab: false };
+  // 先切出查询串：tab 页不接受 query，非 tab 页原样透传（如 /join?invite=XXXX）
+  const qIndex = to.indexOf('?');
+  const path = qIndex >= 0 ? to.slice(0, qIndex) : to;
+  const qs = qIndex >= 0 ? to.slice(qIndex) : '';
+  if (path === '/trips/new') {
+    return { url: `/pages/TripCreatePage${qs}`, tab: false };
   }
-  if (to.startsWith('/trips/')) {
-    const id = encodeURIComponent(to.slice('/trips/'.length));
+  if (path === '/join') {
+    return { url: `/pages/JoinFamilyPage${qs}`, tab: false };
+  }
+  if (path.startsWith('/trips/')) {
+    const id = encodeURIComponent(path.slice('/trips/'.length));
     return { url: `/pages/TripDetailPage?id=${id}`, tab: false };
   }
-  const page = TAB_PAGE[to];
+  const page = TAB_PAGE[path];
   if (page) return { url: `/${page}`, tab: true };
   return { url: to, tab: false };
 }

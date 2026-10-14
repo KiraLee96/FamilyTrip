@@ -41,7 +41,7 @@ page {
   --safe-b: 0px;
 }
 
-/* #ifdef H5 */
+/* #ifdef h5 */
 /* H5 浏览器完整支持 env() 双参数 fallback，用 :root 覆盖安全区真实值 */
 :root {
   --safe-b: env(safe-area-inset-bottom, 0px);
@@ -55,7 +55,7 @@ page {
    以下对 H5 专属 reset 做条件编译分流，两端行为不变。 */
 
 /* H5：标准 CSS reset 原样保留 */
-/* #ifdef H5 */
+/* #ifdef h5 */
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
@@ -81,7 +81,7 @@ page {
 
 /* 小程序：* 通配改显式原生组件列举；html/body reset 不需要（page 默认无外边距），
    页面级字体/背景挂 page 选择器 */
-/* #ifndef H5 */
+/* #ifndef h5 */
 view,
 text,
 button,
@@ -112,7 +112,7 @@ button {
 }
 
 /* ul/ol/h1~p 为 HTML 标签 reset：WXSS 不支持，且小程序页面内无这些元素，仅 H5 需要 */
-/* #ifdef H5 */
+/* #ifdef h5 */
 ul,
 ol {
   margin: 0;
@@ -144,7 +144,7 @@ p {
 }
 
 /* 桌面「手机外壳」适配仅 H5 需要；块内 body 为 HTML 标签，WXSS 不支持 */
-/* #ifdef H5 */
+/* #ifdef h5 */
 @media (min-width: 420px) {
   body {
     padding: 20px 0;
@@ -334,7 +334,7 @@ p {
 }
 
 /* > * 通配为 WXSS 非法语法；小程序端子元素是 text/view 组件，H5 端保留 * */
-/* #ifndef H5 */
+/* #ifndef h5 */
 .trip__meta > view,
 .trip__meta > text {
   display: inline-flex;
@@ -342,7 +342,7 @@ p {
   gap: 4px;
 }
 /* #endif */
-/* #ifdef H5 */
+/* #ifdef h5 */
 .trip__meta > * {
   display: inline-flex;
   align-items: center;
@@ -682,7 +682,7 @@ p {
 }
 
 /* small 为 HTML 标签，WXSS 不支持；仅 H5 保留 */
-/* #ifdef H5 */
+/* #ifdef h5 */
 .money__num small {
   font-size: 14px;
   font-weight: 500;
@@ -821,7 +821,7 @@ p {
 }
 
 /* b/span 为 HTML 标签，WXSS 不支持；仅 H5 保留 */
-/* #ifdef H5 */
+/* #ifdef h5 */
 .year__stat b {
   display: block;
   font-size: 19px;
@@ -1355,9 +1355,528 @@ p {
 
 /* .stack-8 > * + * 已移除：全工程零使用（H5 原型遗留类），且 * 通配为 WXSS 非法语法 */
 
-/* #ifdef H5 */
+/* #ifdef h5 */
 .probe-h5mark { color: rgb(1, 1, 1); }
 /* #endif */
-/* #ifndef H5 */
+/* #ifndef h5 */
 .probe-weappmark { color: rgb(2, 2, 2); }
 /* #endif */
+
+/* ============================================================================
+   M-Client-2 新增：物品页 / 我的页 / 家庭邀请 / 行程地图与增删改
+   ----------------------------------------------------------------------------
+   守 WXSS 白名单：只用 .class 选择器；跨组件后代仅用 view / text 原生组件名。
+   ========================================================================== */
+
+/* ---------- 通用：筛选胶囊条 ---------- */
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.filter-bar--compact {
+  gap: 6px;
+  margin-bottom: 0;
+  padding-top: 2px;
+}
+
+.chip--on {
+  background: var(--primary);
+  color: #fff;
+}
+
+/* ---------- 通用：图标按钮 / 按钮变体 / 开关 ---------- */
+
+.icon-btn {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #f2f4f8;
+  color: var(--text-2);
+}
+
+.icon-btn:active {
+  background: #e5e9f1;
+}
+
+.icon-btn--danger {
+  color: var(--danger);
+}
+
+.icon-btn--busy {
+  opacity: 0.45;
+}
+
+.btn-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.btn-row > view {
+  flex: 1;
+}
+
+.btn--danger {
+  background: var(--danger);
+}
+
+.btn--danger:active {
+  background: #d94a4a;
+}
+
+.btn--busy {
+  opacity: 0.6;
+}
+
+.switch {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 23px;
+  border-radius: 12px;
+  background: #dfe3ec;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+}
+
+.switch--on {
+  background: var(--primary);
+}
+
+.switch__knob {
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(24, 32, 54, 0.2);
+  transition: transform 0.18s ease;
+}
+
+.switch--on .switch__knob {
+  transform: translateX(17px);
+}
+
+/* ---------- 物品页 ---------- */
+
+.items-scope {
+  margin-bottom: 10px;
+}
+
+.item-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 11px 14px;
+  margin-bottom: 8px;
+  box-shadow: var(--shadow);
+}
+
+.item-row__body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.item-row__name-line {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.item-row__name {
+  font-size: 14.5px;
+  font-weight: 550;
+}
+
+.item-row__qty {
+  font-size: 12px;
+  color: var(--primary);
+  background: var(--primary-soft);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+.item-row__note {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 3px;
+}
+
+.item-row__ops {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+.item-edit {
+  margin-bottom: 10px;
+}
+
+/* ---------- 我的页：账号卡片 ---------- */
+
+.profile-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.profile-card__avatar {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: var(--primary-soft);
+  color: var(--primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.profile-card__body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.profile-card__name {
+  display: block;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.profile-card__sub {
+  display: block;
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+/* ---------- 我的页：家庭卡片 ---------- */
+
+.family-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.family-card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px;
+}
+
+.family-card__name {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.family-card__sub {
+  display: block;
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+.family-card__detail {
+  padding: 0 14px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.family-card__label {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-3);
+  margin: 14px 0 6px;
+}
+
+.chev {
+  flex: 0 0 auto;
+  color: var(--text-3);
+  display: inline-flex;
+  transition: transform 0.18s ease;
+}
+
+/* ---------- 邀请码区块 ---------- */
+
+.invite {
+  display: block;
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--primary-soft);
+}
+
+.invite__body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.invite__label {
+  display: block;
+  font-size: 11px;
+  color: var(--primary-ink);
+  opacity: 0.75;
+}
+
+.invite__code {
+  display: block;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--primary-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.invite__ops {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.invite__btn {
+  flex: 1 1 0;
+  height: 32px;
+  background: #fff;
+  border-color: transparent;
+  font-size: 13px;
+}
+
+.invite__share {
+  margin: 0;
+  padding: 0;
+  line-height: 1;
+  font-weight: 500;
+}
+
+.invite__hint {
+  display: block;
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 7px;
+  line-height: 1.6;
+}
+
+/* ---------- 成员行 ---------- */
+
+.member {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.member:last-child {
+  border-bottom: none;
+}
+
+.member__avatar {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #f2f4f8;
+  color: var(--text-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.member__body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.member__name {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.member__sub {
+  display: block;
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 1px;
+}
+
+/* ---------- 加入家庭页 ---------- */
+
+.join-tip {
+  margin-top: 12px;
+}
+
+.join-tip__title {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.join-tip__text {
+  display: block;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.65;
+}
+
+/* ---------- 行程地图卡片 ---------- */
+
+.map-card {
+  background: var(--card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.map-card__canvas {
+  display: block;
+  width: 100%;
+  height: 200px;
+}
+
+.map-card__canvas--fallback {
+  height: auto;
+  padding: 12px 14px;
+  background: linear-gradient(135deg, #eef4ff, #f7faff);
+}
+
+.map-card__fb-title {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary-ink);
+  margin-bottom: 8px;
+}
+
+.map-card__fb-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+}
+
+.map-card__fb-idx {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  text-align: center;
+  line-height: 18px;
+}
+
+.map-card__fb-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.map-card__fb-coord {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.map-card__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.map-card__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+/* ---------- 行程时间轴：卡片头（时间/交通/操作） ---------- */
+
+.tl__card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tl__transport {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11.5px;
+  color: var(--primary-ink);
+  background: var(--primary-soft);
+  border-radius: 6px;
+  padding: 1px 7px;
+}
+
+.tl__ops {
+  margin-left: auto;
+  display: flex;
+  gap: 5px;
+}
+
+.tl__coord {
+  font-size: 10.5px;
+  color: var(--ok);
+  margin-left: 5px;
+}
+
+/* ---------- 坐标标记行（安排表单内） ---------- */
+
+.coord-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 7px;
+}
+
+.coord-line__text {
+  font-size: 11.5px;
+  color: var(--ok);
+  font-variant-numeric: tabular-nums;
+}
+
+.coord-line__clear {
+  font-size: 11.5px;
+  color: var(--danger);
+}
+
+/* ---------- 花销编辑卡（明细内联） ---------- */
+
+.expense-edit {
+  margin: 8px 0;
+}
+
+/* ---------- H5 专属：纯文字 tabBar 去掉图标占位 ----------
+   app.config.ts 的 tabBar 刻意不配 iconPath（原型期不引入 PNG 资源）：
+     · 小程序原生 tabBar 只渲染文字，不存在该 DOM；
+     · H5 端 Taro 仍渲染空的 <img class="weui-tabbar__icon">，显示为空白方块。
+   这里直接命中 H5 专有类去除即可 —— **不需要条件编译**（小程序端无此元素，规则天然无副作用）。
+   ⚠️ 记录一个已修的坑：Taro 的 CSS 条件编译（postcss-pxtransform）按**小写**平台名匹配
+   （h5 / weapp）。本文件原先写的大写平台名（H5）永远匹配不上 → 本该给 H5 的规则被整体删除、
+   本该给小程序端的规则反被 H5 保留，直接后果是 H5 侧 `--safe-b` 未定义 →
+   `calc(1rem + var(--safe-b))` 整条 padding 声明被判无效 → 所有页面丢失 14px 内边距（内容贴边）。
+   现已全量改为小写平台名。 */
+.weui-tabbar__icon {
+  display: none;
+}

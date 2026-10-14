@@ -52,10 +52,42 @@ export interface Family {
   name: string;
   ownerUserId: string;
   memberCount: number;
+  /** 邀请码（建家庭时自动生成；邀请家人加入用） */
+  inviteCode?: string;
+}
+
+/** 家庭成员 */
+export interface FamilyMember {
+  id: string;
+  familyId: string;
+  /** 虚拟成员（无微信账号的家人，如幼儿/老人）为 null */
+  userId: string | null;
+  role: 'OWNER' | 'MEMBER';
+  isVirtual: boolean;
+  /** 代管人 memberId（虚拟成员必有；真实成员为 null） */
+  managedBy: string | null;
+  displayName: string;
+  joinedAt: string;
+}
+
+/** 家庭详情（GET /families/:id 的 data：家庭 + 成员列表） */
+export interface FamilyDetail {
+  family: Family;
+  members: FamilyMember[];
+}
+
+/** 凭邀请码加入家庭的结果（POST /families/join 的 data） */
+export interface JoinFamilyResult {
+  family: Family;
+  /** 已是成员时幂等返回 true（不重复插入） */
+  alreadyMember: boolean;
 }
 
 /** 出行状态机 */
 export type TripStatus = 'DRAFT' | 'PLANNED' | 'ONGOING' | 'FINISHED' | 'CANCELLED';
+
+/** 交通方式（行程安排内选择；地图连线按此着色） */
+export type TransportMode = 'WALK' | 'BIKE' | 'CAR' | 'BUS' | 'TRAIN' | 'FLIGHT';
 
 /** 目的地 */
 export interface Destination {
@@ -104,11 +136,21 @@ export interface ItineraryItem {
   location?: string;
   note?: string;
   sortOrder: number;
+  /** CAS 乐观锁版本号；更新时必须原样回传 */
+  version: number;
+  /** 地图标记纬度（选点后由 chooseLocation 带回，未选点为空） */
+  lat?: number;
+  /** 地图标记经度 */
+  lng?: number;
+  /** 交通方式（前往/离开该安排的出行方式） */
+  transport?: TransportMode;
 }
 
 /** 清单条目 */
 export interface ChecklistItem {
   id: string;
+  /** 所属出行（修复前跨行程串数据的根源：列表必须按 tripId 过滤） */
+  tripId?: string;
   scope: 'SHARED' | 'PERSONAL';
   title: string;
   done: boolean;
@@ -128,6 +170,7 @@ export interface Expense {
   payerName: string;
   spentAt: string;
   category?: string;
+  note?: string;
 }
 
 /** 记账汇总 */
@@ -135,6 +178,19 @@ export interface ExpenseSummary {
   totalCny: string;
   byMember: Array<{ memberName: string; amountCny: string }>;
   byCategory: Array<{ category: string; amountCny: string }>;
+}
+
+/** 个人物品（物品库条目 —— PRIVATE 域，仅本人/代管人可见） */
+export interface Item {
+  id: string;
+  familyId: string;
+  name: string;
+  /** 分类（证件必带/衣物/电子/洗护/母婴/药品/食品/其他） */
+  category?: string;
+  quantity: number;
+  note?: string;
+  /** CAS 乐观锁版本号；更新时必须原样回传 */
+  version: number;
 }
 
 // ─── 媒体资产（对齐 media 域 mediaAsset 行） ───────────────────────

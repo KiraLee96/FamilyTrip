@@ -7,6 +7,7 @@
  */
 
 import { Text } from '@tarojs/components';
+import type { TransportMode } from '../api/types';
 
 export type IconName =
   | 'home'
@@ -14,6 +15,7 @@ export type IconName =
   | 'route'
   | 'calendar'
   | 'chevron-right'
+  | 'chevron-left'
   | 'map-pin'
   | 'heart'
   | 'check'
@@ -22,7 +24,23 @@ export type IconName =
   | 'user'
   | 'clock'
   | 'wallet'
-  | 'camera';
+  | 'camera'
+  // ---- M-Client-2 新增 ----
+  | 'package'
+  | 'trash'
+  | 'edit'
+  | 'copy'
+  | 'share'
+  | 'map'
+  | 'link'
+  | 'close'
+  | 'users'
+  | 'walk'
+  | 'bike'
+  | 'car'
+  | 'bus'
+  | 'train'
+  | 'flight';
 
 const GLYPH: Record<IconName, string> = {
   home: '🏠',
@@ -30,6 +48,7 @@ const GLYPH: Record<IconName, string> = {
   route: '🧭',
   calendar: '📅',
   'chevron-right': '›',
+  'chevron-left': '‹',
   'map-pin': '📍',
   heart: '❤️',
   check: '✓',
@@ -39,6 +58,31 @@ const GLYPH: Record<IconName, string> = {
   clock: '🕐',
   wallet: '💰',
   camera: '📷',
+  package: '📦',
+  trash: '🗑️',
+  edit: '✏️',
+  copy: '📋',
+  share: '📤',
+  map: '🗺️',
+  link: '🔗',
+  close: '✕',
+  users: '👨‍👩‍👧',
+  walk: '🚶',
+  bike: '🚲',
+  car: '🚗',
+  bus: '🚌',
+  train: '🚆',
+  flight: '✈️',
+};
+
+/** 交通方式 → 图标名（行程卡片 / 地图连线图例共用） */
+export const TRANSPORT_ICON: Record<TransportMode, IconName> = {
+  WALK: 'walk',
+  BIKE: 'bike',
+  CAR: 'car',
+  BUS: 'bus',
+  TRAIN: 'train',
+  FLIGHT: 'flight',
 };
 
 export interface IconProps {

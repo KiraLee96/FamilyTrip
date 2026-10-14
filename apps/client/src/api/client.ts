@@ -21,12 +21,17 @@ import type {
   Expense,
   ExpenseSummary,
   Family,
+  FamilyDetail,
+  FamilyMember,
   ItineraryItem,
+  Item,
+  JoinFamilyResult,
   MediaAsset,
   MemoryArchive,
   MemorySnapshot,
   MemoryType,
   PresignUploadResult,
+  TransportMode,
   Trip,
   User,
   Wish,
@@ -57,6 +62,23 @@ export interface ApiClient {
   // ---- family ----
   /** GET /families */
   listFamilies(): Promise<Family[]>;
+  /** GET /families/:id（家庭 + 成员列表；family 行带 inviteCode） */
+  getFamily(id: string): Promise<FamilyDetail>;
+  /** POST /families（创建者自动成为户主） */
+  createFamily(input: { name: string; timezone?: string }): Promise<Family>;
+  /** PATCH /families/:id（改名/换时区，仅户主） */
+  updateFamily(id: string, input: { name?: string; timezone?: string }): Promise<Family>;
+  /** DELETE /families/:id（解散家庭，仅户主） */
+  dissolveFamily(id: string): Promise<void>;
+  /** POST /families/join（凭邀请码加入） */
+  joinFamily(input: { inviteCode: string; displayName?: string }): Promise<JoinFamilyResult>;
+  /** POST /families/:id/members（新增成员；无微信账号的家人用虚拟成员 displayName） */
+  addFamilyMember(
+    familyId: string,
+    input: { displayName: string; isVirtual?: boolean },
+  ): Promise<FamilyMember>;
+  /** DELETE /families/members/:id（移除成员；本人即退出） */
+  removeFamilyMember(memberId: string): Promise<void>;
 
   // ---- trip ----
   /** GET /trips */
@@ -80,6 +102,40 @@ export interface ApiClient {
   // ---- itinerary ----
   /** GET /itineraries */
   listItineraries(tripId: string): Promise<ItineraryItem[]>;
+  /** POST /itineraries（新增安排；startAt 为本地时间 YYYY-MM-DDTHH:mm） */
+  createItineraryItem(input: {
+    tripId: string;
+    familyId: string;
+    title: string;
+    /** 本地时间 YYYY-MM-DDTHH:mm */
+    startAt: string;
+    endAt?: string;
+    location?: string;
+    note?: string;
+    sort?: number;
+    /** 地图标记坐标（chooseLocation 带回；不传则该安排不参与地图标记） */
+    lat?: number;
+    lng?: number;
+    transport?: TransportMode;
+  }): Promise<ItineraryItem>;
+  /** PATCH /itineraries/:id（CAS：version 必传） */
+  updateItineraryItem(
+    id: string,
+    input: {
+      version: number;
+      title?: string;
+      startAt?: string;
+      endAt?: string | null;
+      location?: string | null;
+      note?: string | null;
+      sort?: number;
+      lat?: number | null;
+      lng?: number | null;
+      transport?: TransportMode | null;
+    },
+  ): Promise<ItineraryItem>;
+  /** DELETE /itineraries/:id */
+  deleteItineraryItem(id: string): Promise<void>;
 
   // ---- checklist ----
   /** GET /checklists/items */
@@ -95,12 +151,72 @@ export interface ApiClient {
   }): Promise<ChecklistItem>;
   /** POST /checklists/items/:id/toggle */
   toggleChecklistItem(id: string): Promise<ChecklistItem>;
+  /**
+   * GET /checklists/items?tripId=...
+   * 按出行查清单（修复「清单默认是之前一个」的跨行程串数据问题）。
+   * 不传 scope 时返回「共享 + 我自己可见的私有」。
+   */
+  listTripChecklist(tripId: string, scope?: 'SHARED' | 'PERSONAL'): Promise<ChecklistItem[]>;
+  /** DELETE /checklists/items/:id */
+  deleteChecklistItem(id: string): Promise<void>;
 
   // ---- expense ----
   /** GET /expenses */
   listExpenses(tripId: string): Promise<Expense[]>;
   /** GET /expenses/summary */
   expenseSummary(tripId: string): Promise<ExpenseSummary>;
+  /** POST /expenses（记一笔；amount 为主单位字符串如 "8600.00"） */
+  createExpense(input: {
+    tripId: string;
+    familyId: string;
+    title: string;
+    /** 主单位金额字符串，如 "368.00"（后端落库前转最小货币单位） */
+    amount: string;
+    currency?: string;
+    category?: string;
+    /** YYYY-MM-DD，缺省为今天 */
+    spentAt?: string;
+    note?: string;
+  }): Promise<Expense>;
+  /** PATCH /expenses/:id */
+  updateExpense(
+    id: string,
+    input: {
+      title?: string;
+      amount?: string;
+      currency?: string;
+      category?: string | null;
+      spentAt?: string | null;
+      note?: string | null;
+    },
+  ): Promise<Expense>;
+  /** DELETE /expenses/:id */
+  deleteExpense(id: string): Promise<void>;
+
+  // ---- item（个人物品库，PRIVATE 域） ----
+  /** GET /items（默认只看本人；mineOnly=false 时代管成员的也可见） */
+  listItems(query?: { category?: string; mineOnly?: boolean }): Promise<Item[]>;
+  /** POST /items */
+  createItem(input: {
+    familyId: string;
+    name: string;
+    category?: string;
+    quantity?: number;
+    note?: string;
+  }): Promise<Item>;
+  /** PATCH /items/:id（CAS：version 必传） */
+  updateItem(
+    id: string,
+    input: {
+      version: number;
+      name?: string;
+      category?: string | null;
+      quantity?: number;
+      note?: string | null;
+    },
+  ): Promise<Item>;
+  /** DELETE /items/:id */
+  deleteItem(id: string): Promise<void>;
 
   // ---- media（用户上传的照片/视频） ----
   /** POST /media/presign —— 预签名上传位，客户端随后直传对象存储 */
