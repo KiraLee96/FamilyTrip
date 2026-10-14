@@ -322,3 +322,22 @@ cd apps/server
 - `prisma migrate` 的 `_prisma_migrations` 校验和：本迁移为手写 SQL（与既有 `b1_drift_fix` 同做法），若历史库已有手写迁移记录，注意保持一致。
 - 心愿池完整页（`/wishes`）当前无 tab 入口，仅从首页区块底部按钮进入；如需独立入口可后续加到「我的」页或首页顶栏。
 - 家庭成员「真实成员（非虚拟）」在 Mock 下用占位 `userId`，真机需走微信 openid 绑定链路（后端已有 `family_member` 结构）。
+
+## 十、🔴 环境铁律：libVersion 必须与工具运行库一致（2026-10-14 沉淀）
+
+**症状**（本机已反复出现多次，每次表现为一堆 WAService / simulator 报错，极易误判为工程问题）：
+
+- `simulator launch failed ... (env: Windows,mp,2.02.2608080; lib: 3.17.4)`
+- `TypeError: SystemError (appServiceSDKScriptError) Cannot read properties of null (reading 'screenHeight')`
+- `TypeError: SystemError (appServiceSDKScriptError) Cannot read properties of undefined (reading 'getPageTypeById')`
+- `appLaunch with non-empty page stack`
+
+**根因**：`apps/client/project.config.json` 的 `libVersion` 与微信开发者工具实际运行的基础库不一致。本例中 tracked 配置写死 `3.0.0`，而 IDE 本地态（`project.private.config.json`，已 gitignore）是 `3.17.4`，两者对不上 → 基础库初始化半途而废 → 上述报错组合。
+
+**规则**（铁律，换机器/换工具版本后必须执行）：
+
+1. `project.config.json` 的 `libVersion` 跟随工具当前运行的基础库版本（工具标题栏/报错栈里的 `lib: x.y.z` 即实际值）。
+2. 工具升级或换机器后，先核对这两个值再导入项目；不一致时改 `project.config.json`（tracked），**不要**改 private 配置（本地态，不入库）。
+3. 本机已于 2026-10-14 修正为 `3.17.4`；下次工具升级后如再出现同类报错，第一件事就是核对这里，不要重复排查工程代码。
+
+**排查口诀**：simulator/WAService 类报错 → 先看 `lib:` 版本与 `project.config.json` 是否一致 → 再查 OrayIddDriver（向日葵虚拟显示驱动）与残留进程 → 最后才怀疑工程代码（本工程 H5 无头验收 15/15 全过可作无罪证据）。
