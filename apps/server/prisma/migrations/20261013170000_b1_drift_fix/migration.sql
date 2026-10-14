@@ -10,6 +10,17 @@
 --   (biz_key,'') 冲突失败（旧键对活跃 NULL 不挡重，可能已存在重复活跃行）。
 --   若存在重复，先治理：重复活跃行保留 1 条（最小 id），其余 UPDATE 置 deleted_at 并写
 --   deleted_token = REPLACE(UUID(),'-','')（见 §A 回填注释）。
+--
+-- 🔧 2026-10-14 全新库 deploy 修复（init → b1 → m_client_2 链首次实跑）：
+--   本稿原按「探测库」的索引名写死 DROP INDEX（uk_openid / uk_unionid /
+--   uk_invite_code / uk_wish_user / uk_trip_user / uk_family_user / uk_user_tpl），
+--   而 init 迁移（20261010120000）生成的是 Prisma 默认索引名
+--   （*_deleted_at_key 系列）——导致全新库 deploy 必现 Error 1091
+--   "Can't DROP 'uk_openid'; check that column/key exists"，迁移链中断。
+--   本次按 init 实际产物逐项改名；另补两处收尾：
+--     · user_phone_key → uk_phone（schema v1.5 显式名，原稿漏改）
+--     · memory_archive 旧唯一键 family_id_year_type_key 清理（B1 改 uk_snap 后
+--       该键会阻断「同一家庭同年多个 TRIP 回忆」，属语义错误而非仅命名漂移）
 -- ============================================================================
 
 SET FOREIGN_KEY_CHECKS = 0;
@@ -30,21 +41,24 @@ SET FOREIGN_KEY_CHECKS = 0;
 
 -- A15 user：加 deleted_token + 切键 (openid/unionid, deleted_token) + 已软删行回填 token
 -- （索引名用 schema 显式 name: uk_openid / uk_unionid）
+-- 🔧 DROP 目标按 init 迁移实际生成的 Prisma 默认索引名（见文件头修复说明）
 ALTER TABLE `user`
   ADD COLUMN `deleted_token` CHAR(36) NOT NULL DEFAULT '' COMMENT '软删令牌: 活跃行恒空串, 软删由Repository(E4)写UUID' AFTER `deleted_at`;
 UPDATE `user` SET `deleted_token` = REPLACE(UUID(),'-','') WHERE `deleted_at` IS NOT NULL AND `deleted_token` = '';
 ALTER TABLE `user`
-  DROP INDEX `uk_openid`,
+  DROP INDEX `user_openid_deleted_at_key`,
   ADD UNIQUE KEY `uk_openid` (`openid`, `deleted_token`),
-  DROP INDEX `uk_unionid`,
-  ADD UNIQUE KEY `uk_unionid` (`unionid`, `deleted_token`);
+  DROP INDEX `user_unionid_deleted_at_key`,
+  ADD UNIQUE KEY `uk_unionid` (`unionid`, `deleted_token`),
+  DROP INDEX `user_phone_key`,
+  ADD UNIQUE KEY `uk_phone` (`phone`);
 
 -- A16 family
 ALTER TABLE `family`
   ADD COLUMN `deleted_token` CHAR(36) NOT NULL DEFAULT '' COMMENT '软删令牌: 同 user 约定' AFTER `deleted_at`;
 UPDATE `family` SET `deleted_token` = REPLACE(UUID(),'-','') WHERE `deleted_at` IS NOT NULL AND `deleted_token` = '';
 ALTER TABLE `family`
-  DROP INDEX `uk_invite_code`,
+  DROP INDEX `family_invite_code_deleted_at_key`,
   ADD UNIQUE KEY `uk_invite_code` (`invite_code`, `deleted_token`);
 
 -- A17 wish_vote
@@ -52,27 +66,28 @@ ALTER TABLE `wish_vote`
   ADD COLUMN `deleted_token` CHAR(36) NOT NULL DEFAULT '' COMMENT '软删令牌: 同 user 约定' AFTER `deleted_at`;
 UPDATE `wish_vote` SET `deleted_token` = REPLACE(UUID(),'-','') WHERE `deleted_at` IS NOT NULL AND `deleted_token` = '';
 ALTER TABLE `wish_vote`
-  DROP INDEX `uk_wish_user`,
+  DROP INDEX `wish_vote_wish_id_user_id_deleted_at_key`,
   ADD UNIQUE KEY `uk_wish_user` (`wish_id`, `user_id`, `deleted_token`);
 
 -- A11/A12：trip_member / family_member 唯一键回退纯 (biz_key)（去误加 deleted_at）
 ALTER TABLE `trip_member`
-  DROP INDEX `uk_trip_user`,
+  DROP INDEX `trip_member_trip_id_user_id_deleted_at_key`,
   ADD UNIQUE KEY `uk_trip_user` (`trip_id`, `user_id`);
 ALTER TABLE `family_member`
-  DROP INDEX `uk_family_user`,
+  DROP INDEX `family_member_family_id_user_id_deleted_at_key`,
   ADD UNIQUE KEY `uk_family_user` (`family_id`, `user_id`);
 
--- A21/A23：补 3 个缺失 CHECK
+-- A21/A23：补 2 个可落地 CHECK（itinerary_item / booking 的 rate_by 无外键引用动作，可落地）
+-- ⛔ 原稿第 3 条 chk_tci_scope_owner 已移除（2026-10-14 修复）：
+--    trip_checklist_item.owner_id 的外键为 ON DELETE SET NULL，MySQL 8.4 禁止
+--    将带引用动作的列用于 CHECK（Error 3823）；且二者语义本身矛盾 —— 删用户时
+--    SET NULL 会把 PERSONAL 项的 owner_id 置空，恰恰违反该 CHECK。DB 层不可落地，
+--    不变式改由 Repository 写路径强制 + resolveChecklistDomain 读路径分流保证
+--    （与 schema.prisma 中该 @@check 的临时注释口径一致）。
 ALTER TABLE `itinerary_item`
   ADD CONSTRAINT `chk_ii_rate_by` CHECK (`rate_source` = 'AUTO' OR `rate_by` IS NOT NULL);
 ALTER TABLE `booking`
   ADD CONSTRAINT `chk_bk_rate_by` CHECK (`rate_source` = 'AUTO' OR `rate_by` IS NOT NULL);
-ALTER TABLE `trip_checklist_item`
-  ADD CONSTRAINT `chk_tci_scope_owner` CHECK (
-    (`scope` = 'SHARED'   AND `owner_id` IS NULL) OR
-    (`scope` = 'PERSONAL' AND `owner_id` IS NOT NULL)
-  );
 
 -- A13：reminder_task 枚举默认值对齐 C6/C13（tz 由可空改 NOT NULL，先回填 NULL 行）
 UPDATE `reminder_task` SET `tz` = 'Asia/Shanghai' WHERE `tz` IS NULL;
@@ -101,7 +116,7 @@ ALTER TABLE `notify_subscription`
   MODIFY COLUMN `status` ENUM('ACCEPTED','REVOKED','BANNED','EXPIRED') NOT NULL DEFAULT 'ACCEPTED' COMMENT '收敛状态机(磐石石推荐)',
   ADD COLUMN  `sub_type` ENUM('ONCE','LONG_TERM') NOT NULL DEFAULT 'ONCE' COMMENT 'C6 长期订阅优先+降级' AFTER `template_id`,
   MODIFY COLUMN `remain_count` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'ONCE 递减 / LONG_TERM 恒 0=不限',
-  DROP INDEX `uk_user_tpl`,
+  DROP INDEX `notify_subscription_user_id_template_id_deleted_at_key`,
   ADD UNIQUE KEY `uk_user_template` (`user_id`, `template_id`);
 ALTER TABLE `notify_subscription` DROP COLUMN `deleted_at`;
 
@@ -127,10 +142,13 @@ UPDATE `memory_archive` SET `snap_key` =
 --   先修正越界行，再执行本段。
 ALTER TABLE `memory_archive`
   MODIFY COLUMN `snap_key` VARCHAR(80) NOT NULL,
+  DROP INDEX `memory_archive_family_id_year_type_key`,
   ADD UNIQUE KEY `uk_snap` (`snap_key`),
-  ADD CONSTRAINT `chk_ma_type`    CHECK (`type` IN ('TRIP','ANNUAL')),
-  ADD CONSTRAINT `chk_ma_trip`    CHECK (`type` <> 'TRIP'   OR (`ref_id` IS NOT NULL AND `family_id` IS NOT NULL)),
-  ADD CONSTRAINT `chk_ma_annual`  CHECK (`type` <> 'ANNUAL' OR (`family_id` IS NOT NULL AND `year` IS NOT NULL));
+  ADD CONSTRAINT `chk_ma_type`    CHECK (`type` IN ('TRIP','ANNUAL'));
+-- ⛔ 原稿 chk_ma_trip / chk_ma_annual 已移除（2026-10-14 修复）：
+--    ref_id / family_id 的外键均带引用动作（SET NULL / CASCADE），MySQL 8.4 禁止
+--    此类列进 CHECK（Error 3823）；不变式由 Repository 写路径保证
+--    （TRIP 必带 ref_id/family_id，ANNUAL 必带 family_id/year）。
 
 -- ============================================================================
 -- 三确认项 ③ file_pending：G1 字节数上限校验落地

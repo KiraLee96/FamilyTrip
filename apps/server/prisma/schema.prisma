@@ -47,7 +47,7 @@ enum NotifySubType {
 // 一、身份与家庭域（auth / family）
 // ============================================================================
 
-/// A14/A15：uk_phone(NULL) + home_timezone；openid/unionid 复合唯一键含 deletedAt
+/// A14/A15：uk_phone(NULL) + home_timezone；openid/unionid 复合唯一键含 deletedToken
 model User {
   id           BigInt @id
   openid       String @db.VarChar(64)
@@ -126,7 +126,7 @@ model Family {
   @@map("family")
 }
 
-/// A12：uk_family_user（含 deletedAt）+ 存活索引
+/// A12：uk_family_user 复合唯一键 + 存活索引
 /// A23：is_virtual 双语义 —— 虚拟成员无 user_id，代管人走 managedBy（由 Repository 强制封装 WHERE）
 model FamilyMember {
   id        BigInt @id
@@ -186,7 +186,7 @@ model Wish {
   @@map("wish")
 }
 
-/// A17：软删取消投票 —— uk_wish_user 含 deletedAt
+/// A17：软删取消投票 —— uk_wish_user 含 deletedToken
 model WishVote {
   id        BigInt @id
   wishId    BigInt @map("wish_id")
@@ -455,7 +455,7 @@ model TripChecklistItem {
   @@index([tripId, scope, deletedAt], name: "idx_tci_trip_scope")
   @@index([ownerId, deletedAt], name: "idx_tci_owner")
   @@index([updatedAt], name: "idx_tci_updated")
-// [联调临时注释·Prisma 6.19.3 不支持 @@check，约束已由迁移 SQL 落地，待 Prisma 支持后恢复] @@check([(scope == "SHARED" && ownerId == null) || (scope == "PERSONAL" && ownerId != null)], name: "chk_tci_scope_owner")
+// [DB 层不可落地·2026-10-14 定论：owner_id 外键为 ON DELETE SET NULL，MySQL 8.4 禁止带引用动作的列进 CHECK（3823），且 SET NULL 本身会违反该约束；不变式由 Repository 写路径 + resolveChecklistDomain 读路径强制] @@check([(scope == "SHARED" && ownerId == null) || (scope == "PERSONAL" && ownerId != null)], name: "chk_tci_scope_owner")
   @@map("trip_checklist_item")
 }
 
@@ -670,7 +670,7 @@ model NotifySubscription {
   /// C6：长期订阅默认 3 个月有效期
   expireAt    DateTime? @map("expire_at") @db.DateTime(3)
   /// 一次性订阅剩余条数（长期订阅为 0=不限）
-  remainCount Int @default(0) @map("remain_count")
+  remainCount Int @default(0) @map("remain_count") @db.UnsignedInt
   createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
 
@@ -746,8 +746,8 @@ model MemoryArchive {
   @@unique([snapKey], name: "uk_snap")
   @@index([familyId], name: "idx_memory_family")
 // [联调临时注释·Prisma 6.19.3 不支持 @@check，约束已由迁移 SQL 落地，待 Prisma 支持后恢复] @@check([type == "TRIP" || type == "ANNUAL"], name: "chk_ma_type")
-// [联调临时注释·Prisma 6.19.3 不支持 @@check，约束已由迁移 SQL 落地，待 Prisma 支持后恢复] @@check([type != "TRIP" || (refId != null && familyId != null)], name: "chk_ma_trip")
-// [联调临时注释·Prisma 6.19.3 不支持 @@check，约束已由迁移 SQL 落地，待 Prisma 支持后恢复] @@check([type != "ANNUAL" || (familyId != null && year != null)], name: "chk_ma_annual")
+// [DB 层不可落地·2026-10-14 定论：ref_id 外键为 ON DELETE SET NULL，同 chk_tci_scope_owner 之由（3823 + 语义矛盾）；TRIP 必带 ref_id/family_id 由 Repository 写路径保证] @@check([type != "TRIP" || (refId != null && familyId != null)], name: "chk_ma_trip")
+// [DB 层不可落地·2026-10-14 定论：family_id 外键带 ON UPDATE CASCADE 引用动作，MySQL 8.4 禁止进 CHECK（3823）；ANNUAL 必带 family_id/year 由 Repository 写路径保证] @@check([type != "ANNUAL" || (familyId != null && year != null)], name: "chk_ma_annual")
   @@map("memory_archive")
 }
 
@@ -763,9 +763,17 @@ model FilePending {
   createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
   deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+  /// G1：上传用途（受限签名）；b1_drift_fix 已部署
+  purpose      String    @default("MEDIA") @map("purpose") @db.VarChar(32)
+  /// G1：签名时申报字节数上限；DB 约束 chk_fp_size CHECK(expected_size>0 AND <=52428800) 由迁移承载，Prisma 不表达
+  expectedSize BigInt    @default(0) @map("expected_size") @db.UnsignedBigInt
+  /// G1：白名单 image/jpeg|png|webp|pdf（Repository 写路径校验）
+  contentType  String?   @map("content_type") @db.VarChar(64)
+  /// 直传完成确认时刻（PENDING→CONFIRMED 由回调置位）
+  confirmedAt  DateTime? @map("confirmed_at") @db.DateTime(3)
 
-  @@unique([fileKey], name: "uk_file_key")
-  @@index([status], name: "idx_file_pending_status")
+  @@unique([fileKey])
+  @@index([status, createdAt], name: "idx_status_created")
   @@map("file_pending")
 }
 
