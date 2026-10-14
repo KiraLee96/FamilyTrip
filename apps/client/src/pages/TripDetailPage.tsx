@@ -68,9 +68,16 @@ function removeItinerary(id: string, title: string, onDone: () => void): void {
 }
 
 export function TripDetailPage() {
-  // nav 层生成的 query 参数名是 id（见 src/nav/index.ts 的 toTaroUrl）
-  const { id: tripId = '' } = useRouteParams<{ id: string }>();
-  const [tab, setTab] = useState<Tab>('itinerary');
+  // nav 层生成的 query 参数名是 id（见 src/nav/index.ts 的 toTaroUrl）；
+  // tab 支持从 query 定位（如 /trips/101?tab=expense，总览页「查看账本」入口用）
+  const params = useRouteParams<{ id: string; tab?: string }>();
+  const { id: tripId = '' } = params;
+  const [tab, setTab] = useState<Tab>(() => {
+    const t = params.tab;
+    return t === 'checklist' || t === 'expense' || t === 'photo' || t === 'memory'
+      ? t
+      : 'itinerary';
+  });
 
   const trip = useAsync(
     useCallback(() => api.getTrip(tripId), [tripId]),

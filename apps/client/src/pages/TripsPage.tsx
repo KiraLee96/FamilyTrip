@@ -1,10 +1,15 @@
 /**
- * 行程列表 —— 按状态分组（Taro 同构版）
+ * 行程手账 —— 按「即将出行 / 过往」分组（Taro 同构版）
  * ============================================================================
- * 分组顺序：进行中 → 已计划 → 草稿 → 已完成/已取消。已完成沉底。
+ * 版式对齐 2026-10-13 设计稿（截图 4）：
+ *   页头「行程手账」+ 虚线徽章「N 程」
+ *   ① 年份分段筛选：全部 / 2025 / 2026 / 2027
+ *   ② 「▎即将出行」：PLANNED / ONGOING 按开始日期升序，主卡样式
+ *   ③ 其余行程沉底（草稿 / 已完成 / 已取消）
+ *   ④ 「＋ 新增行程」虚线入口条
  */
 
-import { useCallback } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Text, View } from '@tarojs/components';
 import Taro from '@tarojs/taro';
 import { Link } from '../nav/Link';
@@ -15,21 +20,38 @@ import type { Trip, TripStatus } from '../api/types';
 import { Icon } from '../components/Icon';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
-import { Progress, SectionTitle, StatusChip, dateRange, tripDays } from '../components/shared';
+import { StatusChip, dateRange } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
 
-const ORDER: TripStatus[] = ['ONGOING', 'PLANNED', 'DRAFT', 'FINISHED', 'CANCELLED'];
-const GROUP_LABEL: Record<TripStatus, string> = {
-  ONGOING: '进行中',
-  PLANNED: '已计划',
+/** 行程所属年份（优先出发日，其次结束日） */
+function tripYear(t: Trip): number | null {
+  const d = t.startDate ?? t.endDate;
+  if (!d) return null;
+  const y = Number(d.slice(0, 4));
+  return Number.isNaN(y) ? null : y;
+}
+
+/** 即将出行：PLANNED / ONGOING */
+function isUpcoming(t: Trip): boolean {
+  return t.status === 'PLANNED' || t.status === 'ONGOING';
+}
+
+const REST_LABEL: Partial<Record<TripStatus, string>> = {
   DRAFT: '草稿',
   FINISHED: '已完成',
   CANCELLED: '已取消',
 };
 
 export function TripsPage() {
+  const nowYear = new Date().getFullYear();
+  const [yearFilter, setYearFilter] = useState<number | 'all'>('all');
+
   const q = useAsync(
     useCallback(() => api.listTrips(), []),
+    [],
+  );
+  const familiesQ = useAsync(
+    useCallback(() => api.listFamilies(), []),
     [],
   );
 
@@ -39,85 +61,126 @@ export function TripsPage() {
     q.reload();
   });
 
+  // 年份候选：行程年份 ∪ {今年-1, 今年, 今年+1}
+  const years = useMemo(() => {
+    const set = new Set<number>([nowYear - 1, nowYear, nowYear + 1]);
+    for (const t of q.data ?? []) {
+      const y = tripYear(t);
+      if (y !== null) set.add(y);
+    }
+    return [...set].sort((a, b) => a - b);
+  }, [q.data, nowYear]);
+
   if (q.loading) return <Loading />;
   if (q.error) return <ErrorBox message={q.error} onRetry={q.reload} />;
 
-  const list = q.data ?? [];
+  const list = (q.data ?? []).filter((t) => yearFilter === 'all' || tripYear(t) === yearFilter);
+  const upcoming = list
+    .filter(isUpcoming)
+    .sort((a, b) => (a.startDate ?? '').localeCompare(b.startDate ?? ''));
+  const rest = list.filter((t) => !isUpcoming(t));
+  const memberCount = familiesQ.data?.[0]?.memberCount ?? 0;
 
   return (
-    <PageLayout title="行程" sub="按天看安排，不慌不赶">
-      <CreateTripButton />
-      {list.length === 0 ? (
-        <Empty text="还没有行程，从新建开始吧" />
+    <PageLayout
+      title="行程手账"
+      sub="每一次出发，都值得好好安排"
+      badge={`${(q.data ?? []).length} 程`}
+    >
+      {/* ① 年份筛选 */}
+      <View className="seg">
+        <Text
+          className={yearFilter === 'all' ? 'seg__btn seg__btn--on' : 'seg__btn'}
+          onClick={() => setYearFilter('all')}
+        >
+          全部
+        </Text>
+        {years.map((y) => (
+          <Text
+            key={y}
+            className={yearFilter === y ? 'seg__btn seg__btn--on' : 'seg__btn'}
+            onClick={() => setYearFilter(y)}
+          >
+            {y}
+          </Text>
+        ))}
+      </View>
+
+      {/* ② 即将出行 */}
+      <View className="section-title">
+        <Text className="sec-mark" />
+        即将出行
+      </View>
+      {upcoming.length === 0 ? (
+        <View className="card">
+          <Empty text="没有即将到来的行程" />
+        </View>
       ) : (
+        upcoming.map((t) => <TripCard key={t.id} trip={t} memberCount={memberCount} hint />)
+      )}
+
+      {/* ③ 其余行程 */}
+      {rest.length > 0 && (
         <>
-          {ORDER.map((st) => {
-            const group = list.filter((t) => t.status === st);
-            if (group.length === 0) return null;
-            return (
-              <View key={st}>
-                <SectionTitle icon="route">
-                  {GROUP_LABEL[st]}（{group.length}）
-                </SectionTitle>
-                {group.map((t) => (
-                  <TripCard key={t.id} trip={t} />
-                ))}
-              </View>
-            );
-          })}
+          <View className="section-title">更早的行程</View>
+          {rest.map((t) => (
+            <TripCard key={t.id} trip={t} memberCount={memberCount} label={REST_LABEL[t.status]} />
+          ))}
         </>
       )}
+
+      {/* ④ 新增行程 */}
+      <View className="add-bar" onClick={() => navigate('/trips/new')}>
+        <Icon name="plus" size={16} />
+        <Text className="add-bar__text">新增行程</Text>
+      </View>
     </PageLayout>
   );
 }
 
-/** 新建行程入口：空态/非空态都显示，跳 TripCreatePage */
-function CreateTripButton() {
-  return (
-    <View className="add-bar" onClick={() => navigate('/trips/new')}>
-      <Icon name="plus" size={16} />
-      <Text className="add-bar__text">新建行程</Text>
-    </View>
-  );
-}
-
-function TripCard({ trip }: { trip: Trip }) {
+function TripCard({
+  trip,
+  memberCount,
+  hint,
+  label,
+}: {
+  trip: Trip;
+  memberCount: number;
+  hint?: boolean;
+  label?: string;
+}) {
   const dests = trip.destinations ?? [];
   return (
-    <Link to={`/trips/${trip.id}`} className="card">
+    <Link to={`/trips/${trip.id}`} className="trip">
       <View className="trip__top">
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text className="trip__title" style={{ fontSize: 16 }}>
-            {trip.title}
-          </Text>
+          <Text className="trip__title">{trip.title}</Text>
           <View className="trip__meta">
             <Text>
-              <Icon name="calendar" size={14} />
+              <Icon name="map-pin" size={13} />
+              {dests.length > 0 ? dests.map((d) => d.name).join(' · ') : '目的地待定'}
+            </Text>
+            <Text>
+              <Icon name="calendar" size={13} />
               {dateRange(trip)}
             </Text>
-            {dests.length > 0 && (
-              <Text>
-                <Icon name="map-pin" size={14} />
-                {dests.length} 个目的地
-              </Text>
-            )}
+            <Text>
+              <Icon name="users" size={13} />
+              {memberCount} 人同行
+            </Text>
           </View>
         </View>
         <StatusChip status={trip.status} />
       </View>
-
-      {dests.length > 0 && (
-        <View className="trip__dest">
-          {dests.map((d) => (
-            <Text key={d.name} className="chip chip--plain">
-              {d.name}
-            </Text>
-          ))}
-        </View>
-      )}
-
-      {trip.status === 'PLANNED' || trip.status === 'ONGOING' ? (
-        <Progress done={tripDays(trip)} total={tripDays(trip)} label="行程天数" />
+      {hint ? (
+        <Text className="muted" style={{ display: 'block', marginTop: 10 }}>
+          点击查看详情与清单
+        </Text>
+      ) : null}
+      {label ? (
+        <Text className="muted" style={{ display: 'block', marginTop: 8 }}>
+          {label}
+        </Text>
       ) : null}
     </Link>
   );

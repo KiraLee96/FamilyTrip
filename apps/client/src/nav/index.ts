@@ -7,14 +7,15 @@
  *     不感知底层是哪种路由实现，从而一套代码双端运行。
  *
  * 路由映射（逻辑路径 → Taro 页面，与 app.config.ts 的 pages 一一对应）：
- *   /            → pages/HomePage      （tab）
- *   /trips       → pages/TripsPage     （tab）
- *   /items       → pages/ItemsPage     （tab，M-Client-2 新增）
- *   /plan        → pages/PlanPage      （tab）
- *   /profile     → pages/ProfilePage   （tab，M-Client-2 新增）
- *   /wishes      → pages/WishPoolPage  （M-Client-2 起降级为非 tab，从首页区块进入）
+ *   /            → pages/HomePage      （tab：总览）
+ *   /plan        → pages/PlanPage      （tab：规划）
+ *   /trips       → pages/TripsPage     （tab：行程）
+ *   /items       → pages/ItemsPage     （tab：物品）
+ *   /memory      → pages/MemoryPage    （tab：回忆，2026-10-13 设计稿改版新增）
+ *   /profile     → pages/ProfilePage   （非 tab：我的，从总览页头像进入）
+ *   /wishes      → pages/WishPoolPage  （非 tab，从首页/规划页心愿区块进入）
  *   /trips/new   → pages/TripCreatePage（非 tab，须先于 /trips/:id 匹配）
- *   /trips/:id   → pages/TripDetailPage（非 tab，带 query 参数）
+ *   /trips/:id   → pages/TripDetailPage（非 tab，带 query 参数，?tab=expense 可定位花销）
  *   /join        → pages/JoinFamilyPage（非 tab，?invite=CODE 凭邀请码加入）
  */
 
@@ -23,10 +24,10 @@ import Taro from '@tarojs/taro';
 /** tab 页：用 switchTab 切换；非 tab 页：用 navigateTo 压栈 */
 const TAB_PAGE: Record<string, string> = {
   '/': 'pages/HomePage',
+  '/plan': 'pages/PlanPage',
   '/trips': 'pages/TripsPage',
   '/items': 'pages/ItemsPage',
-  '/plan': 'pages/PlanPage',
-  '/profile': 'pages/ProfilePage',
+  '/memory': 'pages/MemoryPage',
 };
 
 function toTaroUrl(to: string): { url: string; tab: boolean } {

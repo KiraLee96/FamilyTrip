@@ -64,7 +64,7 @@ export function ItemsPage() {
   }, [items]);
 
   return (
-    <PageLayout title="物品" sub="每次出门，该带的都在这儿">
+    <PageLayout title="物品" sub="每次出门，该带的都在这儿" badge={`${items.length} 件`}>
       <View className="filter-bar">
         <Chip label="全部" on={category === ''} onClick={() => setCategory('')} />
         {ITEM_CATEGORIES.map((c) => (

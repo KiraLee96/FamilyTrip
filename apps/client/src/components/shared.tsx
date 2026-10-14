@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { Text, View } from '@tarojs/components';
 
 import { Icon, type IconName } from './Icon';
-import type { Trip, TripStatus } from '../api/types';
+import type { Trip, TripStatus, Wish } from '../api/types';
 
 export const STATUS_TEXT: Record<TripStatus, string> = {
   DRAFT: '草稿',
@@ -41,6 +41,28 @@ export function tripDays(t: Trip): number {
   if (Number.isNaN(a) || Number.isNaN(b)) return 0;
   return Math.round((b - a) / 86_400_000) + 1;
 }
+
+/** 距出发日还有几天（当天=0；已出发为负；无日期返回 null） */
+export function daysUntil(d?: string | null): number | null {
+  if (!d) return null;
+  const today = new Date();
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const todayStr = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+  const a = Date.parse(`${todayStr}T00:00:00Z`);
+  const b = Date.parse(`${d}T00:00:00Z`);
+  if (Number.isNaN(a) || Number.isNaN(b)) return null;
+  return Math.round((b - a) / 86_400_000);
+}
+
+/** 月份标签（1 → 1月） */
+export const MONTH_LABELS: string[] = Array.from({ length: 12 }, (_, i) => `${i + 1}月`);
+
+/** 心愿状态文案 */
+export const WISH_STATUS_TEXT: Record<Wish['status'], string> = {
+  OPEN: '待规划',
+  ADOPTED: '已安排',
+  ARCHIVED: '已归档',
+};
 
 /** 星期几 */
 export function weekday(date: string): string {
