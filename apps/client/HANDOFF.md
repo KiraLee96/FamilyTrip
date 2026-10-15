@@ -431,7 +431,86 @@ NODE_PATH="..." node .verify/verify-style.cjs                           # 13/13�
 ## 五、已知限制 / 未验证项（强制披露）
 
 1. **真后端链路未实跑**：本机 MySQL（`127.0.0.1:3306`）本次未启动（`ECONNREFUSED`），登录即 5000 → `blocks` 落库、行程改删的真接口验证**未能执行**；Mock 模式 17/17 已过，HTTP 适配层信封口径以服务端源码核对（`trip.service.update` 返回 `{trip, updatedAt}`）。派发单 §1.7/§2.4 列了可直接跑的 curl 用例。
-2. **后端尚未支持 `blocks`**：当前 `itinerary.schema.ts` 未声明该字段，Zod 会剥离 → 写请求不会报错但**不落库**。落地前，真后端模式下正文块「保存后丢失」属预期，需派发单 D-2026-10-15-01 P0 完成后闭环。
-3. **`DELETE /trips/:id` 级联缺口**（本次源码核对新发现）：服务端 `remove()` 仅软删 trip 行，子域行与邀请码未随之失效 → 已删行程的安排仍可被 `GET /itineraries?tripId=` 查到。已作为 P1 写入派发单 §二，**前端侧无解**。
+2. ~~**后端尚未支持 `blocks`**~~ → **已闭环（后端提交 `d89a2f5`）**：`blocks_json` 迁移 + Zod 五类块 + 读路径 assetId→url 整片解析（方案 A，不 N+1）已落地。此前「真后端模式下正文块保存后丢失」的预期失效。
+3. ~~**`DELETE /trips/:id` 级联缺口**~~ → **已闭环（后端提交 `d89a2f5`）**：采纳方案 A，同事务级联软删 `tripMember`/`itineraryItem`/`tripChecklistItem`/`expense`/`booking`；`media_asset` 不随行程删（家庭资产），查询侧 `GET /media?tripId=<已删行程>` 返回空集。**同一提交顺带修掉一个更隐蔽的阻断 bug**：`itinerary.controller` 的 `itemRef` 硬编码 `familyId/tripId=null`，权限网关第 5 段无归属维度可判，导致 `/itineraries/:id` 的 **GET/PATCH/DELETE 全量 404 同形** —— 即真后端下「删除安排」100% 失败，而 Mock 验收完全覆盖不到。详见 M-Client-4。
 4. 小程序端仍需在微信开发者工具内人工逐页确认（本环境无法启动工具），H5 无头验收不能替代真机。
 5. 正文块上限 20 个、单块文本 2000 字（code 500 字）为前端先拦口径，服务端需独立校验（派发单 §1.2）。
+
+---
+
+# M-Client-4 缺陷修复交接（「行程/安排删不掉」根因 · 2026-10-15）
+
+> 触发：Kira 反馈「行程还是无法删除」。这是 M-Client-3 交付后的**真现象**，不是环境幻觉。
+
+## 一、根因（客户端侧，本次修复）
+
+**`unwrap()` 把「成功但无返回体」当成异常。**
+
+```ts
+// src/api/client.ts（未改动，作为判据基础）
+export function unwrap<T>(env: { code: number; message: string; data: T | null }): T {
+  if (env.code !== 0) throw new ApiError(env.code, env.message);
+  if (env.data === null) throw new ApiError(-1, '响应 data 为空'); // ← 这条判据伤到了 DELETE
+  return env.data;
+}
+```
+
+而服务端 DELETE 的成功契约**就是** `data: null`（源码核对：`trip.controller.ts` 的
+`handler: async (ctx) => ({ data: null as never, meta: { updatedAt } })`）。
+
+后果：真后端模式下 **9 个删除端点全部「服务端已删成功、客户端抛 `ApiError(-1)`」**，
+界面 `catch` 到异常 → `showToast('响应 data 为空')` 且停留在原页 → 表现为「删不掉」。
+
+**为什么此前 17/17 全绿仍漏掉**：`createMockClient()` 不经过信封，Mock 的 `deleteTrip`
+直接 `splice` 内存数组，永远走不到 `unwrap`。信封口径只有真后端模式才会暴露。
+
+## 二、修复（`src/api/http.ts`，纯实现层，契约零改动）
+
+1. `request()` 新增 `opts.allowNullData?: boolean`，在 `unwrap` **之前**分支：
+   `code !== 0` 照旧抛错，`code === 0` 时**允许** `data === null`。
+2. 新增 `requestVoid(method, path, body?)`，固定带 `allowNullData: true`，语义「无返回体写操作」。
+3. 9 个 DELETE 调用点全部改走 `requestVoid`（`deleteTrip` / `deleteItineraryItem` /
+   `deleteChecklistItem` / `deleteExpense` / `deleteItem` / `deleteMediaAsset` /
+   `dissolveFamily` / `removeFamilyMember` / `removeTripMember`）。
+4. **读路径判据原样保留** —— 单实体 `data === null` 仍视为异常，否则 `getTrip` 会把空体
+   当成功去 `toTrip({})`，造出 id 为空的幽灵行程。
+
+## 三、回归护栏（新增）
+
+`src/api/__tests__/envelope.test.ts`（6 例，vitest + `vi.mock('@tarojs/taro')` 桩 `Taro.request`）：
+
+| #   | 用例                                        | 断言                                                    |
+| --- | ------------------------------------------- | ------------------------------------------------------- |
+| 1   | `deleteTrip` 在 `{code:0,data:null}` 下成功 | `resolves.toBeUndefined()` + method/URL 正确            |
+| 2   | 其余 8 个删除端点不被空 data 误判           | 8 个 `resolves.toBeUndefined()`                         |
+| 3   | 失败信封 `4030` 仍上抛                      | `rejects.toMatchObject({ name:'ApiError', code:4030 })` |
+| 4   | 读单个实体 `data===null` 仍异常             | `rejects.toThrow('响应 data 为空')`，且只发 1 次请求    |
+| 5   | 列表 `{items,meta}` 仍正确拆包              | 长度/标题/日期投影                                      |
+| 6   | `updateTrip` 需拆一层 `{trip}`              | `id`/`title`/`version`/`destinations` 正确              |
+
+> 用例 4 的坑：桩用 `mockResolvedValueOnce`，所以必须**复用同一个 promise** 做两条断言；
+> 写成两次 `api.getTrip('101')` 会让第二次拿到 `undefined` 而抛 TypeError，误报为失败。
+
+## 四、验收证据（可复现）
+
+```bash
+cd apps/client
+node ../../node_modules/typescript/bin/tsc --noEmit -p tsconfig.json                                  # exit 0
+CI=true node ../../node_modules/eslint/bin/eslint.js src --ext .ts,.tsx --format json                 # 0 error / 70 warning（项目基线）
+CI=true node ./node_modules/vitest/vitest.mjs run src/api/__tests__/envelope.test.ts                  # 6/6
+CI=true node ./node_modules/@tarojs/cli/bin/taro build --type weapp                                   # exit 0
+CI=true node ./node_modules/@tarojs/cli/bin/taro build --type h5                                      # exit 0（2 条体积 warning，既有）
+CI=true node .verify/server.cjs 5321   # 另开终端
+NODE_PATH="C:\Users\lxk\.workbuddy\binaries\node\workspace\node_modules" node .verify/verify-blocks-v5.cjs   # 17/17
+CI=true node .verify/server.cjs 5318   # 另开终端
+NODE_PATH="..." node .verify/verify-style.cjs                                                         # 13/13
+```
+
+## 五、仍未闭环 / 需 Kira 确认
+
+1. **真后端链路依然未实跑**：本机 MySQL `127.0.0.1:3306` 仍 `ECONNREFUSED`，
+   后端迁移 `20261015120000_itinerary_blocks` 亦未对实库执行。上述 6 例测试用桩注入的
+   信封与 `trip.controller.ts` 源码逐字对齐，是当前环境能拿到的最强证据，但不等于真机联调。
+2. **需确认反馈时用的是哪一端**：微信开发者工具加载 `dist/` + 真后端，还是 H5？
+   若是前者，`dist/` 需重新构建后**清缓存重载**（DevTools 有产物缓存），否则仍跑旧包。
+3. 后端 `d89a2f5` 的两个修复（`blocks` 落库、删除级联、`itemRef` 网关 bug）**待真机回归**。

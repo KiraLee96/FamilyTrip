@@ -413,7 +413,7 @@ async function request<T>(
   method: HttpMethod,
   path: string,
   body?: unknown,
-  opts: { retried?: boolean; requestId?: string } = {},
+  opts: { retried?: boolean; requestId?: string; allowNullData?: boolean } = {},
 ): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -445,7 +445,29 @@ async function request<T>(
     }
   }
   // 信封内 code 才是业务结果；HTTP 状态只作传输层参考
+  // 写路径（DELETE 等无返回体接口）成功时 data 恒为 null，**不能**走 unwrap 的
+  // 「data 为空即异常」判据 —— 见 requestVoid 的注释（2026-10-15 修复的删除失效根因）。
+  if (opts.allowNullData === true) {
+    if (env.code !== 0) throw new ApiError(env.code, env.message);
+    return env.data as T;
+  }
   return unwrap<T>(env);
+}
+
+/**
+ * 无返回体的写操作（DELETE）专用：code=0 即成功，**允许 data 为 null**。
+ * ============================================================================
+ * 🔴 为什么不能写成 `request<null>('DELETE', url)`：
+ *    它最终调用 `unwrap()`，而 `unwrap` 把 `env.data === null` 判为异常
+ *    （`ApiError(-1, '响应 data 为空')`）。这条判据对「读单个实体」是有效的
+ *    （防止后端把 204/空体当成功返回），但 DELETE 的成功响应 `data` **按契约就是 null**。
+ *    后果（2026-10-15 用户反馈「行程还是无法删除」的根因）：
+ *    真后端模式下 9 个 DELETE 端点全部「服务端已删成功、客户端抛异常」，
+ *    界面提示失败且停留在原页；Mock 模式不复现（mock 不经信封），故此前全绿验收漏掉。
+ *    回归用例见 `src/api/__tests__/envelope.test.ts`。
+ */
+async function requestVoid(method: HttpMethod, path: string, body?: unknown): Promise<void> {
+  await request<unknown>(method, path, body, { allowNullData: true });
 }
 
 export function createHttpClient(): ApiClient {
@@ -484,7 +506,7 @@ export function createHttpClient(): ApiClient {
       return toFamily(r.family);
     },
     dissolveFamily: async (id) => {
-      await request<null>('DELETE', `/families/${id}`);
+      await requestVoid('DELETE', `/families/${id}`);
       // 家庭解散后 familyId 兜底缓存必须失效，否则后续请求仍解析到已解散家庭
       resetFamilyIdCache();
     },
@@ -509,7 +531,7 @@ export function createHttpClient(): ApiClient {
       return toMember(r.member);
     },
     removeFamilyMember: async (memberId) => {
-      await request<null>('DELETE', `/families/members/${memberId}`);
+      await requestVoid('DELETE', `/families/members/${memberId}`);
     },
     listTrips: async (familyId) => {
       const rows = await requestList<Record<string, unknown>>(
@@ -537,7 +559,7 @@ export function createHttpClient(): ApiClient {
     },
     // DELETE /trips/:id —— 服务端早已存在；data 为 null，成功即返回。
     deleteTrip: async (id) => {
-      await request<null>('DELETE', `/trips/${id}`);
+      await requestVoid('DELETE', `/trips/${id}`);
     },
     addTripMember: async (tripId, input) => {
       // 信封 { member }；家庭成员传 userId，虚拟成员传 displayName+isVirtual+managedBy
@@ -557,7 +579,7 @@ export function createHttpClient(): ApiClient {
       return toTripMember(r.member);
     },
     removeTripMember: async (id) => {
-      await request<null>('DELETE', `/trips/members/${id}`);
+      await requestVoid('DELETE', `/trips/members/${id}`);
     },
     getTripInvite: async (tripId) => {
       // 🆕 新端点（派发单 D-2026-10-14-02）；后端未落地时此处 404，
@@ -619,7 +641,7 @@ export function createHttpClient(): ApiClient {
       return toItineraryItem(r.item);
     },
     deleteItineraryItem: async (id) => {
-      await request<null>('DELETE', `/itineraries/${id}`);
+      await requestVoid('DELETE', `/itineraries/${id}`);
     },
     listChecklist: async (scope) => {
       // checklist 域直接回裸数组（不套 items），逐行投影取 title/done 别名
@@ -653,7 +675,7 @@ export function createHttpClient(): ApiClient {
       return rows.map(toChecklistItem);
     },
     deleteChecklistItem: async (id) => {
-      await request<null>('DELETE', `/checklists/items/${id}`);
+      await requestVoid('DELETE', `/checklists/items/${id}`);
     },
     listExpenses: async (tripId) => {
       const rows = await requestList<Record<string, unknown>>('GET', `/expenses?tripId=${tripId}`);
@@ -692,7 +714,7 @@ export function createHttpClient(): ApiClient {
       return toExpense(r.expense);
     },
     deleteExpense: async (id) => {
-      await request<null>('DELETE', `/expenses/${id}`);
+      await requestVoid('DELETE', `/expenses/${id}`);
     },
     listItems: async (query) => {
       // 信封 { items, meta }；mineOnly 服务端默认 true（PRIVATE 短路域只认 ownerId）
@@ -714,7 +736,7 @@ export function createHttpClient(): ApiClient {
       return toItem(r.item);
     },
     deleteItem: async (id) => {
-      await request<null>('DELETE', `/items/${id}`);
+      await requestVoid('DELETE', `/items/${id}`);
     },
 
     // ---- media ----
@@ -760,7 +782,7 @@ export function createHttpClient(): ApiClient {
       return r;
     },
     deleteMediaAsset: async (id) => {
-      await request<null>('DELETE', `/media/${id}`);
+      await requestVoid('DELETE', `/media/${id}`);
     },
 
     // ---- memory ----
