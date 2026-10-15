@@ -23,6 +23,7 @@ import type {
   Family,
   FamilyDetail,
   FamilyMember,
+  ItineraryBlock,
   ItineraryItem,
   Item,
   JoinFamilyResult,
@@ -38,6 +39,7 @@ import type {
   TripInvite,
   TripMember,
   TripMemberRole,
+  TripUpdateInput,
   User,
   Wish,
 } from './types';
@@ -97,6 +99,18 @@ export interface ApiClient {
     startDate?: string;
     endDate?: string;
   }): Promise<Trip>;
+  /**
+   * PATCH /trips/:id —— 改行程本身（标题 / 起止日期 / 目的地）。
+   * 🔴 CAS：`version` 必传（拿列表或详情里的当前值原样回传），
+   *    不一致时服务端回 409，界面提示刷新重试。
+   * 🆕 客户端新增方法（服务端 PATCH 早已存在，此前只有服务端能力、无前端入口）。
+   */
+  updateTrip(id: string, input: TripUpdateInput): Promise<Trip>;
+  /**
+   * DELETE /trips/:id —— 删除整场行程。
+   * 🆕 客户端新增方法（服务端 DELETE 早已存在）。
+   */
+  deleteTrip(id: string): Promise<void>;
   /**
    * POST /trips/:id/members —— 加出行成员（PRD GRP-02：创建行程时可邀请
    * 家庭成员或外部用户）。家庭成员传 userId；无账号家人（虚拟成员）传
@@ -169,6 +183,8 @@ export interface ApiClient {
     lat?: number;
     lng?: number;
     transport?: TransportMode;
+    /** 富文本/图片正文块（有序；纯加法，老后端忽略未知键） */
+    blocks?: ItineraryBlock[];
   }): Promise<ItineraryItem>;
   /** PATCH /itineraries/:id（CAS：version 必传） */
   updateItineraryItem(
@@ -180,6 +196,8 @@ export interface ApiClient {
       endAt?: string | null;
       location?: string | null;
       note?: string | null;
+      /** 富文本/图片正文块（整体替换；传 [] 表示清空正文块） */
+      blocks?: ItineraryBlock[];
       sort?: number;
       lat?: number | null;
       lng?: number | null;

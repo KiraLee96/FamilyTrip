@@ -18,6 +18,7 @@ import type {
   Family,
   FamilyDetail,
   FamilyMember,
+  ItineraryBlock,
   ItineraryItem,
   Item,
   JoinFamilyResult,
@@ -29,6 +30,7 @@ import type {
   Trip,
   TripInvite,
   TripMember,
+  TripUpdateInput,
   User,
   Wish,
 } from './types';
@@ -236,6 +238,9 @@ const WISHES: Wish[] = [
 /**
  * 行程安排种子（青岛行程，带地图坐标与交通方式 —— 供地图标记/连线演示）。
  * 坐标取各地点大致位置（精度到演示足够，真后端由 chooseLocation 回传）。
+ *
+ * blocks 为 v2 富文本/图片正文（对齐 2026-10-14 参考截图的混排形态）：
+ * 引用块（灰底多行）+ 代码块（逐字核对的车次/地址）+ 链接块 + 图片块。
  */
 const ITINERARY: ItineraryItem[] = [
   {
@@ -247,6 +252,14 @@ const ITINERARY: ItineraryItem[] = [
     title: '高铁出发 → 青岛',
     location: '北京南站',
     note: 'G179 次，09:30 发车',
+    blocks: [
+      {
+        type: 'code',
+        text: 'G179 次 · 北京南 09:30 → 青岛 13:10\n检票口 G13-G15，提前 30 分钟进站',
+      },
+      { type: 'quote', text: '出发前 1 小时到站即可；带好身份证，儿童票需走人工通道核验。' },
+      { type: 'link', text: '铁路 12306 行程详情', url: 'https://www.12306.cn/index/' },
+    ],
     sortOrder: 1,
     version: 1,
     lat: 39.865,
@@ -261,6 +274,14 @@ const ITINERARY: ItineraryItem[] = [
     endTime: '16:00',
     title: '入住海景民宿',
     location: '栈桥附近',
+    blocks: [
+      {
+        type: 'code',
+        text: '青岛栈桥海景民宿\n市南区太平路 12 号 3 单元 801\n入住 15:00 后 · 退房 12:00 前',
+      },
+      { type: 'quote', text: '行李可先寄存前台；出示本文即可办理，无需打印凭证。' },
+      { type: 'image', assetId: '505', caption: '民宿周边步行路线' },
+    ],
     sortOrder: 2,
     version: 1,
     lat: 36.057,
@@ -276,6 +297,10 @@ const ITINERARY: ItineraryItem[] = [
     title: '栈桥 + 八大关',
     location: '市南区',
     note: '步行游览，穿舒适鞋',
+    blocks: [
+      { type: 'text', text: '栈桥看海鸥 → 沿太平路步行至八大关，全程约 4 公里。' },
+      { type: 'quote', text: '八大关部分院落周一闭馆，想进花石楼记得提前看开放时间。' },
+    ],
     sortOrder: 1,
     version: 1,
     lat: 36.058,
@@ -496,6 +521,27 @@ const MEDIA: MediaAsset[] = [
     createdAt: '2026-07-19T17:05:00.000Z',
     updatedAt: '2026-07-19T17:05:00.000Z',
   },
+  {
+    // 青岛行程（101）里被「入住海景民宿」的图片块引用的资产。
+    // Mock 无真实字节 → url 空串，卡片按占位图 + 图注降级；
+    // 走真实上传路径进来的图会用本会话本地路径即时渲染（见 ItineraryContent）。
+    id: '505',
+    familyId: '10',
+    tripId: '101',
+    ownerId: '1',
+    fileKey: 'f/10/20260928-7a1b2c3d.jpg',
+    url: '',
+    mimeType: 'image/jpeg',
+    byteSize: '1245678',
+    compressed: true,
+    exifStripped: true,
+    hadGps: false,
+    storageClass: 'STANDARD',
+    width: 1080,
+    height: 1920,
+    createdAt: '2026-09-28T09:12:00.000Z',
+    updatedAt: '2026-09-28T09:12:00.000Z',
+  },
 ];
 
 /** 预置的云南行程回忆快照（对应 MemoryArchive '901'） */
@@ -647,6 +693,26 @@ const state = {
   memories: [...MEMORIES],
   memorySnapshots: { ...MEMORY_SNAPSHOTS },
 };
+
+/**
+ * 回填图片块的 url（服务端方案 A 的 Mock 等价实现）。
+ * ============================================================================
+ * 真后端在读接口里把 image 块的 assetId 解析成可访问 URL；Mock 没有对象存储，
+ * 只能查内存 media 表：命中且 url 非空则回填，命中但 url 为空（Mock 均为空）
+ * 则保留空串交由界面降级成占位卡 + 图注。**绝不自造 URL**，避免 Mock 行为
+ * 与真后端不一致（界面在两种模式下走的都是同一条「url 为空 → 占位」分支）。
+ * 引用不存在的 assetId（越权/已删）同样降级，不抛错、不破卡。
+ */
+function withResolvedBlocks(item: ItineraryItem): ItineraryItem {
+  if (item.blocks === undefined || item.blocks.length === 0) return item;
+  const blocks: ItineraryBlock[] = item.blocks.map((b) => {
+    if (b.type !== 'image') return b;
+    if (b.assetId === undefined) return b;
+    const asset = state.media.find((m) => m.id === b.assetId);
+    return asset !== undefined && asset.url !== '' ? { ...b, url: asset.url } : { ...b, url: '' };
+  });
+  return { ...item, blocks };
+}
 
 export function createMockClient(): ApiClient {
   return {
@@ -802,6 +868,39 @@ export function createMockClient(): ApiClient {
       });
       return respond(t);
     },
+    /**
+     * PATCH /trips/:id —— 改标题 / 起止日期 / 目的地（E7 CAS）。
+     * 与后端 updateTrip 同口径：
+     *   · version 必需且必须等于当前值，否则 409（界面提示刷新重试）；
+     *   · startDate/endDate 传 null 表示清空；destinations 整体替换；
+     *   · 改完 version +1，返回更新后的完整行程。
+     */
+    async updateTrip(id, input: TripUpdateInput) {
+      const t = state.trips.find((x) => x.id === id);
+      if (!t) throw new ApiError(404, '出行不存在');
+      if (t.version !== input.version) throw new ApiError(409, '版本冲突，请刷新后重试');
+      if (input.title !== undefined) t.title = input.title;
+      if (input.startDate !== undefined) t.startDate = input.startDate;
+      if (input.endDate !== undefined) t.endDate = input.endDate;
+      if (input.destinations !== undefined) t.destinations = input.destinations;
+      t.version += 1;
+      await delay();
+      return respond({ ...t });
+    },
+    /**
+     * DELETE /trips/:id —— 删除整场行程。
+     * 后端为软删 + 关联数据（成员/邀请码）一并失效；Mock 直接摘除并清理
+     * 该行程的成员与邀请码，保证列表/详情/加入链路不留下悬挂引用。
+     */
+    async deleteTrip(id) {
+      const i = state.trips.findIndex((x) => x.id === id);
+      if (i < 0) throw new ApiError(404, '出行不存在');
+      state.trips.splice(i, 1);
+      state.tripMembers = state.tripMembers.filter((m) => m.tripId !== id);
+      state.tripInvites = state.tripInvites.filter((v) => v.tripId !== id);
+      state.itinerary = state.itinerary.filter((it) => it.tripId !== id);
+      await delay();
+    },
     async addTripMember(tripId, input) {
       const trip = state.trips.find((t) => t.id === tripId);
       if (!trip) throw new ApiError(404, '出行不存在');
@@ -919,7 +1018,7 @@ export function createMockClient(): ApiClient {
       const list = state.itinerary
         .filter((i) => i.tripId === tripId)
         .sort((a, b) => a.date.localeCompare(b.date) || a.sortOrder - b.sortOrder);
-      return respond(list);
+      return respond(list.map((i) => withResolvedBlocks(i)));
     },
     async createItineraryItem(input) {
       // startAt 为本地时间 YYYY-MM-DDTHH:mm → 拆出 date/startTime（与后端落库口径一致）
@@ -937,6 +1036,7 @@ export function createMockClient(): ApiClient {
         title: input.title,
         ...(input.location !== undefined ? { location: input.location } : {}),
         ...(input.note !== undefined ? { note: input.note } : {}),
+        ...(input.blocks !== undefined && input.blocks.length > 0 ? { blocks: input.blocks } : {}),
         // 未显式指定 sort 时追加到当日末尾
         sortOrder: input.sort ?? sameDay.reduce((m, i) => Math.max(m, i.sortOrder), 0) + 1,
         version: 1,
@@ -945,7 +1045,7 @@ export function createMockClient(): ApiClient {
         ...(input.transport !== undefined ? { transport: input.transport } : {}),
       };
       state.itinerary.push(item);
-      return respond(item);
+      return respond(withResolvedBlocks(item));
     },
     async updateItineraryItem(id, input) {
       const it = state.itinerary.find((x) => x.id === id);
@@ -964,12 +1064,16 @@ export function createMockClient(): ApiClient {
       if (input.title !== undefined) it.title = input.title;
       if (input.location !== undefined) it.location = input.location ?? undefined;
       if (input.note !== undefined) it.note = input.note ?? undefined;
+      // blocks 整体替换语义：传 [] 即清空正文块（与 destinations 同口径，不做增量合并）
+      if (input.blocks !== undefined) {
+        it.blocks = input.blocks.length > 0 ? input.blocks : undefined;
+      }
       if (input.sort !== undefined) it.sortOrder = input.sort;
       if (input.lat !== undefined) it.lat = input.lat ?? undefined;
       if (input.lng !== undefined) it.lng = input.lng ?? undefined;
       if (input.transport !== undefined) it.transport = input.transport ?? undefined;
       it.version += 1;
-      return respond(it);
+      return respond(withResolvedBlocks(it));
     },
     async deleteItineraryItem(id) {
       const i = state.itinerary.findIndex((x) => x.id === id);

@@ -378,6 +378,60 @@ cd apps/server
 
 ## 四、已知限制 / 后续
 
-- 参考截图里的**卡片内嵌图片**（机票/地图截图）与**行内链接**未做：`ItineraryItem` 契约无图片字段，需先与后端确认（可复用 `media_asset` 域）后再开。
+- 参考截图里的**卡片内嵌图片**与**行内链接**：✅ **2026-10-15 已落地**（见文末 M-Client-3）。契约新增可选 `blocks`（富文本/图片块数组），图片复用 `media_asset` 域，块级 URL 由服务端解析（方案 A 同口径）。
 - 时间段为**同日**口径（`endAt` 只取 `HH:mm`）；跨夜安排（如 23:00→01:00）当前显示为 `23:00-01:00` 不跨天标注，如需要再议。
 - 小程序端「地图标记 + 连线」仍建议在微信开发者工具人工确认（本环境无法启动工具）；H5 侧为坐标列表降级，逻辑同源不 fork。
+
+---
+
+# M-Client-3 交付交接清单（安排正文块 + 行程改期/删除 · 2026-10-15）
+
+> 里程碑：**M-Client-3** —— 安排卡片支持内嵌图片与富文本混排；行程本身（标题/起止日期/目的地）可编辑、可删除。
+> 交付范围：`apps/client`（**`apps/server` 一行未改**，配套需求走派发单 `D-2026-10-15-01`）。
+
+## 一、两条需求 → 归属判定 → 实现
+
+| #   | 需求                                             | 归属判定                                                                     | 实现                                                                                                                          |
+| --- | ------------------------------------------------ | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| 1   | 安排卡片内嵌图片 / 富文本（参考 10-14 截图混排） | **新需求**：`ItineraryItem` 契约无图片/富文本字段 → 需后端加字段（走派发单） | 契约 `blocks`（5 种块）＋渲染组件 `components/ItineraryContent.tsx`＋表单块编辑器（增/删/改/上下移/图片上传）＋ Mock 种子示例 |
+| 2   | 行程本身改日期/目的地、删除                      | **前端缺口**：服务端 `PATCH /trips/:id`、`DELETE /trips/:id` 早已存在        | `ApiClient` 纯加 `updateTrip` / `deleteTrip`；详情页头部「编辑行程 / 删除行程」+ `TripForm`（标题/起止日期/目的地增删）       |
+
+## 二、契约变更（纯加法，红线 #1 未被破坏）
+
+- **新增可选字段**：`ItineraryItem.blocks?: ItineraryBlock[]`；**新增类型** `ItineraryBlock`、`TripUpdateInput`。
+- **新增方法**：`updateTrip(id, input)`、`deleteTrip(id)`；`createItineraryItem`/`updateItineraryItem` 入参新增可选 `blocks`。
+- **既有签名零改动**：`getTrip`/`listTrips`/`createTrip`/`listItineraries`/`deleteItineraryItem` 等一字未动。
+- **老数据兼容**：`blocks` 缺省时组件把 `note` 当单段兜底渲染 —— 老数据/新数据同一条渲染路径，无分支 fork。
+
+## 三、关键实现点（踩过的坑，勿重复推理）
+
+1. **真后端信封少拆一层**：`PATCH /trips/:id` 的 `data = { trip, updatedAt }`（同 `GET /trips/:id`），**不是裸 trip**。第一版按裸对象写，会得到 `id=''` 的空行程（标题清空且不回显）——已修正并在 `http.ts` 就地注释。
+2. **Taro H5 的 `<Image>` 渲染成 `<taro-image-core>`**，真正的 `<img>` 在其中。验收断言只判外层 `tagName === 'img'` 会假 FAIL（本次第一版断言即栽在这里，实现本身正常）。
+3. **本地路径提升到页面级**：图片块上传后表单会被卸载，若只把本地路径存在表单里，保存后卡片只剩 `assetId`（Mock 无 url）→ 破图。现由 `TripDetailPage` 持有 `localImages`，透传给卡片与表单，三级降级链：本会话本地路径 > 服务端 url > 占位卡。
+4. **`toBlocks` 白名单投影**：未知块类型与多余字段一律丢弃 —— 服务端将来加新块类型，老客户端不会渲染出空白，也不会把内部字段漏进界面层。
+5. **块整体替换语义**：`blocks` 与 `destinations` 同口径（整体替换，非增量合并）；传 `[]` = 清空。
+6. **Mock 不自造 URL**：图片块 url 只从内存 media 表回填，命中但 url 为空（Mock 恒为空）则降级占位 —— Mock 与真后端走同一条降级分支。
+
+## 四、验收证据（可复现）
+
+```bash
+cd apps/client
+node ../../node_modules/typescript/bin/tsc --noEmit -p tsconfig.json    # exit 0
+node ../../node_modules/eslint/bin/eslint.js ../client/src              # 0 error（70 warning 项目基线）
+CI=true node ./node_modules/@tarojs/cli/bin/taro build --type weapp     # exit 0
+CI=true node ./node_modules/@tarojs/cli/bin/taro build --type h5        # exit 0
+CI=true node .verify/server.cjs 5321 dist-h5 &
+NODE_PATH="C:\Users\lxk\.workbuddy\binaries\node\workspace\node_modules" node .verify/verify-blocks-v5.cjs   # 17/17
+CI=true node .verify/server.cjs 5318 dist-h5 &
+NODE_PATH="..." node .verify/verify-style.cjs                           # 13/13（既有回归无退化）
+```
+
+> 环境注意：pnpm 在本机受限环境会触发 deps-status 检查并调 `wmic.exe`（被安全策略拦截）→ **统一绕过 pnpm，直接用 node 调本地 CLI**；静态验收服务固定挂 `127.0.0.1`（避免本地代理劫持端口）。
+
+## 五、已知限制 / 未验证项（强制披露）
+
+1. **真后端链路未实跑**：本机 MySQL（`127.0.0.1:3306`）本次未启动（`ECONNREFUSED`），登录即 5000 → `blocks` 落库、行程改删的真接口验证**未能执行**；Mock 模式 17/17 已过，HTTP 适配层信封口径以服务端源码核对（`trip.service.update` 返回 `{trip, updatedAt}`）。派发单 §1.7/§2.4 列了可直接跑的 curl 用例。
+2. **后端尚未支持 `blocks`**：当前 `itinerary.schema.ts` 未声明该字段，Zod 会剥离 → 写请求不会报错但**不落库**。落地前，真后端模式下正文块「保存后丢失」属预期，需派发单 D-2026-10-15-01 P0 完成后闭环。
+3. **`DELETE /trips/:id` 级联缺口**（本次源码核对新发现）：服务端 `remove()` 仅软删 trip 行，子域行与邀请码未随之失效 → 已删行程的安排仍可被 `GET /itineraries?tripId=` 查到。已作为 P1 写入派发单 §二，**前端侧无解**。
+4. 小程序端仍需在微信开发者工具内人工逐页确认（本环境无法启动工具），H5 无头验收不能替代真机。
+5. 正文块上限 20 个、单块文本 2000 字（code 500 字）为前端先拦口径，服务端需独立校验（派发单 §1.2）。

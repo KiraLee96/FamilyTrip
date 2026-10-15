@@ -26,6 +26,7 @@ import type {
   Family,
   FamilyDetail,
   FamilyMember,
+  ItineraryBlock,
   ItineraryItem,
   Item,
   JoinFamilyResult,
@@ -173,6 +174,48 @@ function optNumber(v: unknown): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/**
+ * 安排正文块解析（白名单，容忍旧后端）。
+ * ============================================================================
+ * · 后端新契约直接回数组 `blocks`；旧后端/历史行回 `blocksJson` 字符串列，
+ *   两者都走这里，界面层只见 ItineraryBlock[]。
+ * · **白名单投影**：未知 type 与多余字段一律丢弃 —— 服务端将来加新块类型时，
+ *   老客户端不会把未理解的块渲染成空白，也不会把内部字段漏进界面层。
+ * · 空结果返回 undefined（而非 []），保持「老数据 = 无正文块」的单一口径，
+ *   渲染层因此只需判断 `blocks` 是否存在。
+ */
+function toBlocks(v: unknown): ItineraryBlock[] | undefined {
+  const rows = parseJsonArray(v);
+  const out: ItineraryBlock[] = [];
+  for (const row of rows) {
+    if (typeof row !== 'object' || row === null) continue;
+    const r = row as Record<string, unknown>;
+    const type = asString(r['type']);
+    const text = asString(r['text']);
+    if (type === 'text' || type === 'quote' || type === 'code') {
+      if (text === '') continue;
+      out.push({ type, text });
+    } else if (type === 'link') {
+      const url = asString(r['url']);
+      if (text === '' || url === '') continue;
+      out.push({ type: 'link', text, url });
+    } else if (type === 'image') {
+      const assetId = optString(r['assetId']);
+      const url = optString(r['url']);
+      const caption = optString(r['caption']);
+      // 既无 assetId 又无 url 的图片块无处取图，直接丢弃（不渲染空占位）
+      if (assetId === undefined && url === undefined) continue;
+      out.push({
+        type: 'image',
+        ...(assetId !== undefined ? { assetId } : {}),
+        ...(url !== undefined ? { url } : {}),
+        ...(caption !== undefined ? { caption } : {}),
+      });
+    }
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 function toTrip(raw: Record<string, unknown>): Trip {
   return {
     id: asString(raw['id']),
@@ -215,6 +258,7 @@ function toItineraryItem(raw: Record<string, unknown>): ItineraryItem {
   const transport = optString(raw['transport']);
   const lat = optNumber(raw['lat']);
   const lng = optNumber(raw['lng']);
+  const blocks = toBlocks(raw['blocks'] ?? raw['blocksJson']);
   return {
     id: asString(raw['id']),
     tripId: asString(raw['tripId']),
@@ -224,6 +268,7 @@ function toItineraryItem(raw: Record<string, unknown>): ItineraryItem {
     title: asString(raw['title']),
     ...(optString(raw['location']) !== undefined ? { location: optString(raw['location']) } : {}),
     ...(optString(raw['note']) !== undefined ? { note: optString(raw['note']) } : {}),
+    ...(blocks !== undefined ? { blocks } : {}),
     sortOrder: asNumber(raw['sort']),
     version: asNumber(raw['version']),
     ...(lat !== undefined ? { lat } : {}),
@@ -480,6 +525,19 @@ export function createHttpClient(): ApiClient {
     createTrip: async (input) => {
       const r = await request<{ trip: Record<string, unknown> }>('POST', '/trips', input);
       return toTrip(r.trip);
+    },
+    // PATCH /trips/:id —— 服务端早已存在（updateTripSchema，CAS version 必传），
+    // 客户端此前缺方法缺入口。
+    // 🔴 信封口径（对照 trip.service.ts 的 update 返回值 + controller 的 handler）：
+    //    data = { trip, updatedAt }，**不是** 裸 trip 对象 —— 与 GET /trips/:id 同形，
+    //    必须拆一层再投影；少拆会得到 id='' 的空行程（页面标题清空且不回显）。
+    updateTrip: async (id, input) => {
+      const r = await request<{ trip: Record<string, unknown> }>('PATCH', `/trips/${id}`, input);
+      return toTrip(r.trip);
+    },
+    // DELETE /trips/:id —— 服务端早已存在；data 为 null，成功即返回。
+    deleteTrip: async (id) => {
+      await request<null>('DELETE', `/trips/${id}`);
     },
     addTripMember: async (tripId, input) => {
       // 信封 { member }；家庭成员传 userId，虚拟成员传 displayName+isVirtual+managedBy

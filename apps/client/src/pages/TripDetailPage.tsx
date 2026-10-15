@@ -7,22 +7,26 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MutableRefObject, ReactNode } from 'react';
-import { Button, Image, Input, Map, Picker, Text, View } from '@tarojs/components';
+import { Button, Image, Input, Map, Picker, Text, Textarea, View } from '@tarojs/components';
 import Taro from '@tarojs/taro';
 import { Link } from '../nav/Link';
-import { useRouteParams } from '../nav';
+import { navigate, useRouteParams } from '../nav';
 
 import { ApiError, api } from '../api/index';
 import type {
   ChecklistItem,
+  Destination,
   Expense,
+  ItineraryBlock,
   ItineraryItem,
   MemoryArchive,
   MemorySnapshot,
   TransportMode,
+  Trip,
   TripInvite,
 } from '../api/types';
 import { Icon, TRANSPORT_ICON } from '../components/Icon';
+import { ItineraryContent } from '../components/ItineraryContent';
 import { MemoryCard } from '../components/MemoryCard';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
@@ -49,6 +53,31 @@ function todayStr(): string {
   const d = new Date();
   const pad = (n: number): string => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * 安排正文块上限 —— 与派发单 D-2026-10-15-01 的后端校验口径一致（≤20）。
+ * 前端先拦一次是为了给出即时反馈，服务端仍会独立校验（不信任客户端）。
+ */
+const MAX_BLOCKS = 20;
+
+/** 删除行程（二次确认后调用；服务端 DELETE /trips/:id 早已存在） */
+function removeTrip(tripId: string, title: string, onDone: () => void): void {
+  void Taro.showModal({
+    title: '删除行程',
+    content: `确定删除「${title}」？该行程的安排、清单、花销将一并移除，且不可恢复。`,
+    confirmText: '删除',
+    confirmColor: '#e5484d',
+  }).then(async (res) => {
+    if (!res.confirm) return;
+    try {
+      await api.deleteTrip(tripId);
+      void Taro.showToast({ title: '行程已删除', icon: 'none' });
+      onDone();
+    } catch (e: unknown) {
+      void Taro.showToast({ title: e instanceof Error ? e.message : '删除失败', icon: 'none' });
+    }
+  });
 }
 
 /** 删除安排：二次确认后调用（反馈 #3 要求可删） */
@@ -85,6 +114,19 @@ export function TripDetailPage() {
     useCallback(() => api.getTrip(tripId), [tripId]),
     [tripId],
   );
+
+  /** 编辑行程（标题 / 起止日期 / 目的地）内联表单开关 */
+  const [editingTrip, setEditingTrip] = useState(false);
+  /**
+   * 本会话上传图片的本地临时路径（assetId → tempFilePath）。
+   * 提出到页面级而非表单内：表单提交后会被卸载，页面重拉数据时图片块只剩
+   * assetId，Mock/离线环境下 url 为空 → 靠这份映射让刚传的图立即显示，
+   * 不必等真实对象存储下发 URL（见 components/ItineraryContent 的降级链）。
+   */
+  const [localImages, setLocalImages] = useState<Record<string, string>>({});
+  const rememberImage = useCallback((assetId: string, localPath: string) => {
+    setLocalImages((m) => ({ ...m, [assetId]: localPath }));
+  }, []);
 
   // 分享卡片携带的行程邀请信息（由 TripInviteCard 回填；
   // 微信 useShareAppMessage 是页面级钩子，必须在组件顶层、提前返回之前调用）
@@ -143,7 +185,32 @@ export function TripDetailPage() {
         <Text className="muted" style={{ marginTop: 10 }}>
           版本 v{t.version} · CAS 乐观锁，更新需回传该值
         </Text>
+        {/* 行程本身的改 / 删（服务端 PATCH/DELETE 早已存在，此前无客户端入口） */}
+        <View className="trip__ops">
+          <View className="btn btn--ghost trip__op" onClick={() => setEditingTrip((v) => !v)}>
+            <Icon name="edit" size={13} />
+            {editingTrip ? '收起编辑' : '编辑行程'}
+          </View>
+          <View
+            className="btn btn--ghost trip__op trip__op--danger"
+            onClick={() => removeTrip(tripId, t.title, () => navigate('/trips'))}
+          >
+            <Icon name="trash" size={13} />
+            删除行程
+          </View>
+        </View>
       </View>
+
+      {editingTrip && (
+        <TripForm
+          trip={t}
+          onDone={() => {
+            setEditingTrip(false);
+            trip.reload();
+          }}
+          onCancel={() => setEditingTrip(false)}
+        />
+      )}
 
       <TripInviteCard tripId={tripId} tripTitle={t.title} shareRef={tripShareRef} />
 
@@ -172,6 +239,8 @@ export function TripDetailPage() {
           tripId={tripId}
           familyId={t.familyId}
           defaultDate={t.startDate ?? undefined}
+          localImages={localImages}
+          onImageUploaded={rememberImage}
         />
       )}
       {tab === 'checklist' && <ChecklistTab tripId={tripId} familyId={t.familyId} />}
@@ -179,6 +248,188 @@ export function TripDetailPage() {
       {tab === 'photo' && <PhotoTab tripId={tripId} />}
       {tab === 'memory' && <MemoryTab tripId={tripId} tripTitle={t.title} />}
     </PageLayout>
+  );
+}
+
+/**
+ * 编辑行程表单 —— 改标题 / 起止日期 / 目的地（PATCH /trips/:id，E7 CAS）
+ * ============================================================================
+ * 服务端 updateTripSchema 早已支持这四个字段，此前只有服务端能力、没有界面入口
+ * （用户反馈「行程本身改不了日期目的地」）。本表单只走一条写路径：
+ *   · version 原样回传当前位置（详情页刚拉的 trip.version）；
+ *   · 日期清空 → 传 null（后端 nullable 语义，非「不更新」）；
+ *   · destinations 整体替换语义（与后端数组字段一致，不做增量合并）；
+ *   · 409（版本冲突）由信封上抛，提示刷新后重试 —— 并发保护的正常出口。
+ */
+function TripForm({
+  trip,
+  onDone,
+  onCancel,
+}: {
+  trip: Trip;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const [title, setTitle] = useState(trip.title);
+  const [startDate, setStartDate] = useState(trip.startDate ?? '');
+  const [endDate, setEndDate] = useState(trip.endDate ?? '');
+  const [dests, setDests] = useState<Destination[]>(trip.destinations ?? []);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const setDest = (idx: number, patch: Partial<Destination>): void => {
+    setDests((prev) => prev.map((d, i) => (i === idx ? { ...d, ...patch } : d)));
+  };
+
+  const submit = useCallback(async () => {
+    const name = title.trim();
+    if (name === '') {
+      setErr('行程标题不能为空');
+      return;
+    }
+    // 起止倒置是最常见的误操作，本地先拦一次（服务端不做顺序校验，避免误伤单边日期）
+    if (startDate !== '' && endDate !== '' && endDate < startDate) {
+      setErr('结束日期不能早于开始日期');
+      return;
+    }
+    setBusy(true);
+    setErr('');
+    try {
+      await api.updateTrip(trip.id, {
+        version: trip.version,
+        title: name,
+        startDate: startDate === '' ? null : startDate,
+        endDate: endDate === '' ? null : endDate,
+        destinations: dests
+          .map((d) => {
+            const dn = d.name.trim();
+            const note = (d.note ?? '').trim();
+            return {
+              name: dn,
+              ...(note !== '' ? { note } : {}),
+            };
+          })
+          .filter((d) => d.name !== ''),
+      });
+      onDone();
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : '保存失败');
+    } finally {
+      setBusy(false);
+    }
+  }, [title, startDate, endDate, dests, trip, onDone]);
+
+  return (
+    <View className="card">
+      <View className="card__head">
+        <Text className="card__title">编辑行程</Text>
+        <Text className="card__more" onClick={onCancel}>
+          取消
+        </Text>
+      </View>
+
+      <View className="field">
+        <Text className="field__label">标题</Text>
+        <Input
+          className="input"
+          value={title}
+          onInput={(e) => setTitle(e.detail.value)}
+          placeholder="如：2026 春节·马来西亚"
+        />
+      </View>
+
+      <View className="row-between" style={{ gap: 10 }}>
+        <View className="field" style={{ flex: 1 }}>
+          <Text className="field__label">开始日期</Text>
+          <Picker
+            mode="date"
+            value={startDate === '' ? todayStr() : startDate}
+            onChange={(e) => setStartDate(String(e.detail.value))}
+          >
+            <View className="picker-row">
+              <Text
+                className={
+                  startDate === '' ? 'picker-row__val picker-row__val--empty' : 'picker-row__val'
+                }
+              >
+                {startDate === '' ? '未设置' : startDate}
+              </Text>
+            </View>
+          </Picker>
+        </View>
+        <View className="field" style={{ flex: 1 }}>
+          <Text className="field__label">结束日期</Text>
+          <Picker
+            mode="date"
+            value={endDate === '' ? startDate || todayStr() : endDate}
+            onChange={(e) => setEndDate(String(e.detail.value))}
+          >
+            <View className="picker-row">
+              <Text
+                className={
+                  endDate === '' ? 'picker-row__val picker-row__val--empty' : 'picker-row__val'
+                }
+              >
+                {endDate === '' ? '未设置' : endDate}
+              </Text>
+            </View>
+          </Picker>
+        </View>
+      </View>
+      {(startDate !== '' || endDate !== '') && (
+        <Text
+          className="coord-line__clear"
+          style={{ marginTop: 4 }}
+          onClick={() => {
+            setStartDate('');
+            setEndDate('');
+          }}
+        >
+          清除起止日期
+        </Text>
+      )}
+
+      <View className="field">
+        <Text className="field__label">目的地</Text>
+        {dests.map((d, idx) => (
+          <View className="dest-row" key={`d-${idx}`}>
+            <Input
+              className="add-row__input"
+              value={d.name}
+              onInput={(e) => setDest(idx, { name: e.detail.value })}
+              placeholder="城市 / 地点，如：吉隆坡"
+            />
+            <Input
+              className="add-row__input"
+              value={d.note ?? ''}
+              onInput={(e) => setDest(idx, { note: e.detail.value })}
+              placeholder="备注（选填）"
+            />
+            <View
+              className="icon-btn icon-btn--danger"
+              onClick={() => setDests((prev) => prev.filter((_, i) => i !== idx))}
+            >
+              <Icon name="close" size={13} />
+            </View>
+          </View>
+        ))}
+        <View className="add-bar" onClick={() => setDests((prev) => [...prev, { name: '' }])}>
+          <Icon name="plus" size={15} />
+          <Text className="add-bar__text">添加目的地</Text>
+        </View>
+      </View>
+
+      {err ? <Text className="form-error">{err}</Text> : null}
+      <View
+        className={`btn btn--block ${busy ? 'btn--busy' : ''}`}
+        onClick={busy ? undefined : () => void submit()}
+      >
+        {busy ? '保存中…' : '保存行程信息'}
+      </View>
+      <Text className="muted" style={{ fontSize: 11, marginTop: 8, lineHeight: 1.6 }}>
+        保存会带上当前版本号 v{trip.version}；若期间有人改过这场行程，会提示刷新后重试。
+      </Text>
+    </View>
   );
 }
 
@@ -301,10 +552,15 @@ function ItineraryTab({
   tripId,
   familyId,
   defaultDate,
+  localImages,
+  onImageUploaded,
 }: {
   tripId: string;
   familyId: string;
   defaultDate?: string;
+  /** 本会话上传图片的本地路径（assetId → tempFilePath），透传给卡片渲染 */
+  localImages: Record<string, string>;
+  onImageUploaded: (assetId: string, localPath: string) => void;
 }) {
   const q = useAsync(
     useCallback(() => api.listItineraries(tripId), [tripId]),
@@ -426,6 +682,8 @@ function ItineraryTab({
                       familyId={familyId}
                       defaultDate={d}
                       item={it}
+                      localImages={localImages}
+                      onImageUploaded={onImageUploaded}
                       onDone={() => {
                         setEditingId(null);
                         q.reload();
@@ -466,7 +724,16 @@ function ItineraryTab({
                           ) : null}
                         </View>
                       )}
-                      {it.note && <Text className="tl__note">{it.note}</Text>}
+                      {/* 老数据（只有 note、无 blocks）沿用旧样式；有 blocks 时由组件统一渲染 */}
+                      {it.note !== undefined && it.note !== '' && it.blocks === undefined && (
+                        <Text className="tl__note">{it.note}</Text>
+                      )}
+                      {/* 正文块（富文本/图片混排）；老数据只有 note 时由组件内部兜底为单段 */}
+                      <ItineraryContent
+                        blocks={it.blocks}
+                        fallbackText={it.note}
+                        localImagePaths={localImages}
+                      />
                     </View>
                   ),
                 )}
@@ -481,6 +748,8 @@ function ItineraryTab({
           tripId={tripId}
           familyId={familyId}
           defaultDate={dates[dates.length - 1] ?? defaultDate ?? todayStr()}
+          localImages={localImages}
+          onImageUploaded={onImageUploaded}
           onDone={() => {
             setMode('idle');
             q.reload();
@@ -497,12 +766,37 @@ function ItineraryTab({
   );
 }
 
+/**
+ * 图片块缩略图（编辑态）—— 与卡片渲染同一条降级链：
+ * 本会话本地路径 > 服务端 url > 占位图（Mock 无对象存储时走占位，不破图）。
+ */
+function BlockThumb({
+  assetId,
+  url,
+  paths,
+}: {
+  assetId?: string;
+  url?: string;
+  paths: Record<string, string>;
+}) {
+  const src = (assetId !== undefined ? paths[assetId] : undefined) ?? url ?? '';
+  return src !== '' ? (
+    <Image className="blk-edit__thumb" src={src} mode="aspectFill" />
+  ) : (
+    <View className="blk-edit__thumb blk-edit__thumb--ph">
+      <Icon name="camera" size={18} />
+    </View>
+  );
+}
+
 /** 新增 / 编辑安排表单（同一份表单，编辑态传入 item 预填） */
 function ItineraryForm({
   tripId,
   familyId,
   defaultDate,
   item,
+  localImages,
+  onImageUploaded,
   onDone,
   onCancel,
 }: {
@@ -510,6 +804,9 @@ function ItineraryForm({
   familyId: string;
   defaultDate: string;
   item?: ItineraryItem;
+  /** 本会话已上传图片的本地路径（assetId → tempFilePath），用于缩略图即时预览 */
+  localImages: Record<string, string>;
+  onImageUploaded: (assetId: string, localPath: string) => void;
   onDone: () => void;
   onCancel: () => void;
 }) {
@@ -522,6 +819,13 @@ function ItineraryForm({
   const [transport, setTransport] = useState<TransportMode | ''>(item?.transport ?? '');
   const [lat, setLat] = useState<number | undefined>(item?.lat);
   const [lng, setLng] = useState<number | undefined>(item?.lng);
+  /**
+   * 正文块（富文本/图片）—— 整体替换语义：提交时全量下发，传空数组即清空。
+   * 编辑态从 item.blocks 预填；图片块的本地预览路径由页面级 localImages 承载，
+   * 这里只维护结构（assetId + 图注），避免表单卸载后丢失渲染能力。
+   */
+  const [blocks, setBlocks] = useState<ItineraryBlock[]>(item?.blocks ?? []);
+  const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -537,6 +841,106 @@ function ItineraryForm({
     }
   }, []);
 
+  // ---- 正文块编辑（增 / 删 / 改 / 上下移）----
+
+  const addTextBlock = (type: 'text' | 'quote' | 'code'): void => {
+    if (blocks.length >= MAX_BLOCKS) {
+      void Taro.showToast({ title: `正文块最多 ${MAX_BLOCKS} 个`, icon: 'none' });
+      return;
+    }
+    setBlocks((prev) => [...prev, { type, text: '' }]);
+  };
+
+  const addLinkBlock = (): void => {
+    if (blocks.length >= MAX_BLOCKS) {
+      void Taro.showToast({ title: `正文块最多 ${MAX_BLOCKS} 个`, icon: 'none' });
+      return;
+    }
+    setBlocks((prev) => [...prev, { type: 'link', text: '', url: '' }]);
+  };
+
+  /** 选图并上传 → 追加图片块（资产登记走 media 域两段式，与照片 tab 同一条链路） */
+  const addImageBlock = useCallback(async () => {
+    if (blocks.length >= MAX_BLOCKS) {
+      void Taro.showToast({ title: `正文块最多 ${MAX_BLOCKS} 个`, icon: 'none' });
+      return;
+    }
+    setUploading(true);
+    try {
+      const added = await pickAndUploadPhotos(tripId);
+      for (const p of added) {
+        onImageUploaded(p.asset.id, p.localPath);
+      }
+      setBlocks((prev) => [
+        ...prev,
+        ...added.map((p): ItineraryBlock => ({ type: 'image', assetId: p.asset.id })),
+      ]);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : '图片上传失败，请重试');
+    } finally {
+      setUploading(false);
+    }
+  }, [blocks.length, tripId, onImageUploaded]);
+
+  const setBlockText = (idx: number, text: string): void => {
+    setBlocks((prev) => prev.map((b, i) => (i === idx && b.type !== 'image' ? { ...b, text } : b)));
+  };
+
+  const setBlockUrl = (idx: number, url: string): void => {
+    setBlocks((prev) => prev.map((b, i) => (i === idx && b.type === 'link' ? { ...b, url } : b)));
+  };
+
+  const setBlockCaption = (idx: number, caption: string): void => {
+    setBlocks((prev) =>
+      prev.map((b, i) => (i === idx && b.type === 'image' ? { ...b, caption } : b)),
+    );
+  };
+
+  const removeBlock = (idx: number): void => {
+    setBlocks((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  /** 上下移：块顺序就是卡片上的阅读顺序，用户需要能把「注意事项」提到图片前面 */
+  const moveBlock = (idx: number, dir: -1 | 1): void => {
+    setBlocks((prev) => {
+      const to = idx + dir;
+      if (to < 0 || to >= prev.length) return prev;
+      const next = [...prev];
+      const a = next[idx];
+      const b = next[to];
+      if (a === undefined || b === undefined) return prev;
+      next[idx] = b;
+      next[to] = a;
+      return next;
+    });
+  };
+
+  /** 提交前的清洗：丢空块、裁首尾空白（服务端仍会独立校验，不信任客户端） */
+  const cleanBlocks = useCallback((): ItineraryBlock[] => {
+    const out: ItineraryBlock[] = [];
+    for (const b of blocks) {
+      if (b.type === 'image') {
+        if (b.assetId === undefined) continue;
+        const caption = (b.caption ?? '').trim();
+        out.push({
+          type: 'image',
+          assetId: b.assetId,
+          ...(caption !== '' ? { caption } : {}),
+        });
+      } else if (b.type === 'link') {
+        const text = b.text.trim();
+        const url = b.url.trim();
+        if (text === '' || url === '') continue;
+        out.push({ type: 'link', text, url });
+      } else {
+        const text = b.text.trim();
+        if (text === '') continue;
+        out.push({ type: b.type, text });
+      }
+    }
+    return out;
+  }, [blocks]);
+
   const submit = useCallback(async () => {
     if (title.trim() === '') {
       setErr('安排标题不能为空');
@@ -545,6 +949,7 @@ function ItineraryForm({
     const startAt = `${date}T${time}`;
     // endAt 与服务端 endAt 对齐（纯加法字段）；空串 = 清除结束时间
     const endAt = endTime === '' ? '' : `${date}T${endTime}`;
+    const finalBlocks = cleanBlocks();
     setBusy(true);
     setErr('');
     try {
@@ -556,6 +961,8 @@ function ItineraryForm({
           endAt: endAt === '' ? null : endAt,
           location: location.trim() === '' ? null : location.trim(),
           note: note.trim() === '' ? null : note.trim(),
+          // 有正文块时以块为准；全部删空则显式传 [] 清除（老后端忽略未知键，安全）
+          blocks: finalBlocks,
           lat: lat ?? null,
           lng: lng ?? null,
           transport: transport === '' ? null : transport,
@@ -569,6 +976,7 @@ function ItineraryForm({
           ...(endAt !== '' ? { endAt } : {}),
           ...(location.trim() !== '' ? { location: location.trim() } : {}),
           ...(note.trim() !== '' ? { note: note.trim() } : {}),
+          ...(finalBlocks.length > 0 ? { blocks: finalBlocks } : {}),
           ...(lat !== undefined ? { lat } : {}),
           ...(lng !== undefined ? { lng } : {}),
           ...(transport !== '' ? { transport } : {}),
@@ -593,6 +1001,7 @@ function ItineraryForm({
     item,
     tripId,
     familyId,
+    cleanBlocks,
     onDone,
   ]);
 
@@ -712,6 +1121,104 @@ function ItineraryForm({
           onInput={(e) => setNote(e.detail.value)}
           placeholder="如：带足水和防晒"
         />
+      </View>
+
+      {/* 正文块编辑器：卡片正文从「一行备注」升级为可混排的块列表（参考截图形态） */}
+      <View className="field">
+        <Text className="field__label">
+          卡片正文（{blocks.length}/{MAX_BLOCKS}）
+        </Text>
+        {blocks.length === 0 && (
+          <Text className="muted" style={{ fontSize: 11.5, lineHeight: 1.6 }}>
+            可加段落、灰底引用、等宽代码（车次/地址）、外链与图片，按添加顺序显示在卡片里。
+          </Text>
+        )}
+        {blocks.map((b, idx) => (
+          <View className="blk-edit" key={`bk-${idx}`}>
+            <View className="blk-edit__bar">
+              <Text className="blk-edit__kind">
+                {b.type === 'text'
+                  ? '段落'
+                  : b.type === 'quote'
+                    ? '引用'
+                    : b.type === 'code'
+                      ? '代码'
+                      : b.type === 'link'
+                        ? '链接'
+                        : '图片'}
+              </Text>
+              <View className="blk-edit__ops">
+                <View className="icon-btn" onClick={() => moveBlock(idx, -1)}>
+                  <Text className="blk-edit__arrow">↑</Text>
+                </View>
+                <View className="icon-btn" onClick={() => moveBlock(idx, 1)}>
+                  <Text className="blk-edit__arrow">↓</Text>
+                </View>
+                <View className="icon-btn icon-btn--danger" onClick={() => removeBlock(idx)}>
+                  <Icon name="close" size={13} />
+                </View>
+              </View>
+            </View>
+
+            {b.type === 'image' ? (
+              <View className="blk-edit__img-row">
+                <BlockThumb assetId={b.assetId} url={b.url} paths={localImages} />
+                <Input
+                  className="add-row__input"
+                  value={b.caption ?? ''}
+                  onInput={(e) => setBlockCaption(idx, e.detail.value)}
+                  placeholder="图注（选填）"
+                />
+              </View>
+            ) : (
+              <Textarea
+                className="textarea"
+                value={b.text}
+                maxlength={b.type === 'code' ? 500 : 2000}
+                autoHeight
+                onInput={(e) => setBlockText(idx, e.detail.value)}
+                placeholder={
+                  b.type === 'quote'
+                    ? '引用内容，如注意事项'
+                    : b.type === 'code'
+                      ? '逐字核对的内容，如航班号 / 地址'
+                      : '段落内容'
+                }
+              />
+            )}
+
+            {b.type === 'link' && (
+              <Input
+                className="input"
+                value={b.url}
+                onInput={(e) => setBlockUrl(idx, e.detail.value)}
+                placeholder="https:// 开头的链接"
+              />
+            )}
+          </View>
+        ))}
+        <View className="block-adder">
+          {(
+            [
+              ['text', '段落'],
+              ['quote', '引用'],
+              ['code', '代码'],
+            ] as Array<['text' | 'quote' | 'code', string]>
+          ).map(([k, label]) => (
+            <Text key={k} className="chip chip--plain" onClick={() => addTextBlock(k)}>
+              ＋{label}
+            </Text>
+          ))}
+          <Text className="chip chip--plain" onClick={addLinkBlock}>
+            ＋链接
+          </Text>
+          <Text
+            className={uploading ? 'chip chip--plain chip--busy' : 'chip chip--plain'}
+            onClick={uploading ? undefined : () => void addImageBlock()}
+          >
+            {uploading ? '上传中…' : '＋图片'}
+          </Text>
+        </View>
       </View>
 
       {err ? <Text className="form-error">{err}</Text> : null}

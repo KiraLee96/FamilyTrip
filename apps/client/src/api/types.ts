@@ -166,6 +166,68 @@ export interface Wish {
   tags?: string[];
 }
 
+/**
+ * 安排内容块（v2 富文本卡片 —— 对齐 2026-10-14 参考截图）
+ * ============================================================================
+ * 参考截图里同一张安排卡内混排了多种形态：机票截图（图片）、灰底多行说明
+ * （引用）、等宽蓝色酒店地址（代码）、可点开的外链（链接）。
+ * 因此把「卡片正文」从单行 note 升级为**有序块列表**，块与块之间顺序即渲染顺序。
+ *
+ * 🔴 与后端的对齐口径（见派发单 D-2026-10-15-01）：
+ *   - 服务端字段 `blocks`（DB 列 `blocks_json`，TEXT，可空）；老数据缺省 = 无正文块。
+ *   - `note` 保留不动（纯文本兜底）：老数据仍只有 note，渲染时作为首个 text 块显示。
+ *   - image 块只存 `assetId`（media 域资产 id）。URL **由服务端解析**后在读接口
+ *     直接回填到 `url`（方案 A，同 MEDIA_PUBLIC_BASE_URL 拼接口径），前端零拼接。
+ *     Mock 模式下 url 为空串，界面按占位/本会话本地路径降级，不破图。
+ */
+export type ItineraryBlock =
+  | {
+      /** 普通段落（多行用 \n 分隔，渲染保留换行） */
+      type: 'text';
+      text: string;
+    }
+  | {
+      /** 引用块：灰底圆角，用于注意事项/攻略摘录（参考截图灰底多行块） */
+      type: 'quote';
+      text: string;
+    }
+  | {
+      /** 代码/等宽块：地址、航班号、车次等需要逐字核对的内容 */
+      type: 'code';
+      text: string;
+    }
+  | {
+      /** 链接块：正文 + 可点开的外链（参考截图抖音分享链接） */
+      type: 'link';
+      text: string;
+      url: string;
+    }
+  | {
+      /** 图片块：内嵌到安排卡里的截图/照片 */
+      type: 'image';
+      /** media 域资产 id（上传登记后回填；Mock 模式同样登记在内存 media 表） */
+      assetId?: string;
+      /** 服务端解析后的可访问 URL（读接口回填；Mock 为空串） */
+      url?: string;
+      /** 图注（选填） */
+      caption?: string;
+    };
+
+/**
+ * 行程更新入参（PATCH /trips/:id，E7 CAS）。
+ * 🔴 `version` 必传：前后端并发保护靠它，缺了就拒（服务端 400）。
+ */
+export interface TripUpdateInput {
+  version: number;
+  title?: string;
+  /** YYYY-MM-DD；传 null 清空 */
+  startDate?: string | null;
+  /** YYYY-MM-DD；传 null 清空 */
+  endDate?: string | null;
+  /** 整体替换目的地列表（非增量合并） */
+  destinations?: Destination[];
+}
+
 /** 行程条目 */
 export interface ItineraryItem {
   id: string;
@@ -179,6 +241,8 @@ export interface ItineraryItem {
   title: string;
   location?: string;
   note?: string;
+  /** 富文本/图片正文块（有序；缺省表示老数据，只有 note） */
+  blocks?: ItineraryBlock[];
   sortOrder: number;
   /** CAS 乐观锁版本号；更新时必须原样回传 */
   version: number;

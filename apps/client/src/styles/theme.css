@@ -2549,3 +2549,238 @@ p {
 .weui-tabbar__icon {
   display: none;
 }
+
+/* ============================================================================
+   安排卡片正文块（富文本 / 图片混排）· 2026-10-15
+   ----------------------------------------------------------------------------
+   对齐 2026-10-14 参考截图的五种块形态：
+     段落 text   普通正文，保留换行
+     引用 quote  灰底圆角多行块（注意事项 / 攻略摘录）
+     代码 code   等宽 + 主色文字（航班号 / 车次 / 地址，逐字核对用）
+     链接 link   主色文字 + 链接图标，点按复制 / 新开
+     图片 image  内嵌图片 + 可选图注，加载失败降级占位卡
+   配色全部走既有设计变量，双端（H5 / 小程序）同一份规则，无平台条件编译。
+   ========================================================================== */
+
+.blks {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.blk {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-2);
+  white-space: pre-line;
+  word-break: break-word;
+}
+
+.blk__text {
+  display: block;
+  color: var(--text-2);
+  white-space: pre-line;
+}
+
+/* 引用块：灰底圆角（截图里的「灰底多行说明」） */
+.blk--quote {
+  background: rgba(120, 110, 88, 0.09);
+  border-radius: 9px;
+  padding: 9px 11px;
+}
+
+/* 代码块：等宽字体 + 主色，用于需要逐字核对的内容 */
+.blk--code {
+  background: rgba(30, 91, 69, 0.06);
+  border-radius: 9px;
+  padding: 9px 11px;
+}
+
+.blk__code-text {
+  display: block;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--primary-ink);
+  white-space: pre-line;
+  word-break: break-all;
+}
+
+/* 链接块：主色 + 下划线，点按行为见 components/ItineraryContent */
+.blk--link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+.blk__link-text {
+  font-size: 12.5px;
+  color: var(--primary);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+
+/* 图片块 */
+.blk--image {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.blk__img {
+  width: 100%;
+  border-radius: 10px;
+  background: var(--card-sunk);
+}
+
+.blk__img-ph {
+  height: 108px;
+  border-radius: 10px;
+  background: var(--card-sunk);
+  border: 1px dashed var(--line-strong);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: var(--text-3);
+}
+
+.blk__img-ph-text {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.blk__cap {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.5;
+}
+
+/* ---------- 正文块编辑器（安排表单内） ---------- */
+
+.blk-edit {
+  margin-top: 8px;
+  padding: 9px 10px 10px;
+  border-radius: 10px;
+  background: var(--card-sunk);
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.blk-edit__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.blk-edit__kind {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--primary-ink);
+  background: var(--primary-soft);
+  border-radius: 6px;
+  padding: 1px 8px;
+}
+
+.blk-edit__ops {
+  display: flex;
+  gap: 4px;
+}
+
+.blk-edit__arrow {
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1;
+}
+
+.blk-edit__img-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.blk-edit__thumb {
+  flex: 0 0 auto;
+  width: 54px;
+  height: 54px;
+  border-radius: 9px;
+  background: var(--card);
+}
+
+.blk-edit__thumb--ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  border: 1px dashed var(--line-strong);
+}
+
+.block-adder {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.chip--busy {
+  opacity: 0.55;
+}
+
+/* 多行输入（正文块文本） */
+.textarea {
+  width: 100%;
+  min-height: 62px;
+  border-radius: 9px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text);
+}
+
+/* ---------- 行程头部：编辑 / 删除行程动作区 ---------- */
+
+.trip__ops {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.trip__op {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 36px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.trip__op--danger {
+  color: var(--danger);
+  border-color: rgba(217, 83, 74, 0.35);
+}
+
+/* ---------- 目的地行（编辑行程表单内） ---------- */
+
+.dest-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.dest-row .add-row__input {
+  height: 38px;
+  font-size: 13.5px;
+}
