@@ -506,11 +506,115 @@ CI=true node .verify/server.cjs 5318   # 另开终端
 NODE_PATH="..." node .verify/verify-style.cjs                                                         # 13/13
 ```
 
-## 五、仍未闭环 / 需 Kira 确认
+**真后端链路**（需先起 MySQL + 后端，见 §五 5.1）：
 
-1. **真后端链路依然未实跑**：本机 MySQL `127.0.0.1:3306` 仍 `ECONNREFUSED`，
-   后端迁移 `20261015120000_itinerary_blocks` 亦未对实库执行。上述 6 例测试用桩注入的
-   信封与 `trip.controller.ts` 源码逐字对齐，是当前环境能拿到的最强证据，但不等于真机联调。
-2. **需确认反馈时用的是哪一端**：微信开发者工具加载 `dist/` + 真后端，还是 H5？
-   若是前者，`dist/` 需重新构建后**清缓存重载**（DevTools 有产物缓存），否则仍跑旧包。
-3. 后端 `d89a2f5` 的两个修复（`blocks` 落库、删除级联、`itemRef` 网关 bug）**待真机回归**。
+```bash
+# 内存驱动后端（推荐，绕开 D-2026-10-15-02 的 BigInt 500）
+cd apps/server && DATABASE_URL= PORT=3001 CORS_ORIGIN=http://127.0.0.1:5199 node dist/main.js
+cd apps/client
+API_BASE_URL=http://127.0.0.1:3001/api node ./node_modules/@tarojs/cli/bin/taro build --type h5
+node .verify/server.cjs 5199 &
+NODE_PATH="..." node .verify/verify-delete-real-backend.cjs      # 18/18（浏览器级，最强证据）
+node .verify/real-backend-acceptance.cjs                          # 32/32（信封 + 落库 + 校验链）
+node .verify/real-endpoint-matrix.cjs                              # 真 MySQL 端点矩阵（3000）
+node .verify/audit-bigint-fields.cjs                              # BigInt 白名单审计（期望 0 处）
+```
+
+## 五、真后端取证（2026-10-15 补做，关闭上一版「真链路未跑」的缺口）
+
+上一版 §五 第 1 条写的是「真链路依然未实跑」。**已补做**，方式与结论如下。
+
+### 5.1 环境打通（三个此前卡住的点）
+
+| 卡点                     | 处理                                                                                                                                                                                                                                                                                        |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| MySQL 8.4 未启动         | `& "C:\Users\lxk\.workbuddy\mysql84\bin\mysqld.exe" --basedir=... --datadir="C:\Users\lxk\.workbuddy\mysql84-data" --lc-messages-dir=... --port=3306 --console`。⚠️ **必须用 PowerShell 传参**：Git Bash 的 MSYS 会把 `--datadir=C:/...` 改写，导致 datadir 回落到 `E:\data\` 直接 Aborting |
+| 迁移「未实库执行」       | `node node_modules/prisma/build/index.js migrate deploy` → `20261015120000_itinerary_blocks` **已成功应用**（后端回执里那条缺口关闭）                                                                                                                                                       |
+| `dist/` 增量构建状态损坏 | 表现为 `Cannot find module 'dist/common/fx/rate-tier.js'` 但 tsc 退出码 0。**处理：`rm -rf dist tsconfig.build.tsbuildinfo` 后整目录重建**，勿信增量                                                                                                                                        |
+| 本地代理劫持端口         | curl 一律加 `--noproxy '*'`（否则报 `upstream connect failed`，看着像服务没起）                                                                                                                                                                                                             |
+| 登录需要微信 code        | **不需要**：H5 端 `obtainCode()` 合成 `h5-<base36>-<rand>`，后端开发桩 `stubWechat` 接受任意非空 code → `openid_<code>`                                                                                                                                                                     |
+
+### 5.2 证据一 · 服务端实际发出的字节
+
+```
+DELETE /trips/<id>        → {"code":0,"message":"ok","data":null,"meta":{"updatedAt":"...","serverTime":"..."}}
+DELETE /itineraries/<id>  → {"code":0,"message":"ok","data":null,"meta":{...}}
+```
+
+`data` **就是 `null`**。把这两个字节串喂给修复前/后的客户端判据：
+
+- 修复前（`request<null>` → `unwrap`）：`throw ApiError(-1) 响应 data 为空`
+- 修复后（`requestVoid` → `allowNullData`）：通过
+
+脚本 `.verify/real-backend-acceptance.cjs`（32/32）。
+
+### 5.3 证据二 · 浏览器级端到端（最强）
+
+`.verify/verify-delete-real-backend.cjs` —— **真实浏览器里的真实 `createHttpClient`，
+打到真实 NestJS，抓到真实 HTTP 线上流量**：
+
+```
+PASS  4.1 浏览器真实发出了 DELETE /trips/:id  —— /api/trips/386113908210929664
+PASS  4.2 服务端返回 HTTP 200
+PASS  4.3 响应信封 code = 0
+PASS  4.4 【关键】响应 data 为 null —— 修复前客户端在此抛异常  —— data=null
+PASS  5.1 已离开详情页（回到行程列表）  —— hash=#/pages/TripsPage
+PASS  5.2 未出现「删除失败 / 响应 data 为空」提示  —— 无
+PASS  6.1 服务端列表中已无该行程  —— items=0
+PASS  6.2 GET 已删行程 → 404
+===== 真后端浏览器级验收：18/18 通过 =====
+```
+
+### 5.4 证据三 · 前后对照（证明「是这个修复救了它」）
+
+在**构建产物**里把判定分支 `!0!==C.allowNullData` 改成恒真 `0===0`
+（即让 `requestVoid` 退回 `unwrap` 路径），同一脚本重跑：
+
+```
+PASS  4.1 浏览器真实发出了 DELETE /trips/:id
+PASS  4.2 服务端返回 HTTP 200
+PASS  4.4 【关键】响应 data 为 null
+FAIL  5.1 已离开详情页（回到行程列表）  —— hash=#/pages/TripDetailPage?id=386113780540510208
+FAIL  5.2 未出现「删除失败 / 响应 data 为空」提示  —— 响应 data 为空
+PASS  6.1 服务端列表中已无该行程  —— items=0     ← 服务端真的删掉了
+===== 真后端浏览器级验收：16/18 通过 =====
+```
+
+**这就是 Kira 报的现象本身**：请求出去了、服务端删成功了、界面停在详情页并弹
+「响应 data 为空」。对照完成后产物已还原（`!0!==C.allowNullData` 回归，复跑 18/18）。
+
+### 5.5 证据四 · 真 MySQL 端点矩阵（顺带发现另一个阻断缺陷）
+
+| 端点                       | 真 MySQL               | 内存驱动 |
+| -------------------------- | ---------------------- | -------- |
+| `POST /trips`              | 🔴 500，响应**无信封** | ✅ 200   |
+| `GET /trips`               | 🔴 500，响应**无信封** | ✅ 200   |
+| `GET /trips/:id`           | 🔴 500，响应**无信封** | ✅ 200   |
+| `PATCH /trips/:id`         | 🔴 500，响应**无信封** | ✅ 200   |
+| `DELETE /trips/:id`        | ✅ 200 `data:null`     | ✅ 200   |
+| `GET /itineraries?tripId=` | ✅ 200                 | ✅ 200   |
+| `DELETE /itineraries/:id`  | ✅ 200 `data:null`     | ✅ 200   |
+
+根因：`TRIP_BIGINT_FIELDS` 漏了 `version`（schema 里是 `BigInt @db.UnsignedBigInt`），
+`JSON.stringify` 抛 `Do not know how to serialize a BigInt` → 500 且丢信封。
+**已作为 `D-2026-10-15-02` 派发后端**（含全量漏列审计、边界兜底建议、CI 门禁要求）。
+⚠️ 注意这条与本次修复**叠加出同一症状**：即便客户端判据修好，删完跳回列表仍会命中
+`GET /trips` 的 500。「行程还是无法删除」是两个缺陷的合成结果。
+
+---
+
+## 六、仍未闭环 / 需 Kira 确认
+
+1. **`D-2026-10-15-02`（真 MySQL BigInt 序列化）待后端修**：修好前，
+   真 MySQL 模式下 trip 域仍不可用。前端侧无解（是服务端 500）。
+2. **真机（微信开发者工具）仍需人工逐页确认**：本环境无法启动工具；
+   H5 无头验收不能替代真机，尤其 `Taro.showModal` 在小程序侧的真实表现。
+3. **需确认反馈「行程还是无法删除」时用的是哪一端**：
+   - 若**真后端**：两个缺陷都会命中，本次修复解决客户端那一半；
+   - 若 **Mock 模式**：mock 的 `deleteTrip` 直接 splice 内存数组、不经信封，理论上一直是好的
+     （H5 已证）→ 那就要往「小程序端 `Taro.showModal` / 产物缓存」方向查，
+     请把当时的**具体表现（有没有弹 toast、toast 文案）**告诉我，这是最快的分诊依据。
+4. **`.verify/` 已纳管 4 个脚本**；本次新增 4 个真链路脚本（acceptance / endpoint-probe /
+   delete-real-backend / audit-bigint-fields），其中 `audit-bigint-fields.cjs` 与
+   `real-endpoint-matrix.cjs` 跨了前后端边界（读 `apps/server` 源码与 DB），
+   属"验收工具"性质，未改任何服务端代码。
