@@ -211,6 +211,7 @@ function toWish(raw: Record<string, unknown>): Wish {
 
 function toItineraryItem(raw: Record<string, unknown>): ItineraryItem {
   const startAt = asString(raw['startAt']);
+  const endAt = optString(raw['endAt']) ?? '';
   const transport = optString(raw['transport']);
   const lat = optNumber(raw['lat']);
   const lng = optNumber(raw['lng']);
@@ -219,6 +220,7 @@ function toItineraryItem(raw: Record<string, unknown>): ItineraryItem {
     tripId: asString(raw['tripId']),
     date: startAt.slice(0, 10),
     ...(startAt.length >= 16 ? { startTime: startAt.slice(11, 16) } : {}),
+    ...(endAt.length >= 16 ? { endTime: endAt.slice(11, 16) } : {}),
     title: asString(raw['title']),
     ...(optString(raw['location']) !== undefined ? { location: optString(raw['location']) } : {}),
     ...(optString(raw['note']) !== undefined ? { note: optString(raw['note']) } : {}),

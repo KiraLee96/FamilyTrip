@@ -279,6 +279,15 @@ function TripInviteCard({
 }
 
 /**
+ * 安排时间段文案：有结束时间显示「HH:mm-HH:mm」，否则单时间（参考截图样式）。
+ * 都没有（用户清掉了时间）时返回空串，卡片不渲染时间位。
+ */
+function timeText(it: ItineraryItem): string {
+  if (it.startTime && it.endTime) return `${it.startTime}-${it.endTime}`;
+  return it.startTime ?? it.endTime ?? '';
+}
+
+/**
  * 行程 tab —— 按天时间轴 + 增删改 + 地图标记/连线（反馈 #3/#4）
  * ============================================================================
  * 反馈根因：此前只有只读列表，没有任何写入入口 →「安排无法添加 / 不能修改」。
@@ -328,7 +337,7 @@ function ItineraryTab({
         id: idx,
         latitude: i.lat ?? 0,
         longitude: i.lng ?? 0,
-        title: `${i.startTime ?? ''} ${i.title}`.trim(),
+        title: `${timeText(i)} ${i.title}`.trim(),
         // 小程序 Map 要求真实文件路径（不支持 data URI / 网络图做标记）
         iconPath: MARKER_ICON,
         width: 26,
@@ -398,13 +407,15 @@ function ItineraryTab({
       {items.length === 0 ? (
         <Empty text="还没有安排，点下面按钮加第一条" />
       ) : (
-        dates.map((d) => {
+        dates.map((d, dayIdx) => {
           const dayItems = items.filter((i) => i.date === d);
           return (
             <View className="day" key={d}>
               <View className="day__head">
-                {shortDate(d)} {weekday(d)}
-                <Text className="day__date">{dayItems.length} 项安排</Text>
+                <Text className="day__no">第{dayIdx + 1}天</Text>
+                <Text className="day__date">
+                  （{shortDate(d)}）{weekday(d)} · {dayItems.length} 项安排
+                </Text>
               </View>
               <View className="tl">
                 {dayItems.map((it) =>
@@ -422,49 +433,40 @@ function ItineraryTab({
                       onCancel={() => setEditingId(null)}
                     />
                   ) : (
-                    <View className="tl__row" key={it.id}>
-                      <View className="tl__rail">
-                        <View className="tl__dot" />
-                        <View className="tl__line" />
-                      </View>
-                      <View className="tl__card">
-                        <View className="tl__card-head">
-                          {it.startTime && (
-                            <View className="tl__time">
-                              <Icon name="clock" size={13} />
-                              <Text>{it.startTime}</Text>
-                            </View>
-                          )}
-                          {it.transport && (
-                            <Text className="tl__transport">
-                              <Icon name={TRANSPORT_ICON[it.transport]} size={13} />
-                              {TRANSPORT_LABEL[it.transport]}
-                            </Text>
-                          )}
-                          <View className="tl__ops">
-                            <View className="icon-btn" onClick={() => setEditingId(it.id)}>
-                              <Icon name="edit" size={14} />
-                            </View>
-                            <View
-                              className="icon-btn icon-btn--danger"
-                              onClick={() => removeItinerary(it.id, it.title, q.reload)}
-                            >
-                              <Icon name="trash" size={14} />
-                            </View>
+                    <View className="tl__card" key={it.id}>
+                      <View className="tl__card-head">
+                        {timeText(it) !== '' && <Text className="tl__time">{timeText(it)}</Text>}
+                        <Text className="tl__title">{it.title}</Text>
+                        <View className="tl__ops">
+                          <View className="icon-btn" onClick={() => setEditingId(it.id)}>
+                            <Icon name="edit" size={14} />
+                          </View>
+                          <View
+                            className="icon-btn icon-btn--danger"
+                            onClick={() => removeItinerary(it.id, it.title, q.reload)}
+                          >
+                            <Icon name="trash" size={14} />
                           </View>
                         </View>
-                        <Text className="tl__title">{it.title}</Text>
-                        {it.location && (
-                          <View className="tl__loc">
-                            <Icon name="map-pin" size={13} />
-                            <Text>{it.location}</Text>
-                            {it.lat !== undefined && it.lng !== undefined ? (
-                              <Text className="tl__coord">已标记</Text>
-                            ) : null}
-                          </View>
-                        )}
-                        {it.note && <Text className="tl__note">{it.note}</Text>}
                       </View>
+                      {it.transport && (
+                        <View className="tl__meta">
+                          <Text className="tl__transport">
+                            <Icon name={TRANSPORT_ICON[it.transport]} size={13} />
+                            {TRANSPORT_LABEL[it.transport]}
+                          </Text>
+                        </View>
+                      )}
+                      {it.location && (
+                        <View className="tl__loc">
+                          <Icon name="map-pin" size={12} />
+                          <Text className="tl__loc-text">{it.location}</Text>
+                          {it.lat !== undefined && it.lng !== undefined ? (
+                            <Text className="tl__coord">已标记</Text>
+                          ) : null}
+                        </View>
+                      )}
+                      {it.note && <Text className="tl__note">{it.note}</Text>}
                     </View>
                   ),
                 )}
@@ -514,6 +516,7 @@ function ItineraryForm({
   const [title, setTitle] = useState(item?.title ?? '');
   const [date, setDate] = useState(item?.date ?? defaultDate);
   const [time, setTime] = useState(item?.startTime ?? '09:00');
+  const [endTime, setEndTime] = useState(item?.endTime ?? '');
   const [location, setLocation] = useState(item?.location ?? '');
   const [note, setNote] = useState(item?.note ?? '');
   const [transport, setTransport] = useState<TransportMode | ''>(item?.transport ?? '');
@@ -540,6 +543,8 @@ function ItineraryForm({
       return;
     }
     const startAt = `${date}T${time}`;
+    // endAt 与服务端 endAt 对齐（纯加法字段）；空串 = 清除结束时间
+    const endAt = endTime === '' ? '' : `${date}T${endTime}`;
     setBusy(true);
     setErr('');
     try {
@@ -548,6 +553,7 @@ function ItineraryForm({
           version: item.version,
           title: title.trim(),
           startAt,
+          endAt: endAt === '' ? null : endAt,
           location: location.trim() === '' ? null : location.trim(),
           note: note.trim() === '' ? null : note.trim(),
           lat: lat ?? null,
@@ -560,6 +566,7 @@ function ItineraryForm({
           familyId,
           title: title.trim(),
           startAt,
+          ...(endAt !== '' ? { endAt } : {}),
           ...(location.trim() !== '' ? { location: location.trim() } : {}),
           ...(note.trim() !== '' ? { note: note.trim() } : {}),
           ...(lat !== undefined ? { lat } : {}),
@@ -573,7 +580,21 @@ function ItineraryForm({
     } finally {
       setBusy(false);
     }
-  }, [title, date, time, location, note, transport, lat, lng, item, tripId, familyId, onDone]);
+  }, [
+    title,
+    date,
+    time,
+    endTime,
+    location,
+    note,
+    transport,
+    lat,
+    lng,
+    item,
+    tripId,
+    familyId,
+    onDone,
+  ]);
 
   return (
     <View className="card">
@@ -594,8 +615,8 @@ function ItineraryForm({
         />
       </View>
 
-      <View className="row-between" style={{ gap: 10 }}>
-        <View className="field" style={{ flex: 1 }}>
+      <View className="row-between" style={{ gap: 8 }}>
+        <View className="field" style={{ flex: 1.15 }}>
           <Text className="field__label">日期</Text>
           <Picker mode="date" value={date} onChange={(e) => setDate(String(e.detail.value))}>
             <View className="picker-row">
@@ -604,14 +625,37 @@ function ItineraryForm({
           </Picker>
         </View>
         <View className="field" style={{ flex: 1 }}>
-          <Text className="field__label">时间</Text>
+          <Text className="field__label">开始</Text>
           <Picker mode="time" value={time} onChange={(e) => setTime(String(e.detail.value))}>
             <View className="picker-row">
               <Text className="picker-row__val">{time}</Text>
             </View>
           </Picker>
         </View>
+        <View className="field" style={{ flex: 1 }}>
+          <Text className="field__label">结束（选填）</Text>
+          <Picker
+            mode="time"
+            value={endTime === '' ? time : endTime}
+            onChange={(e) => setEndTime(String(e.detail.value))}
+          >
+            <View className="picker-row">
+              <Text
+                className={
+                  endTime === '' ? 'picker-row__val picker-row__val--empty' : 'picker-row__val'
+                }
+              >
+                {endTime === '' ? '未设置' : endTime}
+              </Text>
+            </View>
+          </Picker>
+        </View>
       </View>
+      {endTime !== '' && (
+        <Text className="coord-line__clear" style={{ marginTop: 2 }} onClick={() => setEndTime('')}>
+          清除结束时间
+        </Text>
+      )}
 
       <View className="field">
         <Text className="field__label">地点</Text>

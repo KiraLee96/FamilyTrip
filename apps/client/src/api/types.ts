@@ -174,6 +174,8 @@ export interface ItineraryItem {
   date: string;
   /** HH:mm */
   startTime?: string;
+  /** HH:mm（结束时间，选填；与服务端 endAt 对应，展示为时间段） */
+  endTime?: string;
   title: string;
   location?: string;
   note?: string;

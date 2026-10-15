@@ -1065,7 +1065,10 @@ p {
   font-weight: 600;
 }
 
-/* ---------- 行程时间轴（详情页） ---------- */
+/* ---------- 行程时间轴（详情页）· 对齐 2026-10-14 参考截图 ----------
+   卡片样式：暖灰沉底（card-sunk）+ 12px 圆角、扁平无阴影；
+   时间段加粗下划线 + 标题加粗同行；交通/地点/备注依次成行。
+   页面米纸底色与全局主题不变，仅安排卡片版式变化。 */
 
 .day {
   margin-bottom: 14px;
@@ -1077,98 +1080,79 @@ p {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 6px 2px;
+  padding: 8px 2px 7px;
   background: var(--bg);
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-2);
+}
+
+.day__no {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
 }
 
 .day__date {
   font-size: 12px;
   color: var(--text-3);
-  font-weight: 400;
 }
 
 .tl {
-  padding-left: 4px;
-}
-
-.tl__row {
-  display: flex;
-  gap: 12px;
-}
-
-.tl__rail {
-  flex: 0 0 auto;
-  width: 14px;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding-top: 4px;
+  gap: 10px;
 }
 
-.tl__dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-soft);
-}
-
-.tl__line {
-  flex: 1 1 auto;
-  width: 2px;
-  background: var(--line-strong);
-  margin: 4px 0;
-  border-radius: 1px;
-}
-
-.tl__row:last-child .tl__line {
-  display: none;
-}
-
+/* 安排卡片：暖灰沉底 + 圆角，无阴影（参考截图扁平卡片） */
 .tl__card {
-  flex: 1 1 auto;
-  min-width: 0;
-  background: var(--card);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-card);
-  padding: 11px 13px;
-  margin-bottom: 9px;
+  background: var(--card-sunk);
+  border-radius: 12px;
+  padding: 11px 13px 12px;
 }
 
 .tl__time {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
-  color: var(--primary);
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  color: var(--primary-ink);
+  text-decoration: underline;
+  text-decoration-color: var(--primary);
+  text-underline-offset: 3px;
+  font-variant-numeric: tabular-nums;
 }
 
 .tl__title {
-  margin-top: 3px;
   font-size: 14.5px;
   font-weight: 600;
+  color: var(--text);
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
+.tl__meta {
+  margin-top: 7px;
+  display: flex;
+  gap: 6px;
+}
+
+/* 地点高亮行（参考截图的蓝色地点条 → 用主色柔和底） */
 .tl__loc {
-  margin-top: 4px;
+  margin-top: 8px;
+  align-self: flex-start;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   font-size: 12px;
-  color: var(--text-3);
+  color: var(--primary-ink);
+  background: var(--primary-soft);
+  border-radius: 7px;
+  padding: 3px 9px;
 }
 
 .tl__note {
-  margin-top: 6px;
+  display: block;
+  margin-top: 8px;
   font-size: 12px;
   color: var(--text-2);
-  background: var(--card-sunk);
-  border-radius: 8px;
-  padding: 7px 9px;
+  line-height: 1.65;
+  white-space: pre-line;
 }
 
 /* ---------- 清单 ---------- */
@@ -2499,7 +2483,8 @@ p {
 .tl__card-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 3px 8px;
 }
 
 .tl__transport {

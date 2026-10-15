@@ -243,6 +243,7 @@ const ITINERARY: ItineraryItem[] = [
     tripId: '101',
     date: '2026-10-01',
     startTime: '09:30',
+    endTime: '13:10',
     title: '高铁出发 → 青岛',
     location: '北京南站',
     note: 'G179 次，09:30 发车',
@@ -257,6 +258,7 @@ const ITINERARY: ItineraryItem[] = [
     tripId: '101',
     date: '2026-10-01',
     startTime: '15:00',
+    endTime: '16:00',
     title: '入住海景民宿',
     location: '栈桥附近',
     sortOrder: 2,
@@ -270,6 +272,7 @@ const ITINERARY: ItineraryItem[] = [
     tripId: '101',
     date: '2026-10-02',
     startTime: '08:00',
+    endTime: '11:30',
     title: '栈桥 + 八大关',
     location: '市南区',
     note: '步行游览，穿舒适鞋',
@@ -284,6 +287,7 @@ const ITINERARY: ItineraryItem[] = [
     tripId: '101',
     date: '2026-10-02',
     startTime: '17:30',
+    endTime: '19:00',
     title: '赶海捡贝壳',
     location: '燕儿岛山公园',
     sortOrder: 2,
@@ -927,6 +931,9 @@ export function createMockClient(): ApiClient {
         tripId: input.tripId,
         date: input.startAt.slice(0, 10),
         ...(input.startAt.length >= 16 ? { startTime: input.startAt.slice(11, 16) } : {}),
+        ...(input.endAt !== undefined && input.endAt.length >= 16
+          ? { endTime: input.endAt.slice(11, 16) }
+          : {}),
         title: input.title,
         ...(input.location !== undefined ? { location: input.location } : {}),
         ...(input.note !== undefined ? { note: input.note } : {}),
@@ -948,6 +955,11 @@ export function createMockClient(): ApiClient {
       if (input.startAt !== undefined) {
         it.date = input.startAt.slice(0, 10);
         if (input.startAt.length >= 16) it.startTime = input.startAt.slice(11, 16);
+      }
+      // endAt：传空串/null 视为清除结束时间（与 location/note 同口径）
+      if (input.endAt !== undefined) {
+        it.endTime =
+          input.endAt !== null && input.endAt.length >= 16 ? input.endAt.slice(11, 16) : undefined;
       }
       if (input.title !== undefined) it.title = input.title;
       if (input.location !== undefined) it.location = input.location ?? undefined;
