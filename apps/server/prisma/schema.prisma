@@ -348,6 +348,8 @@ model ItineraryItem {
   endAt      DateTime? @map("end_at") @db.DateTime(3)
   location   String? @db.VarChar(256)
   note       String? @db.Text
+  /// D-2026-10-15-01：安排正文块（富文本/图片，JSON 数组；NULL = 老数据只有 note）
+  blocksJson String? @map("blocks_json") @db.Text
   sort       Int    @default(0)
   /// M-Client-2：日程内记账金额（最小货币单位整数）
   amount     BigInt?

@@ -27,7 +27,11 @@ import { AppError, ErrorCode } from '../../common/errors/error-code.js';
 import type { Row } from '../../common/db/table-client.js';
 import type { DomainContext, TxHandle } from '../domain-context.js';
 import { serializeRow } from '../domain-context.js';
-import { buildCasWhere, assertCasSucceeded, requireVersion } from '../../common/concurrency/optimistic-lock.js';
+import {
+  buildCasWhere,
+  assertCasSucceeded,
+  requireVersion,
+} from '../../common/concurrency/optimistic-lock.js';
 import {
   decideLeaderSuccession,
   leaderAbdicationRefused,
@@ -43,6 +47,18 @@ export interface TripServiceOptions {
 const TRIP_BIGINT_FIELDS = ['id', 'familyId', 'createdBy', 'leaderId'];
 const MEMBER_BIGINT_FIELDS = ['id', 'tripId', 'userId', 'managedBy'];
 
+/**
+ * D-2026-10-15-01：行程删除时级联软删的子域表（ Prisma 模型名 = 委托名）。
+ * media_asset 不在其列 —— 照片是家庭资产，不随行程软删（见 remove() 注释）。
+ */
+const CASCADE_CHILD_TABLES = [
+  'tripMember',
+  'itineraryItem',
+  'tripChecklistItem',
+  'expense',
+  'booking',
+] as const;
+
 export class TripService {
   private readonly retentionDays: number;
 
@@ -51,14 +67,17 @@ export class TripService {
   }
 
   /** 建出行 —— 创建者自动成为 LEADER + ACTIVE 成员 */
-  async create(userId: bigint, input: {
-    familyId: bigint;
-    title: string;
-    startDate?: string;
-    endDate?: string;
-    timezone?: string;
-    destinations?: Array<{ name: string; note?: string }>;
-  }): Promise<Record<string, unknown>> {
+  async create(
+    userId: bigint,
+    input: {
+      familyId: bigint;
+      title: string;
+      startDate?: string;
+      endDate?: string;
+      timezone?: string;
+      destinations?: Array<{ name: string; note?: string }>;
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       await this.assertFamilyMember(tx, input.familyId, userId);
       this.assertDateOrder(input.startDate, input.endDate);
@@ -107,13 +126,19 @@ export class TripService {
   }
 
   /** 出行列表 */
-  async list(userId: bigint, q: {
-    familyId?: bigint;
-    status?: string;
-    mineOnly?: boolean;
-    page?: unknown;
-    pageSize?: unknown;
-  }): Promise<{ items: { memberCount: number; myRole: unknown; myAccessLevel: unknown; }[]; meta: Record<string, unknown>; }> {
+  async list(
+    userId: bigint,
+    q: {
+      familyId?: bigint;
+      status?: string;
+      mineOnly?: boolean;
+      page?: unknown;
+      pageSize?: unknown;
+    },
+  ): Promise<{
+    items: { memberCount: number; myRole: unknown; myAccessLevel: unknown }[];
+    meta: Record<string, unknown>;
+  }> {
     const page = normalizePageQuery(q.page, q.pageSize);
     const myFamilies = await this.visibleFamilyIds(userId);
 
@@ -127,7 +152,9 @@ export class TripService {
 
     const members = await this.o.ctx.read.findMany('tripMember', { where: { deletedAt: null } });
     if (q.mineOnly === true) {
-      rows = rows.filter((t) => members.some((m) => m['tripId'] === t['id'] && m['userId'] === userId));
+      rows = rows.filter((t) =>
+        members.some((m) => m['tripId'] === t['id'] && m['userId'] === userId),
+      );
     }
 
     rows = [...rows].sort((a, b) => timeOf(b['createdAt']) - timeOf(a['createdAt']));
@@ -136,16 +163,26 @@ export class TripService {
     const items = slice.map((t) => ({
       ...serializeRow(t, TRIP_BIGINT_FIELDS),
       memberCount: members.filter((m) => m['tripId'] === t['id']).length,
-      myRole: members.find((m) => m['tripId'] === t['id'] && m['userId'] === userId)?.['role'] ?? null,
+      myRole:
+        members.find((m) => m['tripId'] === t['id'] && m['userId'] === userId)?.['role'] ?? null,
       myAccessLevel:
-        members.find((m) => m['tripId'] === t['id'] && m['userId'] === userId)?.['accessLevel'] ?? null,
+        members.find((m) => m['tripId'] === t['id'] && m['userId'] === userId)?.['accessLevel'] ??
+        null,
     }));
 
     return { items, meta: buildPageMeta(page, rows.length) as unknown as Record<string, unknown> };
   }
 
   /** 出行详情（含成员） */
-  async detail(userId: bigint, tripId: bigint): Promise<{ trip: Record<string, unknown>; members: Record<string, unknown>[]; myRole: unknown; myAccessLevel: unknown; }> {
+  async detail(
+    userId: bigint,
+    tripId: bigint,
+  ): Promise<{
+    trip: Record<string, unknown>;
+    members: Record<string, unknown>[];
+    myRole: unknown;
+    myAccessLevel: unknown;
+  }> {
     const t = await this.o.ctx.read.findUnique('trip', { id: tripId, deletedAt: null });
     if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
     await this.assertTripVisible(this.o.ctx, t, userId);
@@ -168,15 +205,19 @@ export class TripService {
    * 🔴 `version` 必传。0 行受影响 = 有人先改了 → 409。
    *    这不是可选项：缺 version 就 throw，避免「悄悄退化成全量覆盖」。
    */
-  async update(userId: bigint, tripId: bigint, input: {
-    version: number;
-    title?: string;
-    status?: string;
-    startDate?: string | null;
-    endDate?: string | null;
-    timezone?: string;
-    destinations?: Array<{ name: string; note?: string }>;
-  }): Promise<{ trip: Record<string, unknown>; updatedAt: string; }> {
+  async update(
+    userId: bigint,
+    tripId: bigint,
+    input: {
+      version: number;
+      title?: string;
+      status?: string;
+      startDate?: string | null;
+      endDate?: string | null;
+      timezone?: string;
+      destinations?: Array<{ name: string; note?: string }>;
+    },
+  ): Promise<{ trip: Record<string, unknown>; updatedAt: string }> {
     return this.o.ctx.tx(async (tx) => {
       const t = await tx.db.findUnique('trip', { id: tripId, deletedAt: null });
       if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -190,9 +231,12 @@ export class TripService {
       if (input.title !== undefined) data['title'] = input.title;
       if (input.status !== undefined) data['status'] = input.status;
       if (input.timezone !== undefined) data['timezone'] = input.timezone;
-      if (input.startDate !== undefined) data['startDate'] = input.startDate === null ? null : toDate(input.startDate);
-      if (input.endDate !== undefined) data['endDate'] = input.endDate === null ? null : toDate(input.endDate);
-      if (input.destinations !== undefined) data['destinationsJson'] = JSON.stringify(input.destinations);
+      if (input.startDate !== undefined)
+        data['startDate'] = input.startDate === null ? null : toDate(input.startDate);
+      if (input.endDate !== undefined)
+        data['endDate'] = input.endDate === null ? null : toDate(input.endDate);
+      if (input.destinations !== undefined)
+        data['destinationsJson'] = JSON.stringify(input.destinations);
 
       const affected = await tx.db.update(
         'trip',
@@ -212,7 +256,22 @@ export class TripService {
     });
   }
 
-  /** 删除出行（仅主导者/创建者） */
+  /**
+   * 删除出行（仅主导者/创建者）。
+   *
+   * D-2026-10-15-01（P1）：删除事务内**级联软删**子域行（采纳派发单 §2.3 方案 A）。
+   * 为什么不选 B（各子域查询校验父行程）：成本分散在每处查询、极易漏。
+   * 子域行只软删（保留可审计痕迹），与家庭域 `dissolveFamily` 既有做法一致。
+   *
+   * 🔴 media_asset **不随行程软删**：照片是家庭资产，行程删了照片墙仍应在
+   *    「我的照片」可见；`GET /media?tripId=<已删行程>` 由 media 域按父行程
+   *    已删返回空集（见 media.service.list）。
+   * 🔴 trip.invite_code：本版 Trip 模型尚无邀请码列（D-2026-10-14-02
+   *    「行程邀请码三端点」未落地），故无作废动作；该域上线时其 join 必须
+   *    校验 trip.deletedAt。
+   * 🔴 change_log 只写父实体一条 DELETE（同 dissolveFamily）：子行软删不逐行
+   *    放大日志，同步游标以行程行失效为收敛点。
+   */
   async remove(userId: bigint, tripId: bigint): Promise<Date> {
     return this.o.ctx.tx(async (tx) => {
       const t = await tx.db.findUnique('trip', { id: tripId, deletedAt: null });
@@ -222,6 +281,11 @@ export class TripService {
       const now = await tx.db.dbNow();
       await tx.db.update('trip', { id: tripId }, { deletedAt: now, updatedAt: now });
 
+      // 子域级联软删（同一事务；驱动 update 即 updateMany 语义，返回受影响行数）
+      for (const table of CASCADE_CHILD_TABLES) {
+        await tx.db.update(table, { tripId, deletedAt: null }, { deletedAt: now, updatedAt: now });
+      }
+
       await this.change(tx, 'trip', tripId, t['familyId'] as bigint, tripId, 'DELETE', now);
       return now;
     });
@@ -230,15 +294,19 @@ export class TripService {
   // ── 成员 ────────────────────────────────────────────────
 
   /** 加成员 */
-  async addMember(userId: bigint, tripId: bigint, input: {
-    userId?: string;
-    displayName?: string;
-    isVirtual: boolean;
-    isExternal: boolean;
-    role: 'LEADER' | 'MEMBER';
-    managedBy?: string;
-    accessLevel: 'ACTIVE' | 'HISTORICAL_READONLY';
-  }): Promise<Record<string, unknown>> {
+  async addMember(
+    userId: bigint,
+    tripId: bigint,
+    input: {
+      userId?: string;
+      displayName?: string;
+      isVirtual: boolean;
+      isExternal: boolean;
+      role: 'LEADER' | 'MEMBER';
+      managedBy?: string;
+      accessLevel: 'ACTIVE' | 'HISTORICAL_READONLY';
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const t = await tx.db.findUnique('trip', { id: tripId, deletedAt: null });
       if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -254,7 +322,11 @@ export class TripService {
 
       const targetUserId = isVirtual ? null : BigInt(input.userId!);
       if (targetUserId !== null) {
-        const dup = await tx.db.findUnique('tripMember', { tripId, userId: targetUserId, deletedAt: null });
+        const dup = await tx.db.findUnique('tripMember', {
+          tripId,
+          userId: targetUserId,
+          deletedAt: null,
+        });
         if (dup) throw new AppError(ErrorCode.FORBIDDEN, '该用户已在出行中');
       }
 
@@ -268,7 +340,9 @@ export class TripService {
         role: 'MEMBER',
         isExternal: input.isExternal,
         accessLevel: input.accessLevel,
-        displayName: input.displayName ?? (targetUserId ? await this.displayNameOf(tx, targetUserId) : '同行者'),
+        displayName:
+          input.displayName ??
+          (targetUserId ? await this.displayNameOf(tx, targetUserId) : '同行者'),
         joinedAt: now,
         leftAt: null,
         createdAt: now,
@@ -276,7 +350,15 @@ export class TripService {
         deletedAt: null,
       });
 
-      await this.change(tx, 'trip_member', memberId, t['familyId'] as bigint, tripId, 'INSERT', now);
+      await this.change(
+        tx,
+        'trip_member',
+        memberId,
+        t['familyId'] as bigint,
+        tripId,
+        'INSERT',
+        now,
+      );
 
       const row = await tx.db.findUnique('tripMember', { id: memberId });
       return serializeRow(row ?? {}, MEMBER_BIGINT_FIELDS);
@@ -284,12 +366,16 @@ export class TripService {
   }
 
   /** 改成员（角色/访问级别/昵称/代管）—— 仅主导者 */
-  async updateMember(userId: bigint, memberId: bigint, patch: {
-    role?: 'LEADER' | 'MEMBER';
-    accessLevel?: 'ACTIVE' | 'HISTORICAL_READONLY';
-    displayName?: string;
-    managedBy?: string | null;
-  }): Promise<Record<string, unknown>> {
+  async updateMember(
+    userId: bigint,
+    memberId: bigint,
+    patch: {
+      role?: 'LEADER' | 'MEMBER';
+      accessLevel?: 'ACTIVE' | 'HISTORICAL_READONLY';
+      displayName?: string;
+      managedBy?: string | null;
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const m = await tx.db.findUnique('tripMember', { id: memberId, deletedAt: null });
       if (!m) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -311,7 +397,15 @@ export class TripService {
       }
 
       await tx.db.update('tripMember', { id: memberId }, data);
-      await this.change(tx, 'trip_member', memberId, t['familyId'] as bigint, tripId, 'UPDATE', now);
+      await this.change(
+        tx,
+        'trip_member',
+        memberId,
+        t['familyId'] as bigint,
+        tripId,
+        'UPDATE',
+        now,
+      );
 
       const row = await tx.db.findUnique('tripMember', { id: memberId });
       return serializeRow(row ?? {}, MEMBER_BIGINT_FIELDS);
@@ -334,8 +428,20 @@ export class TripService {
       }
 
       const now = await tx.db.dbNow();
-      await tx.db.update('tripMember', { id: memberId }, { deletedAt: now, leftAt: now, updatedAt: now });
-      await this.change(tx, 'trip_member', memberId, t['familyId'] as bigint, tripId, 'DELETE', now);
+      await tx.db.update(
+        'tripMember',
+        { id: memberId },
+        { deletedAt: now, leftAt: now, updatedAt: now },
+      );
+      await this.change(
+        tx,
+        'trip_member',
+        memberId,
+        t['familyId'] as bigint,
+        tripId,
+        'DELETE',
+        now,
+      );
       return now;
     });
   }
@@ -349,10 +455,14 @@ export class TripService {
    *    - 先降旧主再升新主（顺序不可反，否则中途失败留两个 LEADER）
    *    - `expectLeaderId` 不符 → 409（有人在并发改）
    */
-  async setLeader(userId: bigint, tripId: bigint, input: {
-    leaderMemberId: bigint;
-    expectLeaderId?: bigint | null;
-  }): Promise<Record<string, unknown>> {
+  async setLeader(
+    userId: bigint,
+    tripId: bigint,
+    input: {
+      leaderMemberId: bigint;
+      expectLeaderId?: bigint | null;
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const t = await tx.db.findUnique('trip', { id: tripId, deletedAt: null });
       if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -360,7 +470,10 @@ export class TripService {
 
       const currentLeaderId = (t['leaderId'] as bigint | null) ?? null;
       // 期望值校验：客户端视角里主导者已变 → 让客户端刷新重试
-      if (input.expectLeaderId !== undefined && !sameBigint(input.expectLeaderId, currentLeaderId)) {
+      if (
+        input.expectLeaderId !== undefined &&
+        !sameBigint(input.expectLeaderId, currentLeaderId)
+      ) {
         throw new AppError(ErrorCode.VERSION_CONFLICT, '主导者已被他人变更，请刷新后重试');
       }
 
@@ -384,10 +497,18 @@ export class TripService {
         deletedAt: null,
       });
       if (oldLeader) {
-        await tx.db.update('tripMember', { id: oldLeader['id'] }, { role: 'MEMBER', updatedAt: now });
+        await tx.db.update(
+          'tripMember',
+          { id: oldLeader['id'] },
+          { role: 'MEMBER', updatedAt: now },
+        );
       }
       // 2. 再升新主
-      await tx.db.update('tripMember', { id: input.leaderMemberId }, { role: 'LEADER', accessLevel: 'ACTIVE', updatedAt: now });
+      await tx.db.update(
+        'tripMember',
+        { id: input.leaderMemberId },
+        { role: 'LEADER', accessLevel: 'ACTIVE', updatedAt: now },
+      );
       // 3. trip.leader_id 同步
       await tx.db.update('trip', { id: tripId }, { leaderId: target['userId'], updatedAt: now });
 
@@ -420,7 +541,15 @@ export class TripService {
    *   PROMOTE 未指定继任者 → 从剩余 ACTIVE 成员里自动选一个
    *   REFUSE  无其他 ACTIVE 成员 → 拒（避免留下无主导者的出行）
    */
-  async leave(userId: bigint, tripId: bigint, input: { successorMemberId?: bigint }): Promise<{ succession: "KEEP" | "PROMOTE"; newLeaderUserId: string | null; updatedAt: string; }> {
+  async leave(
+    userId: bigint,
+    tripId: bigint,
+    input: { successorMemberId?: bigint },
+  ): Promise<{
+    succession: 'KEEP' | 'PROMOTE';
+    newLeaderUserId: string | null;
+    updatedAt: string;
+  }> {
     return this.o.ctx.tx(async (tx) => {
       const t = await tx.db.findUnique('trip', { id: tripId, deletedAt: null });
       if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -431,12 +560,22 @@ export class TripService {
       const now = await tx.db.dbNow();
       const isLeader = me['role'] === 'LEADER';
 
-      let succession: LeaderSuccession = { action: 'KEEP', leaderId: 0n, reason: '退位者不是主导者' };
+      let succession: LeaderSuccession = {
+        action: 'KEEP',
+        leaderId: 0n,
+        reason: '退位者不是主导者',
+      };
 
       if (isLeader) {
         const members = await tx.db.findMany('tripMember', { where: { tripId, deletedAt: null } });
         const remainingActiveUserIds = members
-          .filter((m) => m['id'] !== me['id'] && m['accessLevel'] === 'ACTIVE' && m['isVirtual'] !== true && m['userId'] !== null)
+          .filter(
+            (m) =>
+              m['id'] !== me['id'] &&
+              m['accessLevel'] === 'ACTIVE' &&
+              m['isVirtual'] !== true &&
+              m['userId'] !== null,
+          )
           .map((m) => m['userId'] as bigint);
 
         const currentLeaderId = (t['leaderId'] as bigint | null) ?? null;
@@ -458,7 +597,11 @@ export class TripService {
           if (succ['isVirtual'] === true) {
             throw new AppError(ErrorCode.FORBIDDEN, '虚拟成员不能担任主导者');
           }
-  succession = { action: 'PROMOTE', leaderId: succ['userId'] as bigint, reason: '唯一主导者退出，递补一名 ACTIVE 成员' };
+          succession = {
+            action: 'PROMOTE',
+            leaderId: succ['userId'] as bigint,
+            reason: '唯一主导者退出，递补一名 ACTIVE 成员',
+          };
         }
 
         if (succession.action === 'REFUSE') {
@@ -473,15 +616,31 @@ export class TripService {
             deletedAt: null,
           });
           if (newLeader) {
-            await tx.db.update('tripMember', { id: newLeader['id'] }, { role: 'LEADER', updatedAt: now });
+            await tx.db.update(
+              'tripMember',
+              { id: newLeader['id'] },
+              { role: 'LEADER', updatedAt: now },
+            );
             await tx.db.update('trip', { id: tripId }, { leaderId: newLeaderId, updatedAt: now });
           }
         }
       }
 
       // 离队：软删成员行 + 记录 leftAt
-      await tx.db.update('tripMember', { id: me['id'] }, { deletedAt: now, leftAt: now, updatedAt: now });
-      await this.change(tx, 'trip_member', me['id'] as bigint, t['familyId'] as bigint, tripId, 'DELETE', now);
+      await tx.db.update(
+        'tripMember',
+        { id: me['id'] },
+        { deletedAt: now, leftAt: now, updatedAt: now },
+      );
+      await this.change(
+        tx,
+        'trip_member',
+        me['id'] as bigint,
+        t['familyId'] as bigint,
+        tripId,
+        'DELETE',
+        now,
+      );
 
       await this.audit(tx, {
         actorId: userId,
@@ -510,7 +669,11 @@ export class TripService {
    *   2. trip.actual_json = 回顾快照
    *   3. **所有**成员 access_level → HISTORICAL_READONLY（不软删！）
    */
-  async finish(userId: bigint, tripId: bigint, input: { version: number; actual?: Record<string, unknown> }): Promise<{ trip: Record<string, unknown>; updatedAt: string; }> {
+  async finish(
+    userId: bigint,
+    tripId: bigint,
+    input: { version: number; actual?: Record<string, unknown> },
+  ): Promise<{ trip: Record<string, unknown>; updatedAt: string }> {
     return this.o.ctx.tx(async (tx) => {
       const t = await tx.db.findUnique('trip', { id: tripId, deletedAt: null });
       if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -524,7 +687,7 @@ export class TripService {
         buildCasWhere({ id: tripId, expectedVersion, patch: {} }),
         {
           status: 'FINISHED',
-          actualJson: input.actual ? JSON.stringify(input.actual) : (t['actualJson']) ?? null,
+          actualJson: input.actual ? JSON.stringify(input.actual) : (t['actualJson'] ?? null),
           updatedAt: now,
           version: expectedVersion + 1,
         },
@@ -534,7 +697,11 @@ export class TripService {
       // 成员全部转历史只读 —— 保留行，不删
       const members = await tx.db.findMany('tripMember', { where: { tripId, deletedAt: null } });
       for (const m of members) {
-        await tx.db.update('tripMember', { id: m['id'] }, { accessLevel: 'HISTORICAL_READONLY', updatedAt: now });
+        await tx.db.update(
+          'tripMember',
+          { id: m['id'] },
+          { accessLevel: 'HISTORICAL_READONLY', updatedAt: now },
+        );
       }
 
       await this.change(tx, 'trip', tripId, t['familyId'] as bigint, tripId, 'UPDATE', now);
@@ -560,16 +727,26 @@ export class TripService {
   private async assertFamilyMember(tx: TxHandle, familyId: bigint, userId: bigint): Promise<void> {
     const m = await tx.db.findUnique('familyMember', { familyId, userId, deletedAt: null });
     if (m) return;
-    const managed = await tx.db.findMany('familyMember', { where: { familyId, managedBy: userId, deletedAt: null } });
+    const managed = await tx.db.findMany('familyMember', {
+      where: { familyId, managedBy: userId, deletedAt: null },
+    });
     if (managed.length === 0) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
   }
 
   /** 出行可见性：家庭成员 ∨ 出行成员 */
-  private async assertTripVisible(src: TxHandle | DomainContext, t: Row, userId: bigint): Promise<void> {
+  private async assertTripVisible(
+    src: TxHandle | DomainContext,
+    t: Row,
+    userId: bigint,
+  ): Promise<void> {
     const db = 'db' in src ? src.db : src.read;
     const member = await db.findUnique('tripMember', { tripId: t['id'], userId, deletedAt: null });
     if (member) return;
-    const fm = await db.findUnique('familyMember', { familyId: t['familyId'], userId, deletedAt: null });
+    const fm = await db.findUnique('familyMember', {
+      familyId: t['familyId'],
+      userId,
+      deletedAt: null,
+    });
     if (fm) return;
     const managed = await db.findMany('tripMember', {
       where: { tripId: t['id'], managedBy: userId, deletedAt: null },
@@ -580,7 +757,11 @@ export class TripService {
 
   /** 可写校验：必须是出行 ACTIVE 成员（HISTORICAL_READONLY 拒写） */
   private async assertTripWritable(tx: TxHandle, t: Row, userId: bigint): Promise<void> {
-    const member = await tx.db.findUnique('tripMember', { tripId: t['id'], userId, deletedAt: null });
+    const member = await tx.db.findUnique('tripMember', {
+      tripId: t['id'],
+      userId,
+      deletedAt: null,
+    });
     if (member) {
       if (member['accessLevel'] === 'HISTORICAL_READONLY') {
         throw new AppError(ErrorCode.FORBIDDEN, '该出行已归档，仅可查看');
@@ -610,8 +791,12 @@ export class TripService {
   }
 
   private async visibleFamilyIds(userId: bigint): Promise<Set<bigint>> {
-    const mine = await this.o.ctx.read.findMany('familyMember', { where: { userId, deletedAt: null } });
-    const managed = await this.o.ctx.read.findMany('familyMember', { where: { managedBy: userId, deletedAt: null } });
+    const mine = await this.o.ctx.read.findMany('familyMember', {
+      where: { userId, deletedAt: null },
+    });
+    const managed = await this.o.ctx.read.findMany('familyMember', {
+      where: { managedBy: userId, deletedAt: null },
+    });
     const s = new Set<bigint>();
     for (const m of mine) s.add(m['familyId'] as bigint);
     for (const m of managed) s.add(m['familyId'] as bigint);

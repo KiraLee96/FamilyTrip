@@ -159,6 +159,10 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
   const driver = options.driver ?? registeredDriver ?? new MemoryTableDriver();
   const tokenSecret = options.tokenSecret ?? DEFAULT_DEV_SECRET;
   const retentionDays = options.auditRetentionDays ?? 365;
+  // D-2026-10-15-01：媒体公网基址唯一来源 —— media 域与 itinerary 域共用，
+  // 保证 image 块 url 解析与 media list/confirm 是同一环境变量、同一拼接方式。
+  const mediaPublicBaseUrl =
+    options.mediaPublicBaseUrl ?? process.env['MEDIA_PUBLIC_BASE_URL'] ?? 'https://media.local';
 
   // ④ 8 段链依赖
   const identityDeps: IdentityDeps = {
@@ -214,7 +218,7 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
     },
   });
   const checklistDomain = createChecklistDomain(common);
-  const itineraryDomain = createItineraryDomain(common);
+  const itineraryDomain = createItineraryDomain({ ...common, mediaPublicBaseUrl });
   const bookingDomain = createBookingDomain({ ...common, cryptoFor });
   const itemDomain = createItemDomain(common);
   const outfitDomain = createOutfitDomain(common);
@@ -228,8 +232,7 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
     ...(options.allowedMimePrefixes !== undefined
       ? { allowedMimePrefixes: options.allowedMimePrefixes }
       : {}),
-    mediaPublicBaseUrl:
-      options.mediaPublicBaseUrl ?? process.env['MEDIA_PUBLIC_BASE_URL'] ?? 'https://media.local',
+    mediaPublicBaseUrl,
   });
   const fxDomain = createFxDomain({
     ...common,

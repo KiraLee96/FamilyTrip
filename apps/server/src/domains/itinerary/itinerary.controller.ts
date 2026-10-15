@@ -3,6 +3,7 @@
  */
 
 import type { RouteSpec } from '../../common/middleware/dispatcher.js';
+import type { ResolvedOwnership } from '../../common/middleware/chain.js';
 import type { DomainContext } from '../domain-context.js';
 import { ItineraryService } from './itinerary.service.js';
 import {
@@ -17,6 +18,11 @@ import {
 
 export interface ItineraryDomainOptions {
   ctx: DomainContext;
+  /**
+   * D-2026-10-15-01：媒体公网访问基址（方案 A）。
+   * image 块读接口把 assetId 解析成 url 回填；与 media 域同一取值（组合根保证同源）。
+   */
+  mediaPublicBaseUrl?: string;
 }
 
 export interface ItineraryDomain {
@@ -25,14 +31,30 @@ export interface ItineraryDomain {
 }
 
 export function createItineraryDomain(o: ItineraryDomainOptions): ItineraryDomain {
-  const service = new ItineraryService({ ctx: o.ctx });
+  const service = new ItineraryService({
+    ctx: o.ctx,
+    mediaPublicBaseUrl: o.mediaPublicBaseUrl,
+  });
+  /**
+   * 单资源路由的归属 ref。
+   *
+   * 🔴 D-2026-10-15-01 修复（P0 验收 B3 暴露的既有 bug）：
+   *    原实现把 familyId / tripId 硬编码为 null，权限网关第 5 段拿不到
+   *    归属维度 → checkShared 两个维度都跳过 → Deny → 404 同形。
+   *    表现为 GET/PATCH/DELETE /itineraries/:id **全量 404**
+   *    （前端只在 Mock 下验收过，真后端从未打通）。
+   *    修法：与 media 域 ref 同款 —— 用链在 withOwner 段从**资源行**
+   *    解析出的归属（resolved），不信请求体（防水平越权）。
+   */
   const itemRef = (
     id: bigint,
-  ): { type: 'itinerary_item'; id: bigint; familyId: null; tripId: null } => ({
+    _req: unknown,
+    resolved: ResolvedOwnership,
+  ): { type: 'itinerary_item'; id: bigint; familyId: bigint | null; tripId: bigint | null } => ({
     type: 'itinerary_item',
     id,
-    familyId: null,
-    tripId: null,
+    familyId: resolved.familyId,
+    tripId: resolved.tripId,
   });
 
   const routes: RouteSpec<never, unknown>[] = [
@@ -60,6 +82,8 @@ export function createItineraryDomain(o: ItineraryDomainOptions): ItineraryDomai
           amount: b.amount,
           currency: b.currency,
           rateSource: b.rateSource,
+          // D-2026-10-15-01：正文块（形状由 Zod 校验；url 由服务端派生）
+          blocks: b.blocks,
         });
         return { data: { item } };
       },

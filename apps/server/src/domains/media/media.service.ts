@@ -264,7 +264,16 @@ export class MediaService {
     const all = await this.o.ctx.read.findMany('mediaAsset', { where: { deletedAt: null } });
     let rows = all.filter((r) => visibleFamilies.has(r['familyId'] as bigint));
     if (q.familyId !== undefined) rows = rows.filter((r) => r['familyId'] === q.familyId);
-    if (q.tripId !== undefined) rows = rows.filter((r) => r['tripId'] === q.tripId);
+    if (q.tripId !== undefined) {
+      // D-2026-10-15-01（P1）：行程软删后，其名下资产行**不级联软删**
+      // （照片是家庭资产，「我的照片」仍可见），但按行程维度列表不再露出
+      // —— 父行程已删/不存在 → 空集（防「幽灵行程」照片）。
+      const trip = await this.o.ctx.read.findUnique('trip', { id: q.tripId, deletedAt: null });
+      if (!trip) {
+        return { items: [], meta: buildPageMeta(page, 0) as unknown as Record<string, unknown> };
+      }
+      rows = rows.filter((r) => r['tripId'] === q.tripId);
+    }
     if (q.mimePrefix !== undefined)
       rows = rows.filter((r) => String(r['mimeType']).startsWith(q.mimePrefix!));
 
