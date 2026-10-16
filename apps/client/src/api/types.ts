@@ -347,6 +347,13 @@ export interface PresignUploadResult {
   fileKey: string;
 }
 
+/**
+ * 上传用途（presign/confirm 的可选声明）。
+ * · MEDIA —— 家庭照片/安排图片（默认）
+ * · AVATAR —— 用户头像（fileKey 走用户维度前缀；老后端忽略未知键，退回 MEDIA 路径）
+ */
+export type UploadPurpose = 'MEDIA' | 'AVATAR';
+
 /** 登记媒体资产入参（POST /media/confirm） */
 export interface ConfirmMediaAssetInput {
   tripId?: string;
@@ -355,6 +362,15 @@ export interface ConfirmMediaAssetInput {
   byteSize: number;
   width?: number;
   height?: number;
+  /** 上传用途（AVATAR = 头像；老后端忽略，纯加法字段） */
+  purpose?: UploadPurpose;
+}
+
+/** 更新本人资料入参（PATCH /auth/me；后端 updateProfileSchema 纯加法放行） */
+export interface UpdateProfileInput {
+  nickname?: string;
+  /** 头像可访问 URL（须为服务端媒体基址拼接结果，由服务端校验归属） */
+  avatarUrl?: string;
 }
 
 // ─── 回忆归档（对齐 memory 域 MemorySnapshot） ─────────────────────

@@ -35,7 +35,12 @@ import type {
   Wish,
 } from './types';
 
-const ME: User = { id: '1', nickname: '小珂', avatarUrl: undefined, homeTimezone: 'Asia/Shanghai' };
+/**
+ * 当前登录用户（Mock 可变状态：updateMe 改昵称/头像后需整体换引用，
+ * 让 useSyncExternalStore 的快照比较能观察到变化——原地改对象会被
+ * Object.is 判为未变而跳过重渲染）。
+ */
+let ME: User = { id: '1', nickname: '小珂', avatarUrl: undefined, homeTimezone: 'Asia/Shanghai' };
 
 const FAMILY: Family = {
   id: '10',
@@ -722,6 +727,15 @@ export function createMockClient(): ApiClient {
     async me() {
       return respond(ME);
     },
+    async updateMe(input) {
+      // 与后端 updateProfile 同口径：仅更新传入字段；整体换引用（见 ME 注释）
+      ME = {
+        ...ME,
+        ...(input.nickname !== undefined ? { nickname: input.nickname } : {}),
+        ...(input.avatarUrl !== undefined ? { avatarUrl: input.avatarUrl } : {}),
+      };
+      return respond(ME);
+    },
     // ---- family ----
     async listFamilies() {
       return respond([...state.families]);
@@ -1205,10 +1219,37 @@ export function createMockClient(): ApiClient {
       // Mock 无对象存储：uploadUrl 置空即「跳过直传」（上传工具依此判断），
       // fileKey 仍按后端规则生成，保证 confirm 链路形状一致。
       const ext = /\.[A-Za-z0-9]{1,8}$/.exec(input.fileName)?.[0].toLowerCase() ?? '';
-      const fileKey = `f/${state.families[0]?.id ?? FAMILY.id}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
+      // AVATAR 用途走用户维度前缀（对齐派发单 D-2026-10-16-01 建议口径 a/<userId>/），
+      // 与家庭媒体 f/<familyId>/ 区分——头像不是家庭照片，不进照片墙
+      const prefix =
+        input.purpose === 'AVATAR' ? `a/${ME.id}` : `f/${state.families[0]?.id ?? FAMILY.id}`;
+      const fileKey = `${prefix}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
       return respond<PresignUploadResult>({ uploadUrl: '', expiresIn: 0, fileKey });
     },
     async confirmMediaAsset(input) {
+      // AVATAR 用途不落家庭媒体池（Mock 与真后端建议口径一致：头像是用户资产），
+      // 返回一个轻量资产行供上传链路解链；url 恒为空串，界面按本地路径降级。
+      if (input.purpose === 'AVATAR') {
+        const avatarAsset: MediaAsset = {
+          id: nextId('media'),
+          familyId: state.families[0]?.id ?? FAMILY.id,
+          tripId: null,
+          ownerId: ME.id,
+          fileKey: input.fileKey,
+          url: '',
+          mimeType: input.mimeType,
+          byteSize: String(input.byteSize),
+          compressed: true,
+          exifStripped: true,
+          hadGps: false,
+          storageClass: 'STANDARD',
+          width: input.width ?? null,
+          height: input.height ?? null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        return respond(avatarAsset);
+      }
       const asset: MediaAsset = {
         id: nextId('media'),
         familyId: state.families[0]?.id ?? FAMILY.id,

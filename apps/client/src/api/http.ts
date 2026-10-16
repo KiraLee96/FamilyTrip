@@ -41,6 +41,7 @@ import type {
   TripInvite,
   TripMember,
   TripMemberRole,
+  UpdateProfileInput,
   User,
   Wish,
 } from './types';
@@ -481,6 +482,14 @@ export function createHttpClient(): ApiClient {
     },
     me: () =>
       request<User>('GET', '/auth/me').then((u) => toUser(u as unknown as Record<string, unknown>)),
+    // PATCH /auth/me —— 更新本人资料（昵称 / 头像）。
+    // 🔴 信封口径（对照 auth.controller.ts 的 handler）：
+    //    data = { user, updatedAt } —— 不是裸 user 对象，必须拆一层再投影；
+    //    与 GET /auth/me 的 data = { user } 同形（恰好都是 { user } 包裹）。
+    updateMe: async (input: UpdateProfileInput) => {
+      const r = await request<{ user: Record<string, unknown> }>('PATCH', '/auth/me', input);
+      return toUser(r.user);
+    },
     listFamilies: async () => {
       const rows = await requestList<Record<string, unknown>>('GET', '/families');
       return rows.map(toFamily);
@@ -747,6 +756,8 @@ export function createHttpClient(): ApiClient {
         fileName: input.fileName,
         mimeType: input.mimeType,
         byteSize: input.byteSize,
+        // purpose 为纯加法字段：老后端 Zod 默认 strip 未知键，忽略后走 MEDIA 路径
+        ...(input.purpose !== undefined ? { purpose: input.purpose } : {}),
       });
     },
     confirmMediaAsset: async (input: ConfirmMediaAssetInput) => {
@@ -764,6 +775,7 @@ export function createHttpClient(): ApiClient {
         exifStripped: false,
         hadGps: false,
         storageClass: 'STANDARD',
+        ...(input.purpose !== undefined ? { purpose: input.purpose } : {}),
         ...(input.width !== undefined ? { width: input.width } : {}),
         ...(input.height !== undefined ? { height: input.height } : {}),
       };

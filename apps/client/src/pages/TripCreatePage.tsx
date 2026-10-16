@@ -86,7 +86,7 @@ export function TripCreatePage() {
           title: `一起来「${created?.title ?? '这次出行'}」`,
           path: `/pages/JoinTripPage?invite=${code}`,
         }
-      : { title: '家庭出行计划', path: '/pages/HomePage' };
+      : { title: '旅行管家AllInOne', path: '/pages/HomePage' };
   });
 
   // ─── 以下才允许早退（hooks 已全部声明） ───

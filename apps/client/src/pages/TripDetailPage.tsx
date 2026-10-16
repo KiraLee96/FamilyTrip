@@ -100,9 +100,11 @@ function removeItinerary(id: string, title: string, onDone: () => void): void {
 
 export function TripDetailPage() {
   // nav 层生成的 query 参数名是 id（见 src/nav/index.ts 的 toTaroUrl）；
-  // tab 支持从 query 定位（如 /trips/101?tab=expense，总览页「查看账本」入口用）
-  const params = useRouteParams<{ id: string; tab?: string }>();
+  // tab 支持从 query 定位（如 /trips/101?tab=expense，总览页「查看账本」入口用）；
+  // readonly=1 表示从回忆墙进入（2026-10-16 需求②：只读，不能改不能删）
+  const params = useRouteParams<{ id: string; tab?: string; readonly?: string }>();
   const { id: tripId = '' } = params;
+  const readonly = params.readonly === '1' || params.readonly === 'true';
   const [tab, setTab] = useState<Tab>(() => {
     const t = params.tab;
     return t === 'checklist' || t === 'expense' || t === 'photo' || t === 'memory'
@@ -153,6 +155,14 @@ export function TripDetailPage() {
         返回行程列表
       </Link>
 
+      {/* 回忆墙入口只读提示（需求②）：明示为什么没有编辑/删除入口 */}
+      {readonly && (
+        <View className="readonly-banner">
+          <Icon name="route" size={14} />
+          <Text>来自回忆墙的行程仅可查看，不能修改或删除</Text>
+        </View>
+      )}
+
       <View className="trip">
         <View className="trip__top">
           <View style={{ flex: 1 }}>
@@ -185,23 +195,26 @@ export function TripDetailPage() {
         <Text className="muted" style={{ marginTop: 10 }}>
           版本 v{t.version} · CAS 乐观锁，更新需回传该值
         </Text>
-        {/* 行程本身的改 / 删（服务端 PATCH/DELETE 早已存在，此前无客户端入口） */}
-        <View className="trip__ops">
-          <View className="btn btn--ghost trip__op" onClick={() => setEditingTrip((v) => !v)}>
-            <Icon name="edit" size={13} />
-            {editingTrip ? '收起编辑' : '编辑行程'}
+        {/* 行程本身的改 / 删（服务端 PATCH/DELETE 早已存在，此前无客户端入口）；
+            回忆墙只读入口不渲染（需求②） */}
+        {!readonly && (
+          <View className="trip__ops">
+            <View className="btn btn--ghost trip__op" onClick={() => setEditingTrip((v) => !v)}>
+              <Icon name="edit" size={13} />
+              {editingTrip ? '收起编辑' : '编辑行程'}
+            </View>
+            <View
+              className="btn btn--ghost trip__op trip__op--danger"
+              onClick={() => removeTrip(tripId, t.title, () => navigate('/trips'))}
+            >
+              <Icon name="trash" size={13} />
+              删除行程
+            </View>
           </View>
-          <View
-            className="btn btn--ghost trip__op trip__op--danger"
-            onClick={() => removeTrip(tripId, t.title, () => navigate('/trips'))}
-          >
-            <Icon name="trash" size={13} />
-            删除行程
-          </View>
-        </View>
+        )}
       </View>
 
-      {editingTrip && (
+      {editingTrip && !readonly && (
         <TripForm
           trip={t}
           onDone={() => {
@@ -212,7 +225,12 @@ export function TripDetailPage() {
         />
       )}
 
-      <TripInviteCard tripId={tripId} tripTitle={t.title} shareRef={tripShareRef} />
+      <TripInviteCard
+        tripId={tripId}
+        tripTitle={t.title}
+        shareRef={tripShareRef}
+        readonly={readonly}
+      />
 
       <View className="tabs">
         {(
@@ -241,12 +259,17 @@ export function TripDetailPage() {
           defaultDate={t.startDate ?? undefined}
           localImages={localImages}
           onImageUploaded={rememberImage}
+          readonly={readonly}
         />
       )}
-      {tab === 'checklist' && <ChecklistTab tripId={tripId} familyId={t.familyId} />}
-      {tab === 'expense' && <ExpenseTab tripId={tripId} familyId={t.familyId} />}
-      {tab === 'photo' && <PhotoTab tripId={tripId} />}
-      {tab === 'memory' && <MemoryTab tripId={tripId} tripTitle={t.title} />}
+      {tab === 'checklist' && (
+        <ChecklistTab tripId={tripId} familyId={t.familyId} readonly={readonly} />
+      )}
+      {tab === 'expense' && (
+        <ExpenseTab tripId={tripId} familyId={t.familyId} readonly={readonly} />
+      )}
+      {tab === 'photo' && <PhotoTab tripId={tripId} readonly={readonly} />}
+      {tab === 'memory' && <MemoryTab tripId={tripId} tripTitle={t.title} readonly={readonly} />}
     </PageLayout>
   );
 }
@@ -446,10 +469,13 @@ function TripInviteCard({
   tripId,
   tripTitle,
   shareRef,
+  readonly = false,
 }: {
   tripId: string;
   tripTitle: string;
   shareRef: MutableRefObject<{ code: string; title: string } | null>;
+  /** 回忆墙只读入口：隐藏「重置邀请码」（写操作），复制/分享/凭码加入保留 */
+  readonly?: boolean;
 }) {
   const invite = useAsync(
     useCallback(() => api.getTripInvite(tripId), [tripId]),
@@ -505,18 +531,20 @@ function TripInviteCard({
           </Button>
         </View>
       </View>
-      <View className="invite__ops" style={{ marginTop: 8 }}>
-        <View
-          className={`btn btn--ghost invite__btn ${resetBusy || !code ? 'btn--busy' : ''}`}
-          onClick={resetBusy || !code ? undefined : onReset}
-        >
-          重置邀请码
+      {!readonly && (
+        <View className="invite__ops" style={{ marginTop: 8 }}>
+          <View
+            className={`btn btn--ghost invite__btn ${resetBusy || !code ? 'btn--busy' : ''}`}
+            onClick={resetBusy || !code ? undefined : onReset}
+          >
+            重置邀请码
+          </View>
+          <Link to="/trips/join" className="btn btn--ghost invite__btn">
+            <Icon name="link" size={14} />
+            凭码加入
+          </Link>
         </View>
-        <Link to="/trips/join" className="btn btn--ghost invite__btn">
-          <Icon name="link" size={14} />
-          凭码加入
-        </Link>
-      </View>
+      )}
       <Text className="invite__hint">
         把邀请码或分享链接发给朋友，对方点开即可加入这场行程，不占家庭名额
       </Text>
@@ -554,6 +582,7 @@ function ItineraryTab({
   defaultDate,
   localImages,
   onImageUploaded,
+  readonly = false,
 }: {
   tripId: string;
   familyId: string;
@@ -561,6 +590,8 @@ function ItineraryTab({
   /** 本会话上传图片的本地路径（assetId → tempFilePath），透传给卡片渲染 */
   localImages: Record<string, string>;
   onImageUploaded: (assetId: string, localPath: string) => void;
+  /** 回忆墙只读入口：隐藏单条编辑/删除与「添加安排」，仅可查看 */
+  readonly?: boolean;
 }) {
   const q = useAsync(
     useCallback(() => api.listItineraries(tripId), [tripId]),
@@ -661,7 +692,7 @@ function ItineraryTab({
       )}
 
       {items.length === 0 ? (
-        <Empty text="还没有安排，点下面按钮加第一条" />
+        <Empty text={readonly ? '这场行程还没有安排' : '还没有安排，点下面按钮加第一条'} />
       ) : (
         dates.map((d, dayIdx) => {
           const dayItems = items.filter((i) => i.date === d);
@@ -695,17 +726,19 @@ function ItineraryTab({
                       <View className="tl__card-head">
                         {timeText(it) !== '' && <Text className="tl__time">{timeText(it)}</Text>}
                         <Text className="tl__title">{it.title}</Text>
-                        <View className="tl__ops">
-                          <View className="icon-btn" onClick={() => setEditingId(it.id)}>
-                            <Icon name="edit" size={14} />
+                        {!readonly && (
+                          <View className="tl__ops">
+                            <View className="icon-btn" onClick={() => setEditingId(it.id)}>
+                              <Icon name="edit" size={14} />
+                            </View>
+                            <View
+                              className="icon-btn icon-btn--danger"
+                              onClick={() => removeItinerary(it.id, it.title, q.reload)}
+                            >
+                              <Icon name="trash" size={14} />
+                            </View>
                           </View>
-                          <View
-                            className="icon-btn icon-btn--danger"
-                            onClick={() => removeItinerary(it.id, it.title, q.reload)}
-                          >
-                            <Icon name="trash" size={14} />
-                          </View>
-                        </View>
+                        )}
                       </View>
                       {it.transport && (
                         <View className="tl__meta">
@@ -743,7 +776,7 @@ function ItineraryTab({
         })
       )}
 
-      {mode === 'add' ? (
+      {readonly ? null : mode === 'add' ? (
         <ItineraryForm
           tripId={tripId}
           familyId={familyId}
@@ -1240,7 +1273,16 @@ function ItineraryForm({
  * 新增时显式带上 tripId/scope，并支持删除。
  * 默认几项（往返票 / 住宿 / 证件 / 充电）在新建行程时由 TripCreatePage 播种。
  */
-function ChecklistTab({ tripId, familyId }: { tripId: string; familyId: string }) {
+function ChecklistTab({
+  tripId,
+  familyId,
+  readonly = false,
+}: {
+  tripId: string;
+  familyId: string;
+  /** 回忆墙只读入口：不可勾选/增删，仅查看 */
+  readonly?: boolean;
+}) {
   const q = useAsync(
     useCallback(() => api.listTripChecklist(tripId), [tripId]),
     [tripId],
@@ -1287,7 +1329,11 @@ function ChecklistTab({ tripId, familyId }: { tripId: string; familyId: string }
     <>
       <Progress done={done} total={list.length} label="整体准备度" />
 
-      {list.length === 0 && <Empty text="还没有清单项。新建行程会自动带上往返票/住宿/证件/充电" />}
+      {list.length === 0 && (
+        <Empty
+          text={readonly ? '还没有清单项' : '还没有清单项。新建行程会自动带上往返票/住宿/证件/充电'}
+        />
+      )}
 
       {shared.length > 0 && (
         <View className="card card--flush" style={{ marginTop: 12 }}>
@@ -1296,6 +1342,7 @@ function ChecklistTab({ tripId, familyId }: { tripId: string; familyId: string }
             <CheckRow
               key={c.id}
               item={c}
+              readonly={readonly}
               onToggle={(id) => void toggle(id)}
               onDelete={() => removeChecklist(c.id, c.title, q.reload)}
             />
@@ -1310,6 +1357,7 @@ function ChecklistTab({ tripId, familyId }: { tripId: string; familyId: string }
             <CheckRow
               key={c.id}
               item={c}
+              readonly={readonly}
               onToggle={(id) => void toggle(id)}
               onDelete={() => removeChecklist(c.id, c.title, q.reload)}
             />
@@ -1317,39 +1365,41 @@ function ChecklistTab({ tripId, familyId }: { tripId: string; familyId: string }
         </View>
       )}
 
-      <View className="card card--flush">
-        <View className="filter-bar filter-bar--compact" style={{ padding: '0 14px 8px' }}>
-          <Text
-            className={`chip ${scope === 'SHARED' ? 'chip--on' : 'chip--plain'}`}
-            onClick={() => setScope('SHARED')}
-          >
-            共享
-          </Text>
-          <Text
-            className={`chip ${scope === 'PERSONAL' ? 'chip--on' : 'chip--plain'}`}
-            onClick={() => setScope('PERSONAL')}
-          >
-            仅我自己
-          </Text>
-        </View>
-        <View className="add-row">
-          <Input
-            className="add-row__input"
-            placeholder="添加物品，如：防晒霜"
-            value={draft}
-            maxlength={64}
-            onInput={(e) => setDraft(e.detail.value)}
-          />
-          <View
-            className={draft.trim() && !busy ? 'add-row__btn' : 'add-row__btn add-row__btn--off'}
-            onClick={busy ? undefined : () => void add()}
-          >
-            <Text style={{ color: '#fff', fontSize: 13.5, fontWeight: 550 }}>
-              {busy ? '…' : '添加'}
+      {!readonly && (
+        <View className="card card--flush">
+          <View className="filter-bar filter-bar--compact" style={{ padding: '0 14px 8px' }}>
+            <Text
+              className={`chip ${scope === 'SHARED' ? 'chip--on' : 'chip--plain'}`}
+              onClick={() => setScope('SHARED')}
+            >
+              共享
+            </Text>
+            <Text
+              className={`chip ${scope === 'PERSONAL' ? 'chip--on' : 'chip--plain'}`}
+              onClick={() => setScope('PERSONAL')}
+            >
+              仅我自己
             </Text>
           </View>
+          <View className="add-row">
+            <Input
+              className="add-row__input"
+              placeholder="添加物品，如：防晒霜"
+              value={draft}
+              maxlength={64}
+              onInput={(e) => setDraft(e.detail.value)}
+            />
+            <View
+              className={draft.trim() && !busy ? 'add-row__btn' : 'add-row__btn add-row__btn--off'}
+              onClick={busy ? undefined : () => void add()}
+            >
+              <Text style={{ color: '#fff', fontSize: 13.5, fontWeight: 550 }}>
+                {busy ? '…' : '添加'}
+              </Text>
+            </View>
+          </View>
         </View>
-      </View>
+      )}
     </>
   );
 }
@@ -1382,30 +1432,38 @@ function RowLabel({ children }: { children: ReactNode }) {
 
 function CheckRow({
   item,
+  readonly = false,
   onToggle,
   onDelete,
 }: {
   item: ChecklistItem;
+  /** 只读态：不勾选、不删除（勾选即 PATCH，属修改） */
+  readonly?: boolean;
   onToggle: (id: string) => void;
   onDelete: () => void;
 }) {
   return (
-    <View className={item.done ? 'check check--done' : 'check'} onClick={() => onToggle(item.id)}>
+    <View
+      className={item.done ? 'check check--done' : 'check'}
+      onClick={readonly ? undefined : () => onToggle(item.id)}
+    >
       <Text className="check__box">
         <Icon name={item.done ? 'check' : 'circle'} size={19} />
       </Text>
       <Text className="check__text">{item.title}</Text>
       {item.assigneeName && <Text className="check__who">{item.assigneeName}</Text>}
-      <View
-        className="icon-btn icon-btn--danger"
-        onClick={(e) => {
-          // 阻止冒泡，避免误触发整行勾选
-          e.stopPropagation();
-          onDelete();
-        }}
-      >
-        <Icon name="close" size={13} />
-      </View>
+      {!readonly && (
+        <View
+          className="icon-btn icon-btn--danger"
+          onClick={(e) => {
+            // 阻止冒泡，避免误触发整行勾选
+            e.stopPropagation();
+            onDelete();
+          }}
+        >
+          <Icon name="close" size={13} />
+        </View>
+      )}
     </View>
   );
 }
@@ -1417,7 +1475,16 @@ function CheckRow({
  * 现在支持新增 / 编辑 / 删除，金额以「主单位字符串」提交（后端按币种精度折算落库），
  * 每次写操作后同时刷新明细与汇总，合计即时跟随。
  */
-function ExpenseTab({ tripId, familyId }: { tripId: string; familyId: string }) {
+function ExpenseTab({
+  tripId,
+  familyId,
+  readonly = false,
+}: {
+  tripId: string;
+  familyId: string;
+  /** 回忆墙只读入口：隐藏记账/编辑/删除，仅查看汇总与明细 */
+  readonly?: boolean;
+}) {
   const list = useAsync(
     useCallback(() => api.listExpenses(tripId), [tripId]),
     [tripId],
@@ -1503,7 +1570,7 @@ function ExpenseTab({ tripId, familyId }: { tripId: string; familyId: string }) 
       <Text className="section-title">明细（{items.length} 笔）</Text>
       <View className="card card--flush">
         {items.length === 0 ? (
-          <Empty text="还没有记账，点下面按钮记一笔" />
+          <Empty text={readonly ? '这场行程还没有记账' : '还没有记账，点下面按钮记一笔'} />
         ) : (
           items.map((e) =>
             editingId === e.id ? (
@@ -1532,37 +1599,42 @@ function ExpenseTab({ tripId, familyId }: { tripId: string; familyId: string }) 
                   </Text>
                 </View>
                 <Text className="exp__amt">¥{e.amount}</Text>
-                <View className="icon-btn" onClick={() => setEditingId(e.id)}>
-                  <Icon name="edit" size={14} />
-                </View>
-                <View
-                  className="icon-btn icon-btn--danger"
-                  onClick={() => removeExpense(e.id, e.title, reloadAll)}
-                >
-                  <Icon name="trash" size={14} />
-                </View>
+                {!readonly && (
+                  <>
+                    <View className="icon-btn" onClick={() => setEditingId(e.id)}>
+                      <Icon name="edit" size={14} />
+                    </View>
+                    <View
+                      className="icon-btn icon-btn--danger"
+                      onClick={() => removeExpense(e.id, e.title, reloadAll)}
+                    >
+                      <Icon name="trash" size={14} />
+                    </View>
+                  </>
+                )}
               </View>
             ),
           )
         )}
       </View>
 
-      {mode === 'add' ? (
-        <ExpenseForm
-          tripId={tripId}
-          familyId={familyId}
-          onDone={() => {
-            setMode('idle');
-            reloadAll();
-          }}
-          onCancel={() => setMode('idle')}
-        />
-      ) : (
-        <View className="add-bar" onClick={() => setMode('add')}>
-          <Icon name="plus" size={16} />
-          <Text className="add-bar__text">记一笔花销</Text>
-        </View>
-      )}
+      {!readonly &&
+        (mode === 'add' ? (
+          <ExpenseForm
+            tripId={tripId}
+            familyId={familyId}
+            onDone={() => {
+              setMode('idle');
+              reloadAll();
+            }}
+            onCancel={() => setMode('idle')}
+          />
+        ) : (
+          <View className="add-bar" onClick={() => setMode('add')}>
+            <Icon name="plus" size={16} />
+            <Text className="add-bar__text">记一笔花销</Text>
+          </View>
+        ))}
     </>
   );
 }
@@ -1730,7 +1802,7 @@ function removeExpense(id: string, title: string, onDone: () => void): void {
  *   2. asset.url   —— 真后端拼接的持久 URL（方案 A，MEDIA_PUBLIC_BASE_URL+fileKey）；
  *   3. 占位卡       —— Mock 模式 url 为空，或远程图加载失败（onError 降级，不破图）。
  */
-function PhotoTab({ tripId }: { tripId: string }) {
+function PhotoTab({ tripId, readonly = false }: { tripId: string; readonly?: boolean }) {
   const q = useAsync(
     useCallback(() => api.listMedia({ tripId }), [tripId]),
     [tripId],
@@ -1777,17 +1849,19 @@ function PhotoTab({ tripId }: { tripId: string }) {
   return (
     <>
       <View className="photo-grid">
-        <View
-          className={
-            busy ? 'photo-cell photo-cell--add photo-cell--busy' : 'photo-cell photo-cell--add'
-          }
-          onClick={() => {
-            if (!busy) void upload();
-          }}
-        >
-          <Text className="photo-cell__plus">＋</Text>
-          <Text className="photo-cell__add-text">{busy ? '上传中…' : '上传照片'}</Text>
-        </View>
+        {!readonly && (
+          <View
+            className={
+              busy ? 'photo-cell photo-cell--add photo-cell--busy' : 'photo-cell photo-cell--add'
+            }
+            onClick={() => {
+              if (!busy) void upload();
+            }}
+          >
+            <Text className="photo-cell__plus">＋</Text>
+            <Text className="photo-cell__add-text">{busy ? '上传中…' : '上传照片'}</Text>
+          </View>
+        )}
         {photos.map((p) => {
           // 三级降级：本会话本地路径 > 真后端持久 URL（未加载失败时）> 占位卡
           const src = localPaths[p.id] ?? (brokenUrls[p.id] ? '' : p.url);
@@ -1806,9 +1880,11 @@ function PhotoTab({ tripId }: { tripId: string }) {
                   <Text className="photo-cell__ph-date">{shortDate(p.createdAt.slice(0, 10))}</Text>
                 </View>
               )}
-              <View className="photo-cell__del" onClick={() => void remove(p.id)}>
-                <Text className="photo-cell__del-x">×</Text>
-              </View>
+              {!readonly && (
+                <View className="photo-cell__del" onClick={() => void remove(p.id)}>
+                  <Text className="photo-cell__del-x">×</Text>
+                </View>
+              )}
             </View>
           );
         })}
@@ -1825,7 +1901,16 @@ function PhotoTab({ tripId }: { tripId: string }) {
  * 回忆 tab —— 出行回忆快照（memory 域，只读 + 生成）
  * 幂等语义：同年 TRIP 回忆已存在则返回既有快照（created=false），不覆盖。
  */
-function MemoryTab({ tripId, tripTitle }: { tripId: string; tripTitle: string }) {
+function MemoryTab({
+  tripId,
+  tripTitle,
+  readonly = false,
+}: {
+  tripId: string;
+  tripTitle: string;
+  /** 回忆墙只读入口：不生成回忆（写操作），仅查看已有快照 */
+  readonly?: boolean;
+}) {
   const [gen, setGen] = useState<{
     memory: MemoryArchive;
     snapshot: MemorySnapshot;
@@ -1891,18 +1976,22 @@ function MemoryTab({ tripId, tripTitle }: { tripId: string; tripTitle: string })
         <View className="card memory__empty">
           <Text className="memory__empty-title">还没有回忆</Text>
           <Text className="muted" style={{ fontSize: 12, lineHeight: 1.6, margin: '6px 0 12px' }}>
-            出行结束后生成回忆，把成员、安排、花销汇总和照片数定格成一篇不可变的家庭档案。
+            {readonly
+              ? '这场出行还没有生成回忆。'
+              : '出行结束后生成回忆，把成员、安排、花销汇总和照片数定格成一篇不可变的家庭档案。'}
           </Text>
-          <View
-            className={busy ? 'add-row__btn add-row__btn--off' : 'add-row__btn'}
-            onClick={() => {
-              if (!busy) void generate();
-            }}
-          >
-            <Text style={{ color: '#fff', fontSize: 13.5, fontWeight: 550 }}>
-              {busy ? '生成中…' : '生成本次出行回忆'}
-            </Text>
-          </View>
+          {!readonly && (
+            <View
+              className={busy ? 'add-row__btn add-row__btn--off' : 'add-row__btn'}
+              onClick={() => {
+                if (!busy) void generate();
+              }}
+            >
+              <Text style={{ color: '#fff', fontSize: 13.5, fontWeight: 550 }}>
+                {busy ? '生成中…' : '生成本次出行回忆'}
+              </Text>
+            </View>
+          )}
           {genErr !== '' && <ErrorBox message={genErr} onRetry={() => void generate()} />}
         </View>
       )}

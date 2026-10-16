@@ -2,7 +2,9 @@
  * 总览页 —— 下一站主卡 + 月份时间轴 + 预算概览 + 心愿便签 + 最近回忆
  * ============================================================================
  * 版式对齐 2026-10-13 设计稿（截图 1/2）：
- *   页头「家庭出行计划」+ 虚线徽章「2026」+ 头像/加号圆形按钮
+ *   页头「旅行管家AllInOne」+ 虚线徽章「2026」+ 头像圆形按钮
+ *   （2026-10-16 需求：头像旁不再放加号，新建行程只保留右下角 FAB；
+ *     头像渲染真实头像（可更换，见 ProfilePage），无头像时 👤 占位）
  *   ① 深绿主卡「下一站」：目的地、出发—到达虚线、N 天后出发、
  *      出发日期 / 同行 / 查看行程 三格
  *   ② 月份时间轴：全年 12 月圆点，有行程的月深绿实心、当前月描绿环
@@ -23,6 +25,7 @@ import { Link } from '../nav/Link';
 import { api, DATA_SOURCE } from '../api/index';
 import type { Trip, Wish } from '../api/types';
 import { retryLogin } from '../api/session';
+import { Avatar } from '../components/Avatar';
 import { Icon } from '../components/Icon';
 import { ErrorBox, Loading } from '../components/Loading';
 import { MemoryCard } from '../components/MemoryCard';
@@ -87,18 +90,13 @@ export function HomePage() {
 
   return (
     <PageLayout
-      title="家庭出行计划"
+      title="旅行管家AllInOne"
       sub="全家的下一站，从这里翻开"
       badge={String(year)}
       actions={
-        <>
-          <Link to="/profile" className="head-btn">
-            <Icon name="user" size={17} />
-          </Link>
-          <Link to="/trips/new" className="head-btn head-btn--accent">
-            <Icon name="plus" size={16} />
-          </Link>
-        </>
+        <Link to="/profile" className="head-btn head-btn--avatar">
+          <Avatar user={me} size={28} />
+        </Link>
       }
     >
       {sessionCard}

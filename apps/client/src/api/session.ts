@@ -46,6 +46,23 @@ export function getUser(): User | undefined {
   return currentUser;
 }
 
+/**
+ * 本地合并本人资料补丁（改昵称 / 换头像后调用）。
+ * ============================================================================
+ * 与重新登录的区别：不重新走 login/me 请求，只更新广播态与持久化副本。
+ * 🔴 必须整体换引用（`{ ...currentUser, ...patch }`）——useSyncExternalStore
+ *    用 Object.is 比较快照，原地改属性会被判为「未变化」而跳过重渲染。
+ */
+export function patchSessionUser(patch: Partial<User>): void {
+  if (currentUser === undefined) return;
+  const next: User = { ...currentUser };
+  if (patch.nickname !== undefined) next.nickname = patch.nickname;
+  if (patch.avatarUrl !== undefined) next.avatarUrl = patch.avatarUrl;
+  currentUser = next;
+  persistUser(next);
+  emit();
+}
+
 /** 取登录 code：小程序 wx.login；H5 合成（Taro.login 在 H5 为暂不支持的空实现） */
 async function obtainCode(): Promise<string> {
   if (Taro.getEnv() === Taro.ENV_TYPE.WEB) {

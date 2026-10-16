@@ -3,13 +3,15 @@
  * ============================================================================
  * 能力：
  *   · 登录状态：展示当前用户；未登录可「重新登录」（微信生态无显式登出，重回无感态）
+ *   · 头像更换：2026-10-16 需求① —— 点击头像更换，小程序端支持「微信头像」
+ *     （Button openType=chooseAvatar），H5 端走相册；落库 PATCH /auth/me
  *   · 我的家庭：增（新建）/ 删（解散）/ 改（改名）/ 查（成员列表）
  *   · 成员管理：**不区分爸爸妈妈等角色、无人数上限**，仅区分「管理员 / 成员」——
  *     创建家庭者即管理员；邀请制新增成员：展示邀请码 / 复制 / 分享，
  *     对方点开分享链接即落到 JoinFamilyPage 凭码加入
  *
  * 数据源：api.listFamilies / getFamily / createFamily / updateFamily / dissolveFamily
- *         / addFamilyMember / removeFamilyMember（Mock 与真后端同形）
+ *         / addFamilyMember / removeFamilyMember / updateMe（Mock 与真后端同形）
  */
 
 import { useCallback, useRef, useState } from 'react';
@@ -18,15 +20,17 @@ import Taro from '@tarojs/taro';
 
 import { api } from '../api/index';
 import type { Family, FamilyDetail, FamilyMember, User } from '../api/types';
+import { patchSessionUser, retryLogin } from '../api/session';
 import { navigate } from '../nav';
+import { Avatar } from '../components/Avatar';
 import { Icon } from '../components/Icon';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
 import { SectionTitle } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
-import { retryLogin } from '../api/session';
 import { useSession } from '../hooks/useSession';
 import { copyText } from '../utils/clipboard';
+import { pickAndUploadAvatar, uploadAvatarImage } from '../utils/upload';
 
 export function ProfilePage() {
   const user = useSession();
@@ -85,6 +89,17 @@ export function ProfilePage() {
   );
 }
 
+/**
+ * 账号卡 —— 头像（可更换）+ 昵称 + 时区 + 重新登录
+ * ============================================================================
+ * 2026-10-16 需求①：头像可修改，且允许使用微信头像。
+ * 双端口径（不 fork，按运行环境二选一）：
+ *   · 小程序：<Button openType="chooseAvatar"> —— 微信官方头像选择器
+ *     （含历史头像），回调 detail.avatarUrl 为临时文件，走媒体链路上传固化
+ *     后 PATCH /auth/me 落库；这是微信生态「用微信头像」的唯一正规入口。
+ *   · H5：无 chooseAvatar，点击头像走 Taro.chooseImage（相册）同一条上传链路。
+ * 成功后 patchSessionUser 本地广播，首页/我的页头像即时一致（不发额外请求）。
+ */
 function AccountCard({ user }: { user: User | undefined }) {
   const [busy, setBusy] = useState(false);
 
@@ -103,9 +118,7 @@ function AccountCard({ user }: { user: User | undefined }) {
   if (!user) {
     return (
       <View className="card profile-card">
-        <View className="profile-card__avatar">
-          <Icon name="user" size={26} />
-        </View>
+        <Avatar user={user} size={46} />
         <View className="profile-card__body">
           <Text className="profile-card__name">未登录</Text>
           <Text className="profile-card__sub">登录后可创建/加入家庭</Text>
@@ -121,21 +134,105 @@ function AccountCard({ user }: { user: User | undefined }) {
   }
 
   return (
-    <View className="card profile-card">
-      <View className="profile-card__avatar">
-        <Icon name="user" size={26} />
+    <>
+      <View className="card profile-card">
+        <AvatarPicker user={user} />
+        <View className="profile-card__body">
+          <Text className="profile-card__name">{user.nickname}</Text>
+          <Text className="profile-card__sub">{user.homeTimezone ?? 'Asia/Shanghai'}</Text>
+        </View>
+        <View
+          className={`icon-btn ${busy ? 'icon-btn--busy' : ''}`}
+          onClick={busy ? undefined : () => void relogin()}
+        >
+          <Icon name="link" size={16} />
+        </View>
       </View>
-      <View className="profile-card__body">
-        <Text className="profile-card__name">{user.nickname}</Text>
-        <Text className="profile-card__sub">{user.homeTimezone ?? 'Asia/Shanghai'}</Text>
+      <Text className="muted" style={{ fontSize: 11.5, margin: '-4px 2px 10px' }}>
+        点击头像可更换；小程序端可选用微信头像
+      </Text>
+    </>
+  );
+}
+
+/** 头像 + 相机徽标；点击（小程序为 chooseAvatar 按钮）触发更换流程 */
+function AvatarPicker({ user }: { user: User }) {
+  const [busy, setBusy] = useState(false);
+  const isWeb = Taro.getEnv() === Taro.ENV_TYPE.WEB;
+
+  /** 上传 → 落库 → 本地广播，三条链路共用同一收尾 */
+  const save = useCallback(async (avatarUrl: string) => {
+    const updated = await api.updateMe({ avatarUrl });
+    patchSessionUser(updated);
+    void Taro.showToast({ title: '头像已更新', icon: 'success' });
+  }, []);
+
+  const applyTempFile = useCallback(
+    async (tempPath: string) => {
+      if (tempPath === '') return;
+      setBusy(true);
+      try {
+        const { avatarUrl } = await uploadAvatarImage(tempPath);
+        await save(avatarUrl);
+      } catch (e: unknown) {
+        void Taro.showToast({
+          title: e instanceof Error ? e.message : '头像更新失败',
+          icon: 'none',
+        });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [save],
+  );
+
+  const pickFromAlbum = useCallback(async () => {
+    setBusy(true);
+    try {
+      const { avatarUrl } = await pickAndUploadAvatar();
+      await save(avatarUrl);
+    } catch (e: unknown) {
+      void Taro.showToast({ title: e instanceof Error ? e.message : '头像更新失败', icon: 'none' });
+    } finally {
+      setBusy(false);
+    }
+  }, [save]);
+
+  const body = (
+    <>
+      <Avatar user={user} size={46} />
+      <View className="avatar-pick__badge">
+        <Icon name="camera" size={11} />
       </View>
+    </>
+  );
+
+  if (isWeb) {
+    return (
       <View
-        className={`icon-btn ${busy ? 'icon-btn--busy' : ''}`}
-        onClick={busy ? undefined : () => void relogin()}
+        className={`avatar-pick ${busy ? 'avatar-pick--busy' : ''}`}
+        style={{ width: 46, height: 46 }}
+        onClick={busy ? undefined : () => void pickFromAlbum()}
       >
-        <Icon name="link" size={16} />
+        {body}
       </View>
-    </View>
+    );
+  }
+
+  return (
+    <Button
+      className={`avatar-pick ${busy ? 'avatar-pick--busy' : ''}`}
+      style={{ width: 46, height: 46 }}
+      disabled={busy}
+      openType="chooseAvatar"
+      onChooseAvatar={(e) => {
+        // 微信官方头像选择器回调：detail.avatarUrl 为本地临时文件路径
+        const detail = e.detail as { avatarUrl?: string };
+        if (typeof detail.avatarUrl === 'string') void applyTempFile(detail.avatarUrl);
+      }}
+    >
+      {body}
+    </Button>
   );
 }
 

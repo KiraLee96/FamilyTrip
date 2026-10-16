@@ -1,5 +1,5 @@
 /* ============================================================================
-   设计系统 —— 「家庭出行计划」旅行手账风（移动端 H5 原型 + 微信小程序）
+   设计系统 —— 「旅行管家AllInOne」旅行手账风（移动端 H5 原型 + 微信小程序）
    ----------------------------------------------------------------------------
    取色对齐 2026-10-13 设计稿（五张截图）：
      · 页面底色 米黄暖纸 #F5F0E4 —— 全程暖色，不再用冷灰
@@ -301,6 +301,83 @@ p {
 
 .head-btn--accent:active {
   background: var(--accent-press);
+}
+
+/* 页头头像按钮：内嵌 Avatar 组件，去掉外框留白 */
+.head-btn--avatar {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* 用户头像（components/Avatar.tsx）：有图渲染图片，无图 👤 占位 */
+.avatar-img {
+  flex: 0 0 auto;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--primary-soft);
+  color: var(--primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.avatar-img__src {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* 可更换头像入口（我的页）：头像 + 右下角相机徽标 */
+.avatar-pick {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  line-height: 0;
+}
+
+/* Button 组件默认样式清零（openType=chooseAvatar 时必须保留可点区域） */
+.avatar-pick::after {
+  display: none;
+}
+
+.avatar-pick__badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  box-shadow: 0 0 0 2px var(--card);
+}
+
+/* 上传中：头像入口半透明，禁止重复点击（JS 层同时置忙） */
+.avatar-pick--busy {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* 回忆墙入口的行程只读横幅 */
+.readonly-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 
 /* 数据源徽标：一眼区分 Mock / 真后端（页头副标题行内的小点） */

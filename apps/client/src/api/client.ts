@@ -40,6 +40,8 @@ import type {
   TripMember,
   TripMemberRole,
   TripUpdateInput,
+  UpdateProfileInput,
+  UploadPurpose,
   User,
   Wish,
 } from './types';
@@ -65,6 +67,14 @@ export interface ApiClient {
   login(code: string): Promise<User>;
   /** GET /auth/me */
   me(): Promise<User>;
+  /**
+   * PATCH /auth/me —— 更新本人资料（昵称 / 头像）。
+   * 🆕 客户端新增方法：服务端路由早已存在（auth.controller.ts 的 PATCH /auth/me），
+   *    此前 updateProfileSchema 未放行 avatarUrl（派发单 D-2026-10-16-01 推动补齐）。
+   *    DB 列 user.avatar_url 已存在；头像 URL 须经媒体链路上传后由服务端校验归属。
+   *    信封口径：data = { user, updatedAt }（与 GET /auth/me 的 { user } 不同，多拆一层）。
+   */
+  updateMe(input: UpdateProfileInput): Promise<User>;
 
   // ---- family ----
   /** GET /families */
@@ -294,6 +304,8 @@ export interface ApiClient {
     fileName: string;
     mimeType: string;
     byteSize: number;
+    /** 上传用途：AVATAR = 头像（后端可走用户维度 fileKey 前缀；老后端忽略） */
+    purpose?: UploadPurpose;
   }): Promise<PresignUploadResult>;
   /**
    * POST /media/confirm —— 上传完成后登记资产。

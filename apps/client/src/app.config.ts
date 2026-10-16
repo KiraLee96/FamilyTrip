@@ -28,7 +28,8 @@ export default {
   window: {
     backgroundTextStyle: 'light',
     navigationBarBackgroundColor: '#f5f0e4',
-    navigationBarTitleText: '家庭出行计划',
+    // 2026-10-16 需求：小程序顶部标题统一为「旅行管家AllInOne」（原「家庭出行计划」）
+    navigationBarTitleText: '旅行管家AllInOne',
     navigationBarTextStyle: 'black',
     backgroundColor: '#f5f0e4',
   },

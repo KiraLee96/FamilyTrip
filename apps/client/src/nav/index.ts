@@ -52,9 +52,20 @@ function toTaroUrl(to: string): { url: string; tab: boolean } {
   const qs = qIndex >= 0 ? to.slice(qIndex) : '';
 
   // 行程详情：/trips/:id → /pages/TripDetailPage?id=:id（须先于 /trips 前缀判断）
+  // 🔴 2026-10-16 修复一：此前此分支漏拼 qs，导致 /trips/101?tab=expense（总览页
+  //    「查看账本」入口）与 ?tab=memory&readonly=1（回忆墙只读入口）的 query 全丢，
+  //    页面永远落到默认 itinerary tab。非 tab 页本就该原样透传查询串。
+  // 🔴 2026-10-16 修复二：qs 自带前导 '?'，直接拼在 "?id=" 后会形成双重 '?'，
+  //    浏览器把第二个 '?' 当作 id 值的一部分（id 被污染成 "103?tab=memory"），
+  //    必须剥掉前导 '?' 并用 '&' 连接。
   if (path.startsWith('/trips/') && path !== '/trips/new' && path !== '/trips/join') {
     const id = encodeURIComponent(path.slice('/trips/'.length));
-    return { url: `/pages/TripDetailPage?id=${id}`, tab: false };
+    const tail = qs.startsWith('?') ? qs.slice(1) : qs;
+    return {
+      url:
+        tail === '' ? `/pages/TripDetailPage?id=${id}` : `/pages/TripDetailPage?id=${id}&${tail}`,
+      tab: false,
+    };
   }
 
   const tabPage = TAB_PAGE[path];

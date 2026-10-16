@@ -113,11 +113,13 @@ export function MemoryPage() {
   );
 }
 
-/** 回忆档案摘要卡：TRIP 回忆跳行程详情回忆 tab；ANNUAL 跳年度规划 */
+/** 回忆档案摘要卡：TRIP 回忆跳行程详情回忆 tab（只读）；ANNUAL 跳年度规划 */
 function MemoryArchiveCard({ archive }: { archive: MemoryArchive }) {
   const s = archive.summary;
   const isTrip = archive.type === 'TRIP';
-  const to = isTrip && archive.refId ? `/trips/${archive.refId}?tab=memory` : '/plan';
+  // 2026-10-16 需求②：从回忆点进的行程只能查看 —— readonly=1 让 TripDetailPage
+  // 进入只读态（隐藏一切写入口）；tab=memory 定位到回忆 tab
+  const to = isTrip && archive.refId ? `/trips/${archive.refId}?tab=memory&readonly=1` : '/plan';
 
   return (
     <Link to={to} className="card">

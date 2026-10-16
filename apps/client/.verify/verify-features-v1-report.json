@@ -1,0 +1,145 @@
+{
+  "results": [
+    {
+      "name": "R3-1 document.title 为「旅行管家AllInOne」",
+      "ok": true,
+      "detail": "旅行管家AllInOne"
+    },
+    {
+      "name": "R3-2 页头大标题为「旅行管家AllInOne」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R4-1 页头无加号按钮（head-btn--accent 已移除）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R4-2 页头保留头像入口（head-btn--avatar，点击进「我的」）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R4-3 右下角新建行程 FAB 保留",
+      "ok": true,
+      "detail": "count=1"
+    },
+    {
+      "name": "R1-0 进入 ProfilePage",
+      "ok": true,
+      "detail": "/pages/ProfilePage"
+    },
+    {
+      "name": "R1-1 账号卡渲染头像选择器（.avatar-pick）",
+      "ok": true,
+      "detail": "count=2"
+    },
+    {
+      "name": "R1-2 初始无头像时图标兜底（avatar-pick 内无 img）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R1-3 上传链路走通并提示「头像已更新」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R1-4 头像更新为图片（avatar-pick 内出现 img）",
+      "ok": true,
+      "detail": "imgs=1"
+    },
+    {
+      "name": "R1-5 页眉头像同步为图片（patchSessionUser 广播生效）",
+      "ok": true,
+      "detail": "imgs=1"
+    },
+    {
+      "name": "R2-0 进入回忆墙 MemoryPage",
+      "ok": true,
+      "detail": "/pages/MemoryPage"
+    },
+    {
+      "name": "R2-1 回忆墙渲染 TRIP 回忆卡（暑假 · 云南亲子环线）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R2-2 链接携带 readonly=1 与 tab=memory（nav query 透传，无双重 ?）",
+      "ok": true,
+      "detail": "/pages/TripDetailPage?id=103&tab=memory&readonly=1"
+    },
+    {
+      "name": "R2-3 只读 banner 展示（来自回忆墙的行程仅可查看）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R2-4 行程标题渲染（暑假 · 云南亲子环线）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R2-5 回忆 tab 无「生成本次出行回忆」按钮",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R2-6 行程 tab 无「添加安排」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R2-7 行程 tab 无单条编辑/删除（.tl__ops 不存在）",
+      "ok": true,
+      "detail": "count=0"
+    },
+    {
+      "name": "R2-8 清单 tab 无添加卡（无「仅我自己」scope 片）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R2-9 花销 tab 无「记一笔花销」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R2-10 照片 tab 无「上传照片」上传格",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R2-11 无「重置邀请码」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R2-12 无「编辑行程 / 删除行程」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R2-13 对照：正常入口有「编辑行程」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R2-14 对照：正常入口有「删除行程」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R2-15 对照：正常入口无只读 banner",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "X1 全程 console.error / pageerror 为 0",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "consoleErrors": []
+}
