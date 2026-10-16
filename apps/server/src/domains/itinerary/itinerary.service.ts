@@ -30,7 +30,14 @@ export interface ItineraryServiceOptions {
   mediaPublicBaseUrl?: string;
 }
 
-const ITEM_BIGINT_FIELDS = ['id', 'tripId', 'createdBy', 'amount', 'amountBase'];
+/**
+ * D-2026-10-15-02：补 `rateBy`（A21 手动覆盖汇率操作人）。
+ * 该列可空，AUTO 汇率下恒为 null 所以此前不爆；一旦用户录入手汇汇率，
+ * 真 MySQL 下即 BigInt → 500 且丢信封。属于审计脚本关联规则抓不到的
+ * 「行经参数传入」路径（projectBlocks），本次人工盘点补齐。
+ * （`version` 故意不入列：计数器经 HTTP 边界兜底出 number，见 envelope.ts。）
+ */
+const ITEM_BIGINT_FIELDS = ['id', 'tripId', 'createdBy', 'amount', 'amountBase', 'rateBy'];
 
 /**
  * 出参块形态 —— 对齐前端 `ItineraryBlock`：

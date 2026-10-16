@@ -6,6 +6,7 @@ import { loadAuthorizedSources } from './common/fx/rate-tier.js';
 import { assertFxSourceConfigured } from './common/fx/source-guard.js';
 import { installAppDriver } from './composition-root.js';
 import { resolveAppDriver } from './common/db/resolve-driver.js';
+import { bigintSafeReplacer } from './common/envelope/envelope.js';
 import type { AppDriver } from './common/db/resolve-driver.js';
 
 /**
@@ -85,6 +86,15 @@ async function bootstrap(): Promise<void> {
   await installDriver();
 
   const app = await NestFactory.create(AppModule);
+
+  // 🔴 BigInt 安全出口（派发单 D-2026-10-15-02 P0-B）：
+  // 各域白名单万一漏列某个 BigInt 列，真库下 res.json() 会抛 TypeError →
+  // 500 且丢信封。装上 replacer 后最坏退化为「多一个字符串字段」，不会丢信封。
+  // 必须在此处（而非 controller）装配：controller 的契约是「除转发外无第二个分支」。
+  const http = app.getHttpAdapter().getInstance() as {
+    set: (key: string, value: unknown) => unknown;
+  };
+  http.set('json replacer', bigintSafeReplacer);
 
   // CORS：放行 H5 预览等前端 origin（联调期可设 CORS_ORIGIN=* 放开全部）。
   // 注意：前端走 Authorization 头，故 credentials 必须与具体 origin 配合（* 时自动关闭）。

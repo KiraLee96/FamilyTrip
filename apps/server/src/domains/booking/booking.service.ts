@@ -22,8 +22,7 @@ import { AppError, ErrorCode } from '../../common/errors/error-code.js';
 import type { Row } from '../../common/db/table-client.js';
 import type { DomainContext, TxHandle } from '../domain-context.js';
 import { serializeRow } from '../domain-context.js';
-import type {
-  FieldCryptoService} from '../../common/crypto/field-crypto-service.js';
+import type { FieldCryptoService } from '../../common/crypto/field-crypto-service.js';
 import {
   BOOKING_ENCRYPTED_FIELDS,
   type EncryptedFieldSpec,
@@ -38,7 +37,13 @@ export interface BookingServiceOptions {
   auditRetentionDays?: number;
 }
 
-const BOOKING_BIGINT_FIELDS = ['id', 'tripId', 'createdBy', 'amount', 'amountBase'];
+/**
+ * D-2026-10-15-02：补 `rateBy`（A21 手动覆盖汇率操作人）。
+ * 行经 decryptRow 参数传入，审计脚本的关联规则抓不到，本次人工盘点补齐。
+ * 漏列时真 MySQL 下该列为 BigInt → 500 且丢信封。
+ * （Booking 无 version 列；`amount` 为历史残留名，保留不动。）
+ */
+const BOOKING_BIGINT_FIELDS = ['id', 'tripId', 'createdBy', 'amount', 'amountBase', 'rateBy'];
 /** 响应里必须剔除的密文列 —— 绝不外泄给客户端 */
 const CIPHERTEXT_COLUMNS = ['orderNoEnc', 'orderLinkEnc', 'contactEnc', 'orderNoBlind'];
 
@@ -50,21 +55,24 @@ export class BookingService {
   }
 
   /** 创建预订 —— 敏感字段加密 + 盲索引（R3 同事务） */
-  async create(userId: bigint, input: {
-    tripId: bigint;
-    familyId: bigint;
-    type: string;
-    title: string;
-    provider?: string;
-    orderNo?: string;
-    orderLink?: string;
-    contact?: string;
-    startAt?: string;
-    endAt?: string;
-    amount?: string;
-    currency: string;
-    note?: string;
-  }): Promise<Record<string, unknown>> {
+  async create(
+    userId: bigint,
+    input: {
+      tripId: bigint;
+      familyId: bigint;
+      type: string;
+      title: string;
+      provider?: string;
+      orderNo?: string;
+      orderLink?: string;
+      contact?: string;
+      startAt?: string;
+      endAt?: string;
+      amount?: string;
+      currency: string;
+      note?: string;
+    },
+  ): Promise<Record<string, unknown>> {
     // DEK 预取必须在事务**外**（KMS 是网络调用，事务内禁止）
     const crypto = this.o.cryptoFor(userId);
     await crypto.prefetchDek(1);
@@ -149,15 +157,18 @@ export class BookingService {
   }
 
   /** 列表 —— 默认解密敏感字段（列表页要展示订单号） */
-  async list(userId: bigint, q: {
-    tripId?: bigint;
-    familyId?: bigint;
-    type?: string;
-    status?: string;
-    includeSecrets: boolean;
-    page?: unknown;
-    pageSize?: unknown;
-  }): Promise<{ items: Record<string, unknown>[]; meta: Record<string, unknown>; }> {
+  async list(
+    userId: bigint,
+    q: {
+      tripId?: bigint;
+      familyId?: bigint;
+      type?: string;
+      status?: string;
+      includeSecrets: boolean;
+      page?: unknown;
+      pageSize?: unknown;
+    },
+  ): Promise<{ items: Record<string, unknown>[]; meta: Record<string, unknown> }> {
     const page = normalizePageQuery(q.page, q.pageSize);
     const visible = await this.visibleTripIds(userId);
 
@@ -212,7 +223,12 @@ export class BookingService {
    *      「仅有明文即可反查」，掺主键会让它退化成不可检索的指纹。
    *    所以调用方必须同时给出 familyId 与 tripId。
    */
-  async findByOrderNo(userId: bigint, input: { orderNo: string; familyId: bigint; tripId: bigint }): Promise<{ found: boolean; booking: null; } | { found: boolean; booking: Record<string, unknown>; }> {
+  async findByOrderNo(
+    userId: bigint,
+    input: { orderNo: string; familyId: bigint; tripId: bigint },
+  ): Promise<
+    { found: boolean; booking: null } | { found: boolean; booking: Record<string, unknown> }
+  > {
     const crypto = this.o.cryptoFor(userId);
     const blind = crypto.computeBlind({
       spec: BOOKING_ENCRYPTED_FIELDS['orderNo'] as EncryptedFieldSpec,
@@ -240,20 +256,24 @@ export class BookingService {
   }
 
   /** 更新（CAS）—— 敏感字段变更即重新加密 */
-  async update(userId: bigint, bookingId: bigint, patch: {
-    version: number;
-    title?: string;
-    provider?: string | null;
-    orderNo?: string | null;
-    orderLink?: string | null;
-    contact?: string | null;
-    startAt?: string | null;
-    endAt?: string | null;
-    amount?: string;
-    currency?: string;
-    status?: string;
-    note?: string | null;
-  }): Promise<Record<string, unknown>> {
+  async update(
+    userId: bigint,
+    bookingId: bigint,
+    patch: {
+      version: number;
+      title?: string;
+      provider?: string | null;
+      orderNo?: string | null;
+      orderLink?: string | null;
+      contact?: string | null;
+      startAt?: string | null;
+      endAt?: string | null;
+      amount?: string;
+      currency?: string;
+      status?: string;
+      note?: string | null;
+    },
+  ): Promise<Record<string, unknown>> {
     const crypto = this.o.cryptoFor(userId);
     await crypto.prefetchDek(1);
 
@@ -270,8 +290,10 @@ export class BookingService {
       if (patch.provider !== undefined) data['provider'] = patch.provider;
       if (patch.status !== undefined) data['status'] = patch.status;
       if (patch.note !== undefined) data['note'] = patch.note;
-      if (patch.startAt !== undefined) data['startAt'] = patch.startAt === null ? null : parseLocal(patch.startAt);
-      if (patch.endAt !== undefined) data['endAt'] = patch.endAt === null ? null : parseLocal(patch.endAt);
+      if (patch.startAt !== undefined)
+        data['startAt'] = patch.startAt === null ? null : parseLocal(patch.startAt);
+      if (patch.endAt !== undefined)
+        data['endAt'] = patch.endAt === null ? null : parseLocal(patch.endAt);
 
       // 敏感字段：任一变更 → 重算密文 + 盲索引（同事务，R3）
       const sensitiveTouched =
@@ -296,13 +318,14 @@ export class BookingService {
           data['orderNoEnc'] = encrypted['order_no_enc'] ?? null;
           data['orderNoBlind'] = blindIndexes['order_no_blind'] ?? null;
         }
-        if (patch.orderLink !== undefined) data['orderLinkEnc'] = encrypted['order_link_enc'] ?? null;
+        if (patch.orderLink !== undefined)
+          data['orderLinkEnc'] = encrypted['order_link_enc'] ?? null;
         if (patch.contact !== undefined) data['contactEnc'] = encrypted['contact_enc'] ?? null;
       }
 
       if (patch.amount !== undefined || patch.currency !== undefined) {
         const cur = (patch.currency ?? String(r['currency'])).toUpperCase();
-        data['amount'] = patch.amount !== undefined ? toMinorUnits(patch.amount, cur) : (r['amount']);
+        data['amount'] = patch.amount !== undefined ? toMinorUnits(patch.amount, cur) : r['amount'];
         data['currency'] = cur;
       }
 
@@ -315,7 +338,15 @@ export class BookingService {
         throw new AppError(ErrorCode.VERSION_CONFLICT, '该预订已被他人修改，请刷新后重试');
       }
 
-      await this.change(tx, 'booking', bookingId, r['familyId'] as bigint, r['tripId'] as bigint, 'UPDATE', now);
+      await this.change(
+        tx,
+        'booking',
+        bookingId,
+        r['familyId'] as bigint,
+        r['tripId'] as bigint,
+        'UPDATE',
+        now,
+      );
 
       const row = await tx.db.findUnique('booking', { id: bookingId });
       return this.decryptRow(crypto, row ?? {}, bookingId, true);
@@ -332,15 +363,27 @@ export class BookingService {
 
       const now = await tx.db.dbNow();
       // 软删时把密文一并清零 —— 数据保留策略与可读性解耦（保留行，抹除敏感内容）
-      await tx.db.update('booking', { id: bookingId }, {
-        deletedAt: now,
-        orderNoEnc: null,
-        orderLinkEnc: null,
-        contactEnc: null,
-        orderNoBlind: null,
-        updatedAt: now,
-      });
-      await this.change(tx, 'booking', bookingId, r['familyId'] as bigint, r['tripId'] as bigint, 'DELETE', now);
+      await tx.db.update(
+        'booking',
+        { id: bookingId },
+        {
+          deletedAt: now,
+          orderNoEnc: null,
+          orderLinkEnc: null,
+          contactEnc: null,
+          orderNoBlind: null,
+          updatedAt: now,
+        },
+      );
+      await this.change(
+        tx,
+        'booking',
+        bookingId,
+        r['familyId'] as bigint,
+        r['tripId'] as bigint,
+        'DELETE',
+        now,
+      );
 
       await this.audit(tx, {
         actorId: userId,
@@ -394,7 +437,11 @@ export class BookingService {
     return { ...base, orderNo, orderLink, contact };
   }
 
-  private async assertBookingVisible(src: TxHandle | DomainContext, r: Row, userId: bigint): Promise<void> {
+  private async assertBookingVisible(
+    src: TxHandle | DomainContext,
+    r: Row,
+    userId: bigint,
+  ): Promise<void> {
     const visible = await this.visibleTripIds(userId);
     if (!visible.has(r['tripId'] as bigint)) {
       throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -414,8 +461,12 @@ export class BookingService {
   }
 
   private async visibleTripIds(userId: bigint): Promise<Set<bigint>> {
-    const mine = await this.o.ctx.read.findMany('tripMember', { where: { userId, deletedAt: null } });
-    const managed = await this.o.ctx.read.findMany('tripMember', { where: { managedBy: userId, deletedAt: null } });
+    const mine = await this.o.ctx.read.findMany('tripMember', {
+      where: { userId, deletedAt: null },
+    });
+    const managed = await this.o.ctx.read.findMany('tripMember', {
+      where: { managedBy: userId, deletedAt: null },
+    });
     const s = new Set<bigint>();
     for (const m of mine) s.add(m['tripId'] as bigint);
     for (const m of managed) s.add(m['tripId'] as bigint);

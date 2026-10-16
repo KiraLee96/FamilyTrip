@@ -92,6 +92,13 @@ export class MediaService {
         ownerId: userId,
         tripId: null,
         status: 'PENDING',
+        // 🔴 必须落库：DB 有 chk_fp_size CHECK(expected_size > 0 AND <= 52428800)。
+        // 漏传则落到 Prisma 默认值 0 → 真 MySQL 报 3819 违反约束 → POST /media/presign 恒 500。
+        // 内存驱动无 CHECK 约束，故此前单测全绿也未暴露（2026-10-15 真库联调发现）。
+        // 语义：签名时申报的字节数上限 —— 正是上面已校验过 size > 0 的那个 size。
+        expectedSize: size,
+        contentType: input.mimeType,
+        purpose: 'MEDIA',
         createdAt: now,
         updatedAt: now,
         deletedAt: null,

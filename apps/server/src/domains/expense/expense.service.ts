@@ -45,7 +45,21 @@ export interface ExpenseServiceOptions {
   today?: () => string;
 }
 
-const EXPENSE_BIGINT_FIELDS = ['id', 'tripId', 'familyId', 'createdBy', 'ownerMemberId', 'amount', 'amountBase'];
+/**
+ * D-2026-10-15-02：补 `rateBy` —— 手动覆盖汇率的操作人（A21 审计列）。
+ * 漏列时该列在真 MySQL 下为 BigInt → JSON.stringify 抛 TypeError → 500 且丢信封。
+ * （`version` 故意不入列：计数器经 HTTP 边界兜底出 number，见 envelope.ts。）
+ */
+const EXPENSE_BIGINT_FIELDS = [
+  'id',
+  'tripId',
+  'familyId',
+  'createdBy',
+  'ownerMemberId',
+  'amount',
+  'amountBase',
+  'rateBy',
+];
 
 export interface ExpenseSummary {
   displayCurrency: string;
@@ -64,17 +78,20 @@ export class ExpenseService {
   }
 
   /** 记一笔花费 —— 落库时做**一次**汇率折算快照 */
-  async create(userId: bigint, input: {
-    tripId: bigint;
-    familyId: bigint;
-    title: string;
-    amount: string;
-    currency: string;
-    ownerMemberId?: bigint;
-    category?: string;
-    spentAt?: string;
-    note?: string;
-  }): Promise<Record<string, unknown>> {
+  async create(
+    userId: bigint,
+    input: {
+      tripId: bigint;
+      familyId: bigint;
+      title: string;
+      amount: string;
+      currency: string;
+      ownerMemberId?: bigint;
+      category?: string;
+      spentAt?: string;
+      note?: string;
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const t = await tx.db.findUnique('trip', { id: input.tripId, deletedAt: null });
       if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -126,17 +143,20 @@ export class ExpenseService {
   }
 
   /** 列表 */
-  async list(userId: bigint, q: {
-    tripId?: bigint;
-    familyId?: bigint;
-    ownerMemberId?: bigint;
-    category?: string;
-    from?: string;
-    to?: string;
-    displayCurrency?: string;
-    page?: unknown;
-    pageSize?: unknown;
-  }): Promise<{ items: Record<string, unknown>[]; meta: Record<string, unknown>; }> {
+  async list(
+    userId: bigint,
+    q: {
+      tripId?: bigint;
+      familyId?: bigint;
+      ownerMemberId?: bigint;
+      category?: string;
+      from?: string;
+      to?: string;
+      displayCurrency?: string;
+      page?: unknown;
+      pageSize?: unknown;
+    },
+  ): Promise<{ items: Record<string, unknown>[]; meta: Record<string, unknown> }> {
     const page = normalizePageQuery(q.page, q.pageSize);
     const all = await this.o.ctx.read.findMany('expense', { where: { deletedAt: null } });
     const visible = await this.visibleTripIds(userId);
@@ -144,7 +164,8 @@ export class ExpenseService {
     let rows = all.filter((e) => visible.has(e['tripId'] as bigint));
     if (q.tripId !== undefined) rows = rows.filter((e) => e['tripId'] === q.tripId);
     if (q.familyId !== undefined) rows = rows.filter((e) => e['familyId'] === q.familyId);
-    if (q.ownerMemberId !== undefined) rows = rows.filter((e) => e['ownerMemberId'] === q.ownerMemberId);
+    if (q.ownerMemberId !== undefined)
+      rows = rows.filter((e) => e['ownerMemberId'] === q.ownerMemberId);
     if (q.category !== undefined) rows = rows.filter((e) => e['category'] === q.category);
     if (q.from !== undefined) rows = rows.filter((e) => ymd(e['spentAt']) >= q.from!);
     if (q.to !== undefined) rows = rows.filter((e) => ymd(e['spentAt']) <= q.to!);
@@ -159,7 +180,12 @@ export class ExpenseService {
       if (display !== undefined && e['rateSource'] !== 'SAME_CURRENCY') {
         // 展示换算仅作参考，真值仍是 amount + currency
         const conv = this.displayConvert(e, display);
-        return { ...base, displayAmount: conv.amount, displayCurrency: display, displayDerived: conv.derived };
+        return {
+          ...base,
+          displayAmount: conv.amount,
+          displayCurrency: display,
+          displayDerived: conv.derived,
+        };
       }
       return base;
     });
@@ -205,28 +231,48 @@ export class ExpenseService {
     }
 
     const toBucket = <K>(m: Map<K, bigint[]>): Array<{ key: K; total: string; count: number }> =>
-      [...m.entries()].map(([k, vs]) => ({ key: k, total: sumMinorUnits(vs).toString(), count: vs.length }));
+      [...m.entries()].map(([k, vs]) => ({
+        key: k,
+        total: sumMinorUnits(vs).toString(),
+        count: vs.length,
+      }));
 
     return {
       displayCurrency: display,
       totalMinor: sumMinorUnits(allBase).toString(),
       count: rows.length,
-      byOwner: toBucket(byOwner).map((b) => ({ ownerMemberId: b.key !== null ? String(b.key) : null, totalMinor: b.total, count: b.count })),
-      byCategory: toBucket(byCategory).map((b) => ({ category: b.key, totalMinor: b.total, count: b.count })),
-      byCurrency: toBucket(byCurrency).map((b) => ({ currency: String(b.key), totalMinor: b.total, count: b.count })),
+      byOwner: toBucket(byOwner).map((b) => ({
+        ownerMemberId: b.key !== null ? String(b.key) : null,
+        totalMinor: b.total,
+        count: b.count,
+      })),
+      byCategory: toBucket(byCategory).map((b) => ({
+        category: b.key,
+        totalMinor: b.total,
+        count: b.count,
+      })),
+      byCurrency: toBucket(byCurrency).map((b) => ({
+        currency: String(b.key),
+        totalMinor: b.total,
+        count: b.count,
+      })),
     };
   }
 
   /** 更新（CAS） */
-  async update(userId: bigint, expenseId: bigint, patch: {
-    version?: number;
-    title?: string;
-    amount?: string;
-    currency?: string;
-    category?: string | null;
-    spentAt?: string | null;
-    note?: string | null;
-  }): Promise<Record<string, unknown>> {
+  async update(
+    userId: bigint,
+    expenseId: bigint,
+    patch: {
+      version?: number;
+      title?: string;
+      amount?: string;
+      currency?: string;
+      category?: string | null;
+      spentAt?: string | null;
+      note?: string | null;
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const e = await tx.db.findUnique('expense', { id: expenseId, deletedAt: null });
       if (!e) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -242,14 +288,19 @@ export class ExpenseService {
       if (patch.category !== undefined) data['category'] = patch.category;
       if (patch.note !== undefined) data['note'] = patch.note;
       if (patch.spentAt !== undefined) {
-        data['spentAt'] = patch.spentAt === null ? null : new Date(`${patch.spentAt}T00:00:00.000Z`);
-        data['rateDate'] = patch.spentAt === null ? null : new Date(`${patch.spentAt}T00:00:00.000Z`);
+        data['spentAt'] =
+          patch.spentAt === null ? null : new Date(`${patch.spentAt}T00:00:00.000Z`);
+        data['rateDate'] =
+          patch.spentAt === null ? null : new Date(`${patch.spentAt}T00:00:00.000Z`);
       }
 
       // 金额或币种变了 → 必须重算折算快照（否则 amount_base 与 amount 不一致）
       const nextCurrency = (patch.currency ?? String(e['currency'])).toUpperCase();
       if (patch.amount !== undefined || patch.currency !== undefined) {
-        const amountMinor = patch.amount !== undefined ? toMinorUnits(patch.amount, nextCurrency) : (e['amount'] as bigint);
+        const amountMinor =
+          patch.amount !== undefined
+            ? toMinorUnits(patch.amount, nextCurrency)
+            : (e['amount'] as bigint);
         const dateForRate = patch.spentAt ?? ymd(e['spentAt']);
         const snap = await this.snapshotAmount(nextCurrency, amountMinor, dateForRate);
 
@@ -271,7 +322,15 @@ export class ExpenseService {
         throw new AppError(ErrorCode.VERSION_CONFLICT, '该笔花费已被他人修改，请刷新后重试');
       }
 
-      await this.change(tx, 'expense', expenseId, e['familyId'] as bigint, e['tripId'] as bigint, 'UPDATE', now);
+      await this.change(
+        tx,
+        'expense',
+        expenseId,
+        e['familyId'] as bigint,
+        e['tripId'] as bigint,
+        'UPDATE',
+        now,
+      );
 
       const row = await tx.db.findUnique('expense', { id: expenseId });
       return serializeRow(row ?? {}, EXPENSE_BIGINT_FIELDS);
@@ -292,7 +351,15 @@ export class ExpenseService {
 
       const now = await tx.db.dbNow();
       await tx.db.update('expense', { id: expenseId }, { deletedAt: now, updatedAt: now });
-      await this.change(tx, 'expense', expenseId, e['familyId'] as bigint, e['tripId'] as bigint, 'DELETE', now);
+      await this.change(
+        tx,
+        'expense',
+        expenseId,
+        e['familyId'] as bigint,
+        e['tripId'] as bigint,
+        'DELETE',
+        now,
+      );
       return now;
     });
   }
@@ -343,7 +410,8 @@ export class ExpenseService {
         ? null
         : new Decimal(decimalString(e['exchangeRate']));
     if (base === null) return { amount: String(e['amount']), derived: false };
-    if (display === 'CNY') return { amount: base.toString(), derived: String(e['currency']) !== 'CNY' };
+    if (display === 'CNY')
+      return { amount: base.toString(), derived: String(e['currency']) !== 'CNY' };
     if (rate === null) return { amount: base.toString(), derived: false };
     const conv = new Decimal(base.toString()).times(rate);
     return { amount: conv.toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toFixed(0), derived: true };
@@ -355,18 +423,27 @@ export class ExpenseService {
     if (base !== null) {
       if (display === 'CNY') return base;
       const rate =
-      e['exchangeRate'] === null || e['exchangeRate'] === undefined
-        ? null
-        : new Decimal(decimalString(e['exchangeRate']));
+        e['exchangeRate'] === null || e['exchangeRate'] === undefined
+          ? null
+          : new Decimal(decimalString(e['exchangeRate']));
       if (rate === null) return base;
-      return BigInt(new Decimal(base.toString()).times(rate).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toFixed(0));
+      return BigInt(
+        new Decimal(base.toString())
+          .times(rate)
+          .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
+          .toFixed(0),
+      );
     }
     return (e['amount'] ?? 0n) as bigint;
   }
 
   private async visibleTripIds(userId: bigint): Promise<Set<bigint>> {
-    const mine = await this.o.ctx.read.findMany('tripMember', { where: { userId, deletedAt: null } });
-    const managed = await this.o.ctx.read.findMany('tripMember', { where: { managedBy: userId, deletedAt: null } });
+    const mine = await this.o.ctx.read.findMany('tripMember', {
+      where: { userId, deletedAt: null },
+    });
+    const managed = await this.o.ctx.read.findMany('tripMember', {
+      where: { managedBy: userId, deletedAt: null },
+    });
     const s = new Set<bigint>();
     for (const m of mine) s.add(m['tripId'] as bigint);
     for (const m of managed) s.add(m['tripId'] as bigint);
@@ -386,7 +463,12 @@ export class ExpenseService {
   }
 
   private async assertLeaderOrCreator(tx: TxHandle, t: Row, userId: bigint): Promise<void> {
-    const leader = await tx.db.findUnique('tripMember', { tripId: t['id'], userId, role: 'LEADER', deletedAt: null });
+    const leader = await tx.db.findUnique('tripMember', {
+      tripId: t['id'],
+      userId,
+      role: 'LEADER',
+      deletedAt: null,
+    });
     if (leader) return;
     if (t['createdBy'] === userId) return;
     throw new AppError(ErrorCode.FORBIDDEN, '仅主导者可执行该操作');
@@ -454,6 +536,7 @@ function ymd(v: unknown): string {
 function requireVersionOrSkip(raw: unknown, current: unknown): number {
   if (raw === undefined || raw === null) return Number(current ?? 0);
   const n = Number(raw);
-  if (!Number.isInteger(n) || n < 0) throw new AppError(ErrorCode.VALIDATION_FAILED, 'version 非法');
+  if (!Number.isInteger(n) || n < 0)
+    throw new AppError(ErrorCode.VALIDATION_FAILED, 'version 非法');
   return n;
 }

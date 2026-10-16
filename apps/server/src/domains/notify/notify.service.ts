@@ -33,23 +33,40 @@ export interface NotifyServiceOptions {
   auditRetentionDays?: number;
 }
 
-const REMINDER_BIGINT_FIELDS = ['id', 'receiverId', 'createdBy', 'tripId', 'subscriptionId'];
+/**
+ * D-2026-10-15-02：补 `mergedGroupId`（合并提醒组 id）与 `userId`
+ * （NotifySubscription 行走本常量出参的场景）。
+ * 漏列时真 MySQL 下为 BigInt → 500 且丢信封。
+ * （`version` 故意不入列：计数器经 HTTP 边界兜底出 number，见 envelope.ts。）
+ */
+const REMINDER_BIGINT_FIELDS = [
+  'id',
+  'receiverId',
+  'createdBy',
+  'tripId',
+  'subscriptionId',
+  'mergedGroupId',
+  'userId',
+];
 const SUB_BIGINT_FIELDS = ['id', 'userId'];
 
 export class NotifyService {
   constructor(private readonly o: NotifyServiceOptions) {}
 
   /** 建提醒 */
-  async createReminder(userId: bigint, input: {
-    receiverId: bigint;
-    tripId?: bigint;
-    subscriptionId?: bigint;
-    title: string;
-    content?: string;
-    remindAt: string;
-    tz?: string;
-    delivery: 'NORMAL' | 'TODO_ONLY';
-  }): Promise<Record<string, unknown>> {
+  async createReminder(
+    userId: bigint,
+    input: {
+      receiverId: bigint;
+      tripId?: bigint;
+      subscriptionId?: bigint;
+      title: string;
+      content?: string;
+      remindAt: string;
+      tz?: string;
+      delivery: 'NORMAL' | 'TODO_ONLY';
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       await this.assertCanActForReceiver(tx, userId, input.receiverId);
 
@@ -86,21 +103,26 @@ export class NotifyService {
   }
 
   /** 提醒列表 */
-  async listReminders(userId: bigint, q: {
-    receiverId?: bigint;
-    tripId?: bigint;
-    status?: string;
-    dueOnly?: boolean;
-    from?: string;
-    to?: string;
-    page?: unknown;
-    pageSize?: unknown;
-  }): Promise<{ items: Record<string, unknown>[]; meta: Record<string, unknown>; }> {
+  async listReminders(
+    userId: bigint,
+    q: {
+      receiverId?: bigint;
+      tripId?: bigint;
+      status?: string;
+      dueOnly?: boolean;
+      from?: string;
+      to?: string;
+      page?: unknown;
+      pageSize?: unknown;
+    },
+  ): Promise<{ items: Record<string, unknown>[]; meta: Record<string, unknown> }> {
     const page = normalizePageQuery(q.page, q.pageSize);
 
     // 可见范围：我创建的 ∨ 发给我的 ∨ 我代管的人收到的
     const myReceiverIds = new Set<bigint>([userId]);
-    const managed = await this.o.ctx.read.findMany('familyMember', { where: { managedBy: userId, deletedAt: null } });
+    const managed = await this.o.ctx.read.findMany('familyMember', {
+      where: { managedBy: userId, deletedAt: null },
+    });
     for (const m of managed) myReceiverIds.add(m['id'] as bigint);
 
     const all = await this.o.ctx.read.findMany('reminderTask', { where: { deletedAt: null } });
@@ -123,15 +145,19 @@ export class NotifyService {
     };
   }
 
-  async updateReminder(userId: bigint, reminderId: bigint, patch: {
-    version: number;
-    title?: string;
-    content?: string | null;
-    remindAt?: string;
-    tz?: string;
-    delivery?: 'NORMAL' | 'TODO_ONLY';
-    status?: string;
-  }): Promise<Record<string, unknown>> {
+  async updateReminder(
+    userId: bigint,
+    reminderId: bigint,
+    patch: {
+      version: number;
+      title?: string;
+      content?: string | null;
+      remindAt?: string;
+      tz?: string;
+      delivery?: 'NORMAL' | 'TODO_ONLY';
+      status?: string;
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const r = await tx.db.findUnique('reminderTask', { id: reminderId, deletedAt: null });
       if (!r) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -147,7 +173,15 @@ export class NotifyService {
       if (patch.status !== undefined) data['status'] = patch.status;
 
       await tx.db.update('reminderTask', { id: reminderId }, data);
-      await this.change(tx, 'reminder_task', reminderId, null, (r['tripId'] ?? null) as bigint | null, 'UPDATE', now);
+      await this.change(
+        tx,
+        'reminder_task',
+        reminderId,
+        null,
+        (r['tripId'] ?? null) as bigint | null,
+        'UPDATE',
+        now,
+      );
 
       const row = await tx.db.findUnique('reminderTask', { id: reminderId });
       return serializeRow(row ?? {}, REMINDER_BIGINT_FIELDS);
@@ -162,13 +196,21 @@ export class NotifyService {
 
       const now = await tx.db.dbNow();
       await tx.db.update('reminderTask', { id: reminderId }, { deletedAt: now, updatedAt: now });
-      await this.change(tx, 'reminder_task', reminderId, null, (r['tripId'] ?? null) as bigint | null, 'DELETE', now);
+      await this.change(
+        tx,
+        'reminder_task',
+        reminderId,
+        null,
+        (r['tripId'] ?? null) as bigint | null,
+        'DELETE',
+        now,
+      );
       return now;
     });
   }
 
   /** 批量标记已读 */
-  async markRead(userId: bigint, ids: string[]): Promise<{ updated: number; readAt: string; }> {
+  async markRead(userId: bigint, ids: string[]): Promise<{ updated: number; readAt: string }> {
     return this.o.ctx.tx(async (tx) => {
       const now = await tx.db.dbNow();
       let updated = 0;
@@ -191,15 +233,22 @@ export class NotifyService {
    * 幂等：同 (userId, templateId) 存在则更新剩余额度与状态，不新增行。
    * `uk_user_tpl` 复合唯一键兜底。
    */
-  async registerSubscription(userId: bigint, input: {
-    templateId: string;
-    status: 'GRANTED' | 'EXPIRED' | 'REVOKED';
-    expireAt?: string;
-    remainCount?: number;
-  }): Promise<Record<string, unknown>> {
+  async registerSubscription(
+    userId: bigint,
+    input: {
+      templateId: string;
+      status: 'GRANTED' | 'EXPIRED' | 'REVOKED';
+      expireAt?: string;
+      remainCount?: number;
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const now = await tx.db.dbNow();
-      const existing = await tx.db.findUnique('notifySubscription', { userId, templateId: input.templateId, deletedAt: null });
+      const existing = await tx.db.findUnique('notifySubscription', {
+        userId,
+        templateId: input.templateId,
+        deletedAt: null,
+      });
 
       if (existing) {
         await tx.db.update(
@@ -208,8 +257,11 @@ export class NotifyService {
           {
             status: input.status,
             grantedAt: input.status === 'GRANTED' ? now : (existing['grantedAt'] ?? null),
-            expireAt: input.expireAt !== undefined ? new Date(input.expireAt) : (existing['expireAt'] ?? null),
-            remainCount: input.remainCount ?? (existing['remainCount'] ?? null),
+            expireAt:
+              input.expireAt !== undefined
+                ? new Date(input.expireAt)
+                : (existing['expireAt'] ?? null),
+            remainCount: input.remainCount ?? existing['remainCount'] ?? null,
             updatedAt: now,
           },
         );
@@ -237,8 +289,10 @@ export class NotifyService {
   }
 
   /** 查我的订阅授权状态 */
-  async listSubscriptions(userId: bigint): Promise<{ items: Record<string, unknown>[]; }> {
-    const rows = await this.o.ctx.read.findMany('notifySubscription', { where: { userId, deletedAt: null } });
+  async listSubscriptions(userId: bigint): Promise<{ items: Record<string, unknown>[] }> {
+    const rows = await this.o.ctx.read.findMany('notifySubscription', {
+      where: { userId, deletedAt: null },
+    });
     return { items: rows.map((r) => serializeRow(r, SUB_BIGINT_FIELDS)) };
   }
 
@@ -247,9 +301,13 @@ export class NotifyService {
    *
    * 返回的是「候选集」，调度器推送成功后应调用 `markSent` 回写。
    */
-  async dueReminders(limit = 100): Promise<{ items: Record<string, unknown>[]; serverTime: string; }> {
+  async dueReminders(
+    limit = 100,
+  ): Promise<{ items: Record<string, unknown>[]; serverTime: string }> {
     const now = await this.o.ctx.read.dbNow();
-    const rows = await this.o.ctx.read.findMany('reminderTask', { where: { status: 'PENDING', deletedAt: null } });
+    const rows = await this.o.ctx.read.findMany('reminderTask', {
+      where: { status: 'PENDING', deletedAt: null },
+    });
     const due = rows
       .filter((r) => r['delivery'] === 'NORMAL')
       .filter((r) => timeOf(r['remindAt']) <= now.getTime())
@@ -262,12 +320,14 @@ export class NotifyService {
       const subs = await this.o.ctx.read.findMany('notifySubscription', {
         where: { userId: r['receiverId'], deletedAt: null },
       });
-      const usable = subs.find((s) => s['status'] === 'GRANTED' && Number(s['remainCount'] ?? 0) > 0);
+      const usable = subs.find(
+        (s) => s['status'] === 'GRANTED' && Number(s['remainCount'] ?? 0) > 0,
+      );
       out.push({
         ...serializeRow(r, REMINDER_BIGINT_FIELDS),
         canPush: usable !== undefined,
         subscriptionId: usable !== undefined ? bigIntCell(usable, 'id').toString() : null,
-        templateId: (usable?.['templateId']) ?? null,
+        templateId: usable?.['templateId'] ?? null,
       });
     }
     return { items: out, serverTime: now.toISOString() };
@@ -280,7 +340,11 @@ export class NotifyService {
    *    否则推送失败会永久丢失（没有重试入口）。
    *    失败时 `retry_count += 1`，超过阈值转 FAILED。
    */
-  async markSent(reminderId: bigint, success: boolean, error?: string): Promise<{ status: string; retryCount: number; error: string | null; }> {
+  async markSent(
+    reminderId: bigint,
+    success: boolean,
+    error?: string,
+  ): Promise<{ status: string; retryCount: number; error: string | null }> {
     return this.o.ctx.tx(async (tx) => {
       const r = await tx.db.findUnique('reminderTask', { id: reminderId, deletedAt: null });
       if (!r) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -308,12 +372,24 @@ export class NotifyService {
           await tx.db.update(
             'notifySubscription',
             { id: sub['id'] },
-            { remainCount: left, status: left === 0 ? 'EXPIRED' : String(sub['status']), updatedAt: now },
+            {
+              remainCount: left,
+              status: left === 0 ? 'EXPIRED' : String(sub['status']),
+              updatedAt: now,
+            },
           );
         }
       }
 
-      await this.change(tx, 'reminder_task', reminderId, null, (r['tripId'] ?? null) as bigint | null, 'UPDATE', now);
+      await this.change(
+        tx,
+        'reminder_task',
+        reminderId,
+        null,
+        (r['tripId'] ?? null) as bigint | null,
+        'UPDATE',
+        now,
+      );
 
       return {
         status: success ? 'SENT' : retryCount >= maxRetry ? 'FAILED' : 'PENDING',
@@ -325,11 +401,19 @@ export class NotifyService {
 
   // ── 内部 ────────────────────────────────────────────────
 
-  private async assertCanActForReceiver(tx: TxHandle, actorId: bigint, receiverId: bigint): Promise<void> {
+  private async assertCanActForReceiver(
+    tx: TxHandle,
+    actorId: bigint,
+    receiverId: bigint,
+  ): Promise<void> {
     if (receiverId === actorId) return;
-    const m = await tx.db.findMany('familyMember', { where: { id: receiverId, managedBy: actorId, deletedAt: null } });
+    const m = await tx.db.findMany('familyMember', {
+      where: { id: receiverId, managedBy: actorId, deletedAt: null },
+    });
     if (m.length > 0) return;
-    const t = await tx.db.findMany('tripMember', { where: { id: receiverId, managedBy: actorId, deletedAt: null } });
+    const t = await tx.db.findMany('tripMember', {
+      where: { id: receiverId, managedBy: actorId, deletedAt: null },
+    });
     if (t.length > 0) return;
     // 允许给同一家庭的成员设提醒（协作场景）
     const recv = await tx.db.findUnique('familyMember', { id: receiverId, deletedAt: null });
