@@ -2240,6 +2240,13 @@ p {
   margin-top: 2px;
 }
 
+/* 昵称行：文字 + 编辑入口（2026-10-16 需求②） */
+.profile-card__name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* ---------- 我的页：家庭卡片 ---------- */
 
 .family-card {

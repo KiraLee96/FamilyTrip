@@ -5,6 +5,9 @@
  *   · 登录状态：展示当前用户；未登录可「重新登录」（微信生态无显式登出，重回无感态）
  *   · 头像更换：2026-10-16 需求① —— 点击头像更换，小程序端支持「微信头像」
  *     （Button openType=chooseAvatar），H5 端走相册；落库 PATCH /auth/me
+ *   · 昵称编辑：2026-10-16 需求② —— 微信 jscode2session 不下发昵称头像，
+ *     首登用户昵称为服务端默认值（用户xxxx）；点击昵称行即可改名，
+ *     同样走 PATCH /auth/me + patchSessionUser 本地广播
  *   · 我的家庭：增（新建）/ 删（解散）/ 改（改名）/ 查（成员列表）
  *   · 成员管理：**不区分爸爸妈妈等角色、无人数上限**，仅区分「管理员 / 成员」——
  *     创建家庭者即管理员；邀请制新增成员：展示邀请码 / 复制 / 分享，
@@ -138,7 +141,7 @@ function AccountCard({ user }: { user: User | undefined }) {
       <View className="card profile-card">
         <AvatarPicker user={user} />
         <View className="profile-card__body">
-          <Text className="profile-card__name">{user.nickname}</Text>
+          <NicknameEditor user={user} />
           <Text className="profile-card__sub">{user.homeTimezone ?? 'Asia/Shanghai'}</Text>
         </View>
         <View
@@ -233,6 +236,99 @@ function AvatarPicker({ user }: { user: User }) {
     >
       {body}
     </Button>
+  );
+}
+
+/**
+ * 昵称行 —— 常态展示，点击进入就地编辑（Input + 保存/取消）
+ * ============================================================================
+ * 2026-10-16 需求②：微信 jscode2session 只换 openid，不下发昵称；首登用户
+ * 昵称是服务端默认值（用户xxxx）。若不提供改名入口，「我的」页会永远显示
+ * 默认昵称——真实 exchanger 只解决「身份不再漂移」，改名靠这里落库。
+ * 落库走 PATCH /auth/me（schema：1–64 字，前端先挡一轮），成功后
+ * patchSessionUser 本地广播，首页/我的页即时一致（不发额外请求）。
+ * 编辑态与 RenameRow 同一模式：未改动直接收起，空值/超长前端先报错。
+ */
+function NicknameEditor({ user }: { user: User }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(user.nickname);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const open = useCallback(() => {
+    setDraft(user.nickname);
+    setErr('');
+    setEditing(true);
+  }, [user.nickname]);
+
+  const cancel = useCallback(() => {
+    setEditing(false);
+    setErr('');
+  }, []);
+
+  const save = useCallback(async () => {
+    const nickname = draft.trim();
+    if (nickname === '') {
+      setErr('昵称不能为空');
+      return;
+    }
+    if (nickname.length > 64) {
+      setErr('昵称最多 64 字');
+      return;
+    }
+    if (nickname === user.nickname) {
+      setEditing(false);
+      return;
+    }
+    setBusy(true);
+    setErr('');
+    try {
+      const updated = await api.updateMe({ nickname });
+      patchSessionUser(updated);
+      void Taro.showToast({ title: '昵称已更新', icon: 'success' });
+      setEditing(false);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : '保存失败');
+    } finally {
+      setBusy(false);
+    }
+  }, [draft, user.nickname]);
+
+  if (!editing) {
+    return (
+      <View className="profile-card__name-row" onClick={open}>
+        <Text className="profile-card__name">{user.nickname}</Text>
+        <View className="icon-btn" style={{ width: 22, height: 22 }}>
+          <Icon name="edit" size={12} />
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={{ marginTop: 2 }}>
+      <View style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Input
+          className="add-row__input"
+          style={{ height: 32, fontSize: 14 }}
+          value={draft}
+          onInput={(e) => setDraft(e.detail.value)}
+          placeholder="输入昵称"
+          focus
+        />
+        <View
+          className={`add-row__btn ${busy ? 'add-row__btn--off' : ''}`}
+          style={{ height: 32 }}
+          onClick={busy ? undefined : () => void save()}
+        >
+          {busy ? '…' : '保存'}
+        </View>
+        <Text className="card__more" onClick={cancel}>
+          取消
+        </Text>
+      </View>
+      {err ? <Text className="form-error">{err}</Text> : null}
+    </View>
   );
 }
 
