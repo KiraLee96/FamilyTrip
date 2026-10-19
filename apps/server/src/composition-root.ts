@@ -40,6 +40,7 @@ import { createDomainContext, type DomainContext } from './domains/domain-contex
 import type { DriverTxRunner } from './common/db/table-client.js';
 
 import { createAuthDomain } from './domains/auth/auth.controller.js';
+import type { WechatCodeExchanger } from './domains/auth/auth.service.js';
 import { createFamilyDomain } from './domains/family/family.controller.js';
 import { createWishDomain } from './domains/wish/wish.controller.js';
 import { createTripDomain } from './domains/trip/trip.controller.js';
@@ -59,10 +60,16 @@ import { createHash } from 'node:crypto';
 import { FieldCryptoService } from './common/crypto/field-crypto-service.js';
 import { KeyState, type DekMaterial, type KmsClient } from './common/crypto/dek-store.js';
 
-/** 微信 code 换 openid 的适配接口（生产接微信接口，测试注入桩） */
-export interface WechatCodeExchanger {
-  exchange(code: string): Promise<{ openid: string; unionId?: string }>;
-}
+/**
+ * 微信 code 换 openid 的适配接口 —— **单一事实源在 auth 域**
+ * （`domains/auth/auth.service.ts`，AuthService 是消费方）。
+ *
+ * 🔴 本文件此前有一份重复声明，且与域接口漂移（`unionId` vs `unionid`、
+ *    是否允许返回 null）—— 真实 exchanger 因此装不进组合根。现统一为域定义，
+ *    此处仅再导出，保持 `import { WechatCodeExchanger } from './composition-root.js'`
+ *    的既有引用方式不变。
+ */
+export type { WechatCodeExchanger };
 
 export interface BuildAppOptions {
   /**
@@ -131,6 +138,46 @@ export function clearInstalledAppDriver(): void {
 }
 
 /**
+ * 进程级微信 exchanger 登记位（与驱动同模式）。
+ *
+ * 🔴 生产必须经 `main.ts` 的 `resolveWechatExchanger(env)` 登记真实 exchanger；
+ *    未登记时组合根回落 `stubWechat()`（openid = code）—— 那是开发/测试专用，
+ *    生产下每次登录都会生成新用户（"我的"页永远显示默认值的根因）。
+ */
+let registeredWechat: WechatCodeExchanger | undefined;
+
+/**
+ * 由生产入口（`main.ts`）调用，登记进程级微信 exchanger。
+ * 传 `undefined`（开发/测试未配置微信凭证时）＝ 显式回落 `stubWechat`。
+ */
+export function installWechatExchanger(wechat: WechatCodeExchanger | undefined): void {
+  registeredWechat = wechat;
+}
+
+/** 仅供测试清理全局状态 */
+export function clearInstalledWechatExchanger(): void {
+  registeredWechat = undefined;
+}
+
+/**
+ * 进程级 JWT 签名密钥登记位（与驱动同模式）。
+ *
+ * 🔴 `DEFAULT_DEV_SECRET` 是源码里的公开常量，生产用它等于允许任何人
+ *    伪造任意用户的令牌 —— 因此生产入口必须显式登记（缺省拒绝启动）。
+ */
+let registeredTokenSecret: string | undefined;
+
+/** 由生产入口（`main.ts`）调用，登记进程级 JWT 签名密钥 */
+export function installTokenSecret(secret: string): void {
+  registeredTokenSecret = secret;
+}
+
+/** 仅供测试清理全局状态 */
+export function clearInstalledTokenSecret(): void {
+  registeredTokenSecret = undefined;
+}
+
+/**
  * 装配整个后端。
  *
  * ⛔ 不做任何 I/O（不连库、不拉汇率）—— 只构造对象图。
@@ -157,7 +204,7 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
   }
 
   const driver = options.driver ?? registeredDriver ?? new MemoryTableDriver();
-  const tokenSecret = options.tokenSecret ?? DEFAULT_DEV_SECRET;
+  const tokenSecret = options.tokenSecret ?? registeredTokenSecret ?? DEFAULT_DEV_SECRET;
   const retentionDays = options.auditRetentionDays ?? 365;
   // D-2026-10-15-01：媒体公网基址唯一来源 —— media 域与 itinerary 域共用，
   // 保证 image 块 url 解析与 media list/confirm 是同一环境变量、同一拼接方式。
@@ -194,7 +241,7 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
   // ⑦ 14 个域
   const authDomain = createAuthDomain({
     ...common,
-    wechat: options.wechat ?? stubWechat(),
+    wechat: options.wechat ?? registeredWechat ?? stubWechat(),
     signToken: (payload) => signToken(payload, tokenSecret),
     tokenTtlSeconds: options.ttlSeconds ?? 7 * 24 * 3600,
     ...(options.defaultTimezone !== undefined ? { defaultTimezone: options.defaultTimezone } : {}),

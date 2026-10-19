@@ -4,8 +4,14 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
 import { loadAuthorizedSources } from './common/fx/rate-tier.js';
 import { assertFxSourceConfigured } from './common/fx/source-guard.js';
-import { installAppDriver } from './composition-root.js';
+import {
+  installAppDriver,
+  installWechatExchanger,
+  installTokenSecret,
+  DEFAULT_DEV_SECRET,
+} from './composition-root.js';
 import { resolveAppDriver } from './common/db/resolve-driver.js';
+import { resolveWechatExchanger } from './domains/auth/wechat-jscode2session.js';
 import { bigintSafeReplacer } from './common/envelope/envelope.js';
 import type { AppDriver } from './common/db/resolve-driver.js';
 
@@ -31,6 +37,26 @@ function guardFxSource(): void {
     nodeEnv: process.env.NODE_ENV ?? 'development',
     sources: [], // ⛔ 授权源待接入；此处不写死任何源名（红线 R7）
   });
+}
+
+/**
+ * JWT 签名密钥选取（与 resolveWechatExchanger 同族的生产 fail-fast）。
+ *
+ * 🔴 `DEFAULT_DEV_SECRET` 是源码里的公开常量，生产用它等于允许任何人
+ *    伪造任意用户的令牌 —— 缺配置必须拒绝启动，而不是"先跑起来再说"。
+ */
+function resolveTokenSecret(env: NodeJS.ProcessEnv): string {
+  const secret = env['JWT_SECRET']?.trim();
+  if (secret === undefined || secret === '') {
+    if ((env['NODE_ENV'] ?? 'development') === 'production') {
+      throw new Error(
+        'NODE_ENV=production 但缺少 JWT_SECRET —— 拒绝以开发默认密钥启动' +
+          '（公开默认密钥允许伪造任意用户令牌）。请配置强随机密钥后重启。',
+      );
+    }
+    return DEFAULT_DEV_SECRET;
+  }
+  return secret;
 }
 
 /**
@@ -84,6 +110,13 @@ async function installDriver(): Promise<void> {
 async function bootstrap(): Promise<void> {
   guardFxSource();
   await installDriver();
+
+  // 微信登录 exchanger：生产必须接真实 jscode2session（缺配置拒绝启动）；
+  // 开发/测试由 resolveWechatExchanger 返回 undefined → 组合根回落 stubWechat。
+  installWechatExchanger(resolveWechatExchanger(process.env));
+
+  // JWT 签名密钥：生产必须显式配置（开发默认密钥是公开常量，生产不可用）。
+  installTokenSecret(resolveTokenSecret(process.env));
 
   const app = await NestFactory.create(AppModule);
 
