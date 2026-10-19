@@ -11,7 +11,7 @@ import {
   installTokenSecret,
   DEFAULT_DEV_SECRET,
 } from './composition-root.js';
-import { resolvePublicFxSource } from './common/fx/sources/index.js';
+import { resolveFxSource } from './common/fx/sources/index.js';
 import { resolveAppDriver } from './common/db/resolve-driver.js';
 import { resolveWechatExchanger } from './domains/auth/wechat-jscode2session.js';
 import { bigintSafeReplacer } from './common/envelope/envelope.js';
@@ -21,21 +21,20 @@ import type { AppDriver } from './common/db/resolve-driver.js';
  * 启动期 M3 fail-fast：生产环境未配置合规授权汇率源则拒绝启动。
  * 逻辑委派给 common/fx，确保与单测同源（派发单 §3.2）。
  *
- * 🔴 关于 `sources: []`：
- *    本期采购决策为「不采购」，故**尚未**注入任何真实汇率源，此处的空数组
- *    会让生产环境按设计拒绝启动（派发单 §3.2 明确要求该分支现在就合）。
- *    授权源接入后，在此把实例传进来即可 —— 白名单仍由
- *    `FX_AUTHORIZED_SOURCES` 环境变量控制，代码中不硬编码源名（红线 R7）。
+ * 🔴 汇率源策略（resolveFxSource 单一入口，三期路线）：
+ *    开发/预览 → PublicRateSource（公开中间价，仅 dev）
+ *    生产初期 → ManualRateSource（银行牌价人工录入，0 采购成本）
+ *    规模化后 → 签约 API 适配器（同接口，域代码零改动）
  *
- * ⚠️ 因此：**当前代码在生产环境无法启动是预期行为**，不是缺陷。
- *    切勿为了「让它起来」而删掉本守卫或填一个假源。
+ * ⚠️ 生产返回 ManualRateSource **不等于**放行：其名仍须显式出现在
+ *    FX_AUTHORIZED_SOURCES，否则照常拒绝启动 —— 启用人工录入路径必须是
+ *    一次显式的运维决策。切勿为了「让它起来」删守卫或填假源。
  */
 function guardFxSource(): void {
   const nodeEnv = process.env['NODE_ENV'] ?? 'development';
 
-  // 开发 / 预览：注入公开中间价源（生产恒返回 undefined，红线 R7 不让它靠近生产）。
-  // 生产要真数据，请在此处换成签约授权源实例 —— 接口不变，域代码零改动。
-  const source = resolvePublicFxSource(process.env);
+  // 按环境解析汇率源（生产恒不给公开源 —— 红线 R7 不让它靠近生产）
+  const source = resolveFxSource(process.env);
 
   // 开发便利：本地没配白名单时，自动把公开源名补进去。
   // ⛔ 只在非生产做 —— 生产白名单必须由部署环境显式声明，不能由代码兜底。

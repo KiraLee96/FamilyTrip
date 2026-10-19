@@ -10,9 +10,11 @@
 
 import type { FxRateSource } from '../source-guard.js';
 import { PUBLIC_RATE_SOURCE_NAME, PublicRateSource } from './public-rate-source.js';
+import { ManualRateSource } from './manual-rate-source.js';
 
 export { PUBLIC_RATE_SOURCE_NAME, PublicRateSource } from './public-rate-source.js';
 export type { PublicRateProvider, PublicRateSourceOptions } from './public-rate-source.js';
+export { MANUAL_RATE_SOURCE_NAME, ManualRateSource } from './manual-rate-source.js';
 
 /** 环境变量：置 '0' 可显式关掉公开源（例如本地想验证「汇率缺失」分支） */
 export const PUBLIC_FX_DISABLED_ENV = 'FX_PUBLIC_SOURCE_DISABLED';
@@ -47,4 +49,28 @@ export function resolvePublicFxSource(
     ...(options.now !== undefined ? { now: options.now } : {}),
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
   });
+}
+
+/**
+ * 汇率源策略总入口（main.ts 唯一调用点）。
+ *
+ * 三期路线：
+ *   开发/预览  → PublicRateSource（中间价，仅本地/预览，生产恒 undefined）
+ *   生产初期  → ManualRateSource（银行牌价人工录入，0 采购成本，口径正确）
+ *   规模化后  → 在此处加签约 API 分支（实现同一接口，域代码零改动）
+ *
+ * ⚠️ 生产返回 ManualRateSource **不等于**闸门放行：它的名字仍须显式出现在
+ *    FX_AUTHORIZED_SOURCES 里，否则 assertFxSourceConfigured 照常拒绝启动
+ *    —— 「启用人工录入路径」必须是一次显式的运维决策，不能默认发生。
+ */
+export function resolveFxSource(
+  env: NodeJS.ProcessEnv = process.env,
+  options: ResolveFxSourceOptions = {},
+): FxRateSource | undefined {
+  const pub = resolvePublicFxSource(env, options);
+  if (pub !== undefined) return pub;
+  if ((env['NODE_ENV'] ?? 'development') === 'production') {
+    return new ManualRateSource();
+  }
+  return undefined;
 }

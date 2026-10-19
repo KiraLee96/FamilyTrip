@@ -39,10 +39,10 @@ module.exports = {
         // ⚠️ 生产缺失 → 拒绝启动（公开默认密钥可伪造任意用户令牌）
         JWT_SECRET: '<填 JWT_SECRET>',
 
-        // 汇率授权源白名单（逗号分隔）。⚠️ 与真实授权源接入是两件事：
-        // 白名单填了但代码未注入源，生产仍拒绝启动——本期采购未定，
-        // 详见 DEPLOY.md 第 0 节 FX 前置。
-        FX_AUTHORIZED_SOURCES: '<填授权源 base URL，接入前留空即无法启动>',
+        // 汇率授权源白名单（源**名称**，逗号分隔；不是 URL）。
+        // 上线初期填 MANUAL_RATE_ENTRY（银行牌价人工录入路径，0 采购成本）；
+        // 采购签约 API 后换成签约源名。留空 → 生产拒绝启动（M3 设计行为）。
+        FX_AUTHORIZED_SOURCES: 'MANUAL_RATE_ENTRY',
 
         // CORS：只放小程序/前端真实来源（勿用 *）
         CORS_ORIGIN: 'https://<填 API 域名>',

@@ -22,7 +22,10 @@ function jsonRes(body: unknown, ok = true): FakeResponse {
 }
 
 /** 可控时钟：now() 返回当前假时间，advance() 拨快 */
-function fakeClock(iso = '2026-10-19T00:00:00.000Z') {
+function fakeClock(iso = '2026-10-19T00:00:00.000Z'): {
+  now: () => Date;
+  advance: (ms: number) => void;
+} {
   let t = new Date(iso);
   return {
     now: (): Date => t,
