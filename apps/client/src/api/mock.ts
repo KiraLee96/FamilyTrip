@@ -18,6 +18,7 @@ import type {
   Family,
   FamilyDetail,
   FamilyMember,
+  FxRate,
   ItineraryBlock,
   ItineraryItem,
   Item,
@@ -605,6 +606,38 @@ const MEMORIES: MemoryArchive[] = [
   },
 ];
 
+/**
+ * Mock 汇率表（1 CNY = X 外币），2026-10 的近似值。
+ *
+ * 只服务界面预览；真实数据一律走 `GET /fx/rate`。
+ * 非 CNY 基准用交叉汇率现算：rate(base→quote) = (CNY→quote) ÷ (CNY→base)。
+ * 🔴 别把这里的数字当真实汇率 —— 它们连中间价都不是，纯为了让界面有数可渲染。
+ */
+const MOCK_FX_CNY_BASE: Record<string, string> = {
+  CNY: '1',
+  JPY: '20.85000000',
+  USD: '0.14020000',
+  EUR: '0.12840000',
+  GBP: '0.10960000',
+  HKD: '1.09100000',
+  KRW: '195.30000000',
+  THB: '4.62000000',
+  SGD: '0.18530000',
+  AUD: '0.21400000',
+  TWD: '4.48000000',
+  MYR: '0.62900000',
+};
+
+/** 交叉汇率；币种不在表内返回 undefined（由调用方决定怎么降级） */
+function mockRateOf(base: string, quote: string): string | undefined {
+  if (base === quote) return '1';
+  const toQuote = MOCK_FX_CNY_BASE[quote];
+  const toBase = MOCK_FX_CNY_BASE[base];
+  if (toQuote === undefined || toBase === undefined) return undefined;
+  const v = Number(toQuote) / Number(toBase);
+  return Number.isFinite(v) && v > 0 ? v.toFixed(8) : undefined;
+}
+
 /** 模拟网络延迟，让 loading 态真实可见 */
 const delay = (ms = 180): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -1175,6 +1208,30 @@ export function createMockClient(): ApiClient {
       if (i < 0) throw new ApiError(404, '花销不存在');
       state.expenses.splice(i, 1);
       await delay();
+    },
+
+    // ---- fx（汇率） ----
+    async getFxRate(input) {
+      if (input.tier !== undefined && input.tier !== 'SPOT_SELL') {
+        throw new ApiError(400, `档位 ${input.tier} 本期未启用（唯一口径 SPOT_SELL）`);
+      }
+      const base = input.base.toUpperCase();
+      const quote = input.quote.toUpperCase();
+      const rate = mockRateOf(base, quote);
+      if (rate === undefined) {
+        // 对齐后端：缺汇率回 5006，界面据此提示「暂无汇率」，绝不 1:1 兜底
+        throw new ApiError(5006, `汇率 ${base}→${quote} ${input.date} 缺失`);
+      }
+      return respond<FxRate>({
+        base,
+        quote,
+        rate,
+        rateDate: input.date,
+        tier: 'SPOT_SELL',
+        rateTime: new Date().toISOString(),
+        source: 'MOCK',
+        fromCache: false,
+      });
     },
     // ---- item（个人物品库，PRIVATE 域） ----
     async listItems(query) {

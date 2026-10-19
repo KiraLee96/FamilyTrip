@@ -23,6 +23,7 @@ import type {
   Family,
   FamilyDetail,
   FamilyMember,
+  FxRate,
   ItineraryBlock,
   ItineraryItem,
   Item,
@@ -33,6 +34,7 @@ import type {
   MemorySnapshot,
   MemoryType,
   PresignUploadResult,
+  RateTier,
   TransportMode,
   Trip,
   TripAccessLevel,
@@ -272,6 +274,24 @@ export interface ApiClient {
   ): Promise<Expense>;
   /** DELETE /expenses/:id */
   deleteExpense(id: string): Promise<void>;
+
+  // ---- fx（汇率） ----
+  /**
+   * GET /fx/rate —— 取某日汇率。
+   *
+   * 🔴 `date` 必传（YYYY-MM-DD）：汇率是快照型数据，不给日期就等于让后端
+   *    猜口径。缺汇率时后端回 FX_SOURCE_MISCONFIGURED，界面应提示「暂无汇率」
+   *    而不是回退成 1:1。
+   * 🔴 返回里的 `tier` 是**实际口径**，调用方不得假设。
+   */
+  getFxRate(input: {
+    base: string;
+    quote: string;
+    date: string;
+    tier?: RateTier;
+    /** 跳过服务端缓存强制回源（运维排查用，正常查询别开） */
+    forceRefresh?: boolean;
+  }): Promise<FxRate>;
 
   // ---- item（个人物品库，PRIVATE 域） ----
   /** GET /items（默认只看本人；mineOnly=false 时代管成员的也可见） */

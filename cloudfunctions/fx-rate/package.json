@@ -1,0 +1,8 @@
+{
+  "name": "fx-rate",
+  "version": "1.0.0",
+  "description": "汇率取数（open.er-api → frankfurter 回退）",
+  "main": "index.js",
+  "private": true,
+  "dependencies": {}
+}

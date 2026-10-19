@@ -288,6 +288,35 @@ export interface ExpenseSummary {
   byCategory: Array<{ category: string; amountCny: string }>;
 }
 
+// ─── 汇率（对齐 fx 域 RateView / FxRate） ──────────────────────────
+
+/**
+ * 汇率档位。
+ * 🔴 本期唯一口径是 `SPOT_SELL`（现汇卖出价），其余枚举仅保留占位，
+ *    后端 `resolveTier()` 会直接拒绝。
+ */
+export type RateTier = 'SPOT_SELL' | 'MIDDLE' | 'CASH_BUY';
+
+/**
+ * 汇率视图（`GET /fx/rate` 的 `data.rate`）。
+ *
+ * `rate` 是字符串不是 number —— 与后端一致，避免浮点误差；
+ * 换算请走 `utils/fx.ts` 的 `convertAmount()`，不要自己 `Number()` 后乘。
+ */
+export interface FxRate {
+  base: string;
+  quote: string;
+  /** 方向：1 base = rate quote */
+  rate: string;
+  rateDate: string;
+  tier: RateTier;
+  /** 取数时刻（ISO 8601） */
+  rateTime: string;
+  /** 来源标识；`IDENTITY` 表示同币种恒等 1 */
+  source: string;
+  fromCache: boolean;
+}
+
 /** 个人物品（物品库条目 —— PRIVATE 域，仅本人/代管人可见） */
 export interface Item {
   id: string;

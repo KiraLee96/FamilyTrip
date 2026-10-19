@@ -26,6 +26,7 @@ import type {
   Family,
   FamilyDetail,
   FamilyMember,
+  FxRate,
   ItineraryBlock,
   ItineraryItem,
   Item,
@@ -724,6 +725,21 @@ export function createHttpClient(): ApiClient {
     },
     deleteExpense: async (id) => {
       await requestVoid('DELETE', `/expenses/${id}`);
+    },
+
+    // ---- fx ----
+    // 后端信封：data = { rate }。汇率本身是只读配置，无写接口暴露给客户端
+    //（录入走运维 / 服务端人工路径，客户端只读）。
+    getFxRate: async (input) => {
+      const parts = [
+        `base=${encodeURIComponent(input.base)}`,
+        `quote=${encodeURIComponent(input.quote)}`,
+        `date=${encodeURIComponent(input.date)}`,
+      ];
+      if (input.tier !== undefined) parts.push(`tier=${input.tier}`);
+      if (input.forceRefresh === true) parts.push('forceRefresh=true');
+      const r = await request<{ rate: FxRate }>('GET', `/fx/rate?${parts.join('&')}`);
+      return r.rate;
     },
     listItems: async (query) => {
       // 信封 { items, meta }；mineOnly 服务端默认 true（PRIVATE 短路域只认 ownerId）
