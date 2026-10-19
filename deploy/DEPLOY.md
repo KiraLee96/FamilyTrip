@@ -98,7 +98,12 @@ pm2 logs family-trip --lines 50
 
 ```bash
 curl -s http://127.0.0.1:3000/health   # 本机自测：{"code":0,"data":{"status":"up"},...}
-pm2 save   # 开机自启（XLFamily 的 pm2 save 不受影响，各自进程独立）
+
+# 开机自启：startup + save 两步都要，缺一不可
+# 🔴 pm2 save 单独不救命——没有 systemd 单元，重启后 pm2 daemon 不起，进程全丢
+#    （2026-10-19 实测确认：该机 XLFamily 由 root 的 pm2 管理，ubuntu 侧无任何单元）
+sudo env PATH=$PATH:/usr/bin pm2 startup systemd -u ubuntu --hp /home/ubuntu
+pm2 save
 ```
 
 ## 5. nginx + 证书（约 15 分钟，依赖域名备案）
