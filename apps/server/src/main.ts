@@ -6,10 +6,12 @@ import { loadAuthorizedSources } from './common/fx/rate-tier.js';
 import { assertFxSourceConfigured } from './common/fx/source-guard.js';
 import {
   installAppDriver,
+  installFxSource,
   installWechatExchanger,
   installTokenSecret,
   DEFAULT_DEV_SECRET,
 } from './composition-root.js';
+import { resolvePublicFxSource } from './common/fx/sources/index.js';
 import { resolveAppDriver } from './common/db/resolve-driver.js';
 import { resolveWechatExchanger } from './domains/auth/wechat-jscode2session.js';
 import { bigintSafeReplacer } from './common/envelope/envelope.js';
@@ -29,13 +31,36 @@ import type { AppDriver } from './common/db/resolve-driver.js';
  *    切勿为了「让它起来」而删掉本守卫或填一个假源。
  */
 function guardFxSource(): void {
-  // 先从环境变量装载授权源白名单（FX_AUTHORIZED_SOURCES）
+  const nodeEnv = process.env['NODE_ENV'] ?? 'development';
+
+  // 开发 / 预览：注入公开中间价源（生产恒返回 undefined，红线 R7 不让它靠近生产）。
+  // 生产要真数据，请在此处换成签约授权源实例 —— 接口不变，域代码零改动。
+  const source = resolvePublicFxSource(process.env);
+
+  // 开发便利：本地没配白名单时，自动把公开源名补进去。
+  // ⛔ 只在非生产做 —— 生产白名单必须由部署环境显式声明，不能由代码兜底。
+  if (source !== undefined && nodeEnv !== 'production') {
+    const configured = (process.env['FX_AUTHORIZED_SOURCES'] ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!configured.includes(source.name)) {
+      process.env['FX_AUTHORIZED_SOURCES'] = [...configured, source.name].join(',');
+      console.warn(
+        `[family-trip] 已自动登记开发汇率源 "${source.name}"（仅非生产；生产须显式配置 FX_AUTHORIZED_SOURCES）`,
+      );
+    }
+  }
+
+  // 先装载白名单，再登记源，最后交给 fail-fast 裁决
   loadAuthorizedSources(process.env);
+  installFxSource(source);
+
   // 生产环境无合规源 → 抛 FxSourceMisconfiguredError，进程启动失败
   // 开发环境无源 → 回落占位源（devFallbackSource），不阻断自测
   assertFxSourceConfigured({
-    nodeEnv: process.env.NODE_ENV ?? 'development',
-    sources: [], // ⛔ 授权源待接入；此处不写死任何源名（红线 R7）
+    nodeEnv,
+    sources: source !== undefined ? [source] : [],
   });
 }
 

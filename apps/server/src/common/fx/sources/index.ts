@@ -1,0 +1,50 @@
+/**
+ * 汇率源装配入口
+ * ============================================================================
+ * 只做一件事：按环境决定「要不要注入公开源」。
+ *
+ * 🔴 生产恒返回 undefined —— 不是漏写，是刻意让 `assertFxSourceConfigured()`
+ *    的 fail-fast 接管（M3 派发单 §3.2）。生产要接授权源，请在这里加分支，
+ *    而不是放宽本函数的返回条件。
+ */
+
+import type { FxRateSource } from '../source-guard.js';
+import { PUBLIC_RATE_SOURCE_NAME, PublicRateSource } from './public-rate-source.js';
+
+export { PUBLIC_RATE_SOURCE_NAME, PublicRateSource } from './public-rate-source.js';
+export type { PublicRateProvider, PublicRateSourceOptions } from './public-rate-source.js';
+
+/** 环境变量：置 '0' 可显式关掉公开源（例如本地想验证「汇率缺失」分支） */
+export const PUBLIC_FX_DISABLED_ENV = 'FX_PUBLIC_SOURCE_DISABLED';
+/** 环境变量：覆盖源标识（须同步写入 FX_AUTHORIZED_SOURCES） */
+export const PUBLIC_FX_NAME_ENV = 'FX_PUBLIC_SOURCE_NAME';
+
+export interface ResolveFxSourceOptions {
+  /** 注入 fetch（测试用） */
+  fetchImpl?: typeof fetch;
+  /** 注入时钟（测试用） */
+  now?: () => Date;
+  timeoutMs?: number;
+}
+
+/**
+ * 开发 / 测试环境的公开源；生产恒为 undefined。
+ *
+ * @returns 可注入 `buildApp({ fxSource })` / `installFxSource()` 的实例
+ */
+export function resolvePublicFxSource(
+  env: NodeJS.ProcessEnv = process.env,
+  options: ResolveFxSourceOptions = {},
+): FxRateSource | undefined {
+  // 生产绝不注入（红线 R7）
+  if ((env['NODE_ENV'] ?? 'development') === 'production') return undefined;
+  if (env[PUBLIC_FX_DISABLED_ENV] === '0') return undefined;
+
+  const name = env[PUBLIC_FX_NAME_ENV]?.trim() ?? PUBLIC_RATE_SOURCE_NAME;
+  return new PublicRateSource({
+    name: name === '' ? PUBLIC_RATE_SOURCE_NAME : name,
+    ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
+    ...(options.now !== undefined ? { now: options.now } : {}),
+    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+  });
+}

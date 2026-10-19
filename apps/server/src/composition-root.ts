@@ -160,6 +160,30 @@ export function clearInstalledWechatExchanger(): void {
 }
 
 /**
+ * 进程级汇率源登记位（与驱动 / 微信 exchanger 同模式）。
+ *
+ * 🔴 为什么不能省掉这层：
+ *    `CompositionModule` 的工厂签名是 `() => buildApp()`，带不了参数；
+ *    而汇率源要在 `main.ts` 里先做环境判定（生产禁注入）再交给组合根。
+ *    没有登记位，`buildApp()` 永远拿不到 `options.fxSource`，M3 的 fail-fast
+ *    会一直把「未注入任何源」当成既成事实。
+ *
+ * ⚠️ 生产环境 `main.ts` 不会登记公开源 —— 登记 `undefined` 是显式回落
+ *    `devFallbackSource`，让开发自测不因缺源而全盘不可用。
+ */
+let registeredFxSource: FxRateSource | undefined;
+
+/** 由 `main.ts` 调用，登记进程级汇率源；传 `undefined` = 显式无源 */
+export function installFxSource(source: FxRateSource | undefined): void {
+  registeredFxSource = source;
+}
+
+/** 仅供测试清理全局状态 */
+export function clearInstalledFxSource(): void {
+  registeredFxSource = undefined;
+}
+
+/**
  * 进程级 JWT 签名密钥登记位（与驱动同模式）。
  *
  * 🔴 `DEFAULT_DEV_SECRET` 是源码里的公开常量，生产用它等于允许任何人
@@ -191,17 +215,12 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
   loadAuthorizedSources(process.env);
 
   // ③ M3 fail-fast：生产无合规源直接拒绝启动
-  if (options.fxSource !== undefined) {
-    assertFxSourceConfigured({
-      nodeEnv: process.env.NODE_ENV ?? 'development',
-      sources: [options.fxSource],
-    });
-  } else {
-    assertFxSourceConfigured({
-      nodeEnv: process.env.NODE_ENV ?? 'development',
-      sources: [],
-    });
-  }
+  //    解析优先级：显式入参（测试 / 多实例） > 进程登记位（`main.ts` 注入）
+  const fxSource = options.fxSource ?? registeredFxSource;
+  assertFxSourceConfigured({
+    nodeEnv: process.env.NODE_ENV ?? 'development',
+    sources: fxSource !== undefined ? [fxSource] : [],
+  });
 
   const driver = options.driver ?? registeredDriver ?? new MemoryTableDriver();
   const tokenSecret = options.tokenSecret ?? registeredTokenSecret ?? DEFAULT_DEV_SECRET;
@@ -283,7 +302,7 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
   });
   const fxDomain = createFxDomain({
     ...common,
-    ...(options.fxSource !== undefined ? { source: options.fxSource } : {}),
+    ...(fxSource !== undefined ? { source: fxSource } : {}),
   });
   const memoryDomain = createMemoryDomain(common);
 

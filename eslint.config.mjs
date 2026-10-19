@@ -12,6 +12,9 @@ export default tseslint.config(
       '**/.git/**',
       '**/coverage/**',
       '**/*.min.js',
+      // 微信云函数：CommonJS JS，运行在云运行时（非 TS 项目、非本仓库构建链），
+      // 不纳入 typescript-eslint projectService 管辖；改动走人工审查 + 云函数自身部署校验
+      'cloudfunctions/**',
     ],
   },
   js.configs.recommended,
