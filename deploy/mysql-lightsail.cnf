@@ -1,0 +1,27 @@
+# FamilyTrip 同机 MySQL 降配（2G 内存 / XLFamily 共机场景）
+# ============================================================================
+# 用法：cp mysql-lightsail.cnf /etc/mysql/mysql.conf.d/99-family-trip.cnf
+#      sudo systemctl restart mysql
+#
+# 目标：MySQL 常驻内存压在 ~350MB 以内，给 NestJS（≤256MB）+ XLFamily
+#      + 系统留出余量。这些参数全部可在运行时调，不用重建库。
+
+[mysqld]
+# ── 内存三件套（默认值在 2G 机器上会吃到 600MB+）──────────────
+innodb_buffer_pool_size   = 128M      # 默认 128M；家庭量级数据+索引 < 1GB，命中率仍高
+performance_schema         = OFF      # 省 ~100-150MB；轻量机不值得开着
+max_connections            = 50       # NestJS 单实例连接池约 10-20 个连接，50 够且有冗余
+
+# ── 日志/缓存瘦身 ────────────────────────────────────────────
+innodb_redo_log_capacity   = 96M      # MySQL 8.0.30+/8.4 的 redo 日志容量参数
+table_open_cache           = 256      # 默认 4000，轻负载下 256 足够
+tmp_table_size             = 16M
+max_heap_table_size        = 16M
+
+# ── 字符集（与 schema.prisma 的 utf8mb4 口径一致）────────────
+character-set-server       = utf8mb4
+collation-server           = utf8mb4_0900_ai_ci
+
+# ── 安全基线 ────────────────────────────────────────────────
+bind-address               = 127.0.0.1 # 只听本地：pm2 进程同机访问，不对外
+# skip-networking 更严格，但官方包默认走 socket + bind 组合，保持默认即可

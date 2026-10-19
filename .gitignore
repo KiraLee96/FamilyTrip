@@ -15,6 +15,9 @@ coverage/
 .env.*.local
 !.env.example
 
+# 部署：pm2 生产配置含真实凭证，只提交 .example 模板
+deploy/ecosystem.config.js
+
 # 微信小程序私钥配置（含 appid / privateKey / uploadKey 等，禁止提交）
 apps/client/project.private.config.json
 # monorepo 根入口的本地私有配置（libVersion 等 IDE 状态，非资产）

@@ -1,0 +1,64 @@
+/**
+ * FamilyTrip 生产 pm2 配置（模板）
+ * ============================================================================
+ * 用法：
+ *   1. cp ecosystem.config.js.example ecosystem.config.js
+ *   2. 把所有 <...> 占位符换成真实值（见 DEPLOY.md 第 0 节）
+ *   3. pm2 start ecosystem.config.js && pm2 save
+ *
+ * 🔴 本文件填上真实值后含生产凭证，**严禁进 git**（.gitignore 已排除
+ *    ecosystem.config.js，只保留 .example 模板）。
+ *
+ * 🔴 cwd 必须是 apps/server：load-env.ts 按 process.cwd() 找 .env，
+ *    cwd 错了 .env 静默失效，服务会拿默认值跑（不报错，最危险）。
+ *    本配置走纯环境变量注入，不依赖 .env 文件——两者都配时进程环境优先。
+ */
+module.exports = {
+  apps: [
+    {
+      name: 'family-trip',
+      script: 'dist/main.js',
+      cwd: '/home/ubuntu/family-trip/apps/server',
+
+      // 生产模式：驱动 resolveAppDriver / resolveWechatExchanger /
+      // resolveTokenSecret 的 fail-fast 全部由 NODE_ENV=production 激活
+      env: {
+        NODE_ENV: 'production',
+        PORT: '3000',
+
+        // 数据库：专用最小权限账号（勿用 root）
+        // 格式：mysql://family_trip:<密码>@127.0.0.1:3306/family_trip
+        DATABASE_URL: 'mysql://family_trip:<填数据库密码>@127.0.0.1:3306/family_trip',
+
+        // 微信小程序（AppID 已知；SECRET 从 mp.weixin.qq.com 开发设置获取）
+        // ⚠️ 只配其中一个 → 启动时报「必须成对配置」并拒绝启动
+        WECHAT_APPID: 'wx3567e523d83206e4',
+        WECHAT_SECRET: '<填 WECHAT_SECRET>',
+
+        // 令牌签名密钥：openssl rand -base64 48 生成
+        // ⚠️ 生产缺失 → 拒绝启动（公开默认密钥可伪造任意用户令牌）
+        JWT_SECRET: '<填 JWT_SECRET>',
+
+        // 汇率授权源白名单（逗号分隔）。⚠️ 与真实授权源接入是两件事：
+        // 白名单填了但代码未注入源，生产仍拒绝启动——本期采购未定，
+        // 详见 DEPLOY.md 第 0 节 FX 前置。
+        FX_AUTHORIZED_SOURCES: '<填授权源 base URL，接入前留空即无法启动>',
+
+        // CORS：只放小程序/前端真实来源（勿用 *）
+        CORS_ORIGIN: 'https://<填 API 域名>',
+
+        // 媒体公网基址：头像等 fileKey 拼成可访问 URL（对象存储/CDN 域名）
+        MEDIA_PUBLIC_BASE_URL: 'https://<填媒体域名>',
+      },
+
+      // 2G 内存机器：限制 Node 堆上限，防失控把 XLFamily 挤死
+      node_args: '--max-old-space-size=256',
+
+      // 崩溃自动重启；内存软上限 320M（超过先于 OOM 重启）
+      max_memory_restart: '320M',
+      autorestart: true,
+      max_restarts: 10,
+      min_uptime: '10s',
+    },
+  ],
+};
