@@ -51,6 +51,14 @@ export type ListMediaQueryInput = z.infer<typeof listMediaQuerySchema>;
 /** 预签名上传位（客户端直传前取） */
 export const presignUploadSchema = z.object({
   familyId: idInput,
+  /**
+   * D-2026-10-22-01 §2.3：可选行程归属。
+   *
+   * 前端「先取上传位再登记」的时序决定它不一定知道 tripId，
+   * 故此处可选；一旦带上，服务端即按该行程的成员状态做写入门判定
+   * （`confirm` 是必守点，`presign` 是提前拦截）。
+   */
+  tripId: idInput.optional(),
   fileName: z.string().min(1).max(256),
   mimeType: z.string().min(3).max(128),
   byteSize: z

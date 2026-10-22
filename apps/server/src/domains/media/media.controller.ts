@@ -83,6 +83,7 @@ export function createMediaDomain(o: MediaDomainOptions): MediaDomain {
         const b = input as PresignUploadInput;
         const r = await service.presign(ctx.userId!, {
           familyId: BigInt(b.familyId),
+          ...(b.tripId !== undefined ? { tripId: BigInt(b.tripId) } : {}),
           fileName: b.fileName,
           mimeType: b.mimeType,
           byteSize: b.byteSize,

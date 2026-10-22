@@ -17,6 +17,7 @@ import type { Row } from '../../common/db/table-client.js';
 import type { DomainContext, TxHandle } from '../domain-context.js';
 import { serializeRow } from '../domain-context.js';
 import { normalizePageQuery, buildPageMeta } from '../../common/pagination/pagination.js';
+import { randomInviteCode } from '../../common/invite-code.js';
 
 export interface FamilyServiceOptions {
   ctx: DomainContext;
@@ -178,9 +179,15 @@ export class FamilyService {
       await this.assertOwner(tx, familyId, actorId);
       const now = await tx.db.dbNow();
 
-      await tx.db.update('family', { id: familyId, deletedAt: null }, { deletedAt: now, updatedAt: now });
+      await tx.db.update(
+        'family',
+        { id: familyId, deletedAt: null },
+        { deletedAt: now, updatedAt: now },
+      );
 
-      const members = await tx.db.findMany('familyMember', { where: { familyId, deletedAt: null } });
+      const members = await tx.db.findMany('familyMember', {
+        where: { familyId, deletedAt: null },
+      });
       for (const m of members) {
         await tx.db.update('familyMember', { id: m['id'] }, { deletedAt: now });
       }
@@ -211,17 +218,35 @@ export class FamilyService {
   }
 
   /** 用邀请码加入 */
-  async join(userId: bigint, input: { inviteCode: string; displayName?: string }): Promise<{ family: Record<string, unknown>; member: Record<string, unknown>; alreadyMember: boolean; }> {
+  async join(
+    userId: bigint,
+    input: { inviteCode: string; displayName?: string },
+  ): Promise<{
+    family: Record<string, unknown>;
+    member: Record<string, unknown>;
+    alreadyMember: boolean;
+  }> {
     return this.o.ctx.tx(async (tx) => {
-      const family = await tx.db.findUnique('family', { inviteCode: input.inviteCode, deletedAt: null });
+      const family = await tx.db.findUnique('family', {
+        inviteCode: input.inviteCode,
+        deletedAt: null,
+      });
       if (!family) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
       const familyId = family['id'] as bigint;
       const now = await tx.db.dbNow();
 
       // 已是成员 → 幂等返回，不重复插
-      const existing = await tx.db.findUnique('familyMember', { familyId, userId, deletedAt: null });
+      const existing = await tx.db.findUnique('familyMember', {
+        familyId,
+        userId,
+        deletedAt: null,
+      });
       if (existing) {
-        return { family: serializeRow(family, FAMILY_BIGINT_FIELDS), member: serializeRow(existing, MEMBER_BIGINT_FIELDS), alreadyMember: true };
+        return {
+          family: serializeRow(family, FAMILY_BIGINT_FIELDS),
+          member: serializeRow(existing, MEMBER_BIGINT_FIELDS),
+          alreadyMember: true,
+        };
       }
 
       const memberId = tx.write.nextId();
@@ -266,13 +291,17 @@ export class FamilyService {
    *   · 真实成员：给 `userId`
    *   · 虚拟成员：`isVirtual=true` + `displayName`，`user_id` 留空
    */
-  async addMember(familyId: bigint, actorId: bigint, input: {
-    userId?: string;
-    displayName?: string;
-    isVirtual: boolean;
-    role: 'OWNER' | 'MEMBER';
-    managedBy?: string;
-  }): Promise<Record<string, unknown>> {
+  async addMember(
+    familyId: bigint,
+    actorId: bigint,
+    input: {
+      userId?: string;
+      displayName?: string;
+      isVirtual: boolean;
+      role: 'OWNER' | 'MEMBER';
+      managedBy?: string;
+    },
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       await this.assertMember(tx, familyId, actorId); // 任意成员可加
       const now = await tx.db.dbNow();
@@ -379,24 +408,44 @@ export class FamilyService {
    *
    * 🔴 不能反过来（先升后降），否则中途失败会留下两个 OWNER。
    */
-  async transferOwnership(familyId: bigint, actorId: bigint, newOwnerMemberId: bigint): Promise<Record<string, unknown>> {
+  async transferOwnership(
+    familyId: bigint,
+    actorId: bigint,
+    newOwnerMemberId: bigint,
+  ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       await this.assertOwner(tx, familyId, actorId);
       const now = await tx.db.dbNow();
 
-      const target = await tx.db.findUnique('familyMember', { id: newOwnerMemberId, familyId, deletedAt: null });
+      const target = await tx.db.findUnique('familyMember', {
+        id: newOwnerMemberId,
+        familyId,
+        deletedAt: null,
+      });
       if (!target) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
       if (target['isVirtual'] === true) {
         throw new AppError(ErrorCode.FORBIDDEN, '虚拟成员不能成为户主');
       }
 
       // 1. 先降旧主
-      const currentOwner = await tx.db.findUnique('familyMember', { familyId, userId: actorId, deletedAt: null });
+      const currentOwner = await tx.db.findUnique('familyMember', {
+        familyId,
+        userId: actorId,
+        deletedAt: null,
+      });
       if (currentOwner) {
-        await tx.db.update('familyMember', { id: currentOwner['id'] }, { role: 'MEMBER', updatedAt: now });
+        await tx.db.update(
+          'familyMember',
+          { id: currentOwner['id'] },
+          { role: 'MEMBER', updatedAt: now },
+        );
       }
       // 2. 再升新主
-      await tx.db.update('familyMember', { id: newOwnerMemberId }, { role: 'OWNER', updatedAt: now });
+      await tx.db.update(
+        'familyMember',
+        { id: newOwnerMemberId },
+        { role: 'OWNER', updatedAt: now },
+      );
       // 3. family.owner_id 同步
       await tx.db.update('family', { id: familyId }, { ownerId: target['userId'], updatedAt: now });
 
@@ -460,14 +509,25 @@ export class FamilyService {
   // ── 内部 ────────────────────────────────────────────────
 
   private async assertOwner(tx: TxHandle, familyId: bigint, actorId: bigint): Promise<void> {
-    const owner = await tx.db.findUnique('familyMember', { familyId, userId: actorId, role: 'OWNER', deletedAt: null });
+    const owner = await tx.db.findUnique('familyMember', {
+      familyId,
+      userId: actorId,
+      role: 'OWNER',
+      deletedAt: null,
+    });
     if (!owner) throw new AppError(ErrorCode.FORBIDDEN, '仅户主可执行该操作');
   }
 
   private async assertMember(tx: TxHandle, familyId: bigint, actorId: bigint): Promise<void> {
-    const m = await tx.db.findUnique('familyMember', { familyId, userId: actorId, deletedAt: null });
+    const m = await tx.db.findUnique('familyMember', {
+      familyId,
+      userId: actorId,
+      deletedAt: null,
+    });
     if (!m) {
-      const managed = await tx.db.findMany('familyMember', { where: { familyId, managedBy: actorId, deletedAt: null } });
+      const managed = await tx.db.findMany('familyMember', {
+        where: { familyId, managedBy: actorId, deletedAt: null },
+      });
       if (managed.length === 0) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
     }
   }
@@ -478,7 +538,7 @@ export class FamilyService {
   }
 
   private async uniqueInviteCode(tx: TxHandle): Promise<string> {
-    const gen = this.o.generateInviteCode ?? (() => randomCode(8));
+    const gen = this.o.generateInviteCode ?? (() => randomInviteCode());
     for (let i = 0; i < 8; i += 1) {
       const code = gen();
       const dup = await tx.db.findUnique('family', { inviteCode: code, deletedAt: null });
@@ -512,14 +572,4 @@ export class FamilyService {
       createdAt: e.at,
     });
   }
-}
-
-/** 邀请码：去掉易混淆字符（0/O/1/I/l），降低口述出错率 */
-function randomCode(len: number): string {
-  const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-  let out = '';
-  for (let i = 0; i < len; i += 1) {
-    out += alphabet[Math.floor(Math.random() * alphabet.length)];
-  }
-  return out;
 }

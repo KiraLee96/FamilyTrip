@@ -6,10 +6,11 @@
  * 驱动：内存驱动（MemoryTableDriver）—— 与既有集成测试同口径，
  * 落库物理行可经 dumpTable 断言。
  *
- * 关于 C3（旧邀请码 join）：本版 Trip 模型无邀请码列、无 POST /trips/join
- * 路由（D-2026-10-14-02「行程邀请码三端点」尚未落地），故无加入路径可越权。
- * 下方以「路由不存在」断言守住这个事实：该域上线时本用例失败，即提醒
- * 其 join 必须校验 trip.deletedAt。
+ * 关于 C3（旧邀请码 join）：D-2026-10-14-02「行程邀请码三端点」已于
+ * D-2026-10-22-01 落地，故本用例改为**实跑**：删掉行程后再用它的邀请码
+ * join 必须 404（`joinByInvite` 的查询恒带 `deletedAt: null`）。
+ * 这是原「路由不存在即无越权路径」守卫的真实版 —— 若哪天有人在 join 的
+ * 查询里漏了 `deletedAt`，这条会立刻红。
  *
  * 关于 C6 的 403 口径：行程成员（非主导者）的 DELETE 会通过权限网关
  * （TRIP 维度放行）后由 service.assertLeaderOrCreator 抛 403；
@@ -284,10 +285,25 @@ describe('D-2026-10-15-01 · P1 行程删除级联（C1-C7）', () => {
     expect(got.httpStatus).toBe(404);
   });
 
-  it('C3：行程邀请码 join 路由尚不存在（D-2026-10-14-02 未落地）——无越权加入路径', async () => {
+  it('C3：删除行程后其邀请码不可再用（D-2026-10-14-02 已落地）→ join 404', async () => {
     const app = freshApp();
-    const joinRoute = app.routes.find((r) => r.method === 'POST' && r.path === '/trips/join');
-    expect(joinRoute).toBeUndefined();
+    const s = await scaffold(app, 'c3');
+    const invite = mustOk<{ inviteCode: string }>(
+      await app.dispatch(req('GET', `/trips/${s.tripId}/invite`, { token: s.token })),
+    );
+    await app.dispatch(req('DELETE', `/trips/${s.tripId}`, { token: s.token }));
+
+    const outsider = mustOk<{ token: string }>(
+      await app.dispatch(req('POST', '/auth/login', { body: { code: 'c3-outsider' } })),
+    );
+    const r = await app.dispatch(
+      req('POST', '/trips/join', {
+        token: outsider.token,
+        body: { inviteCode: invite.inviteCode },
+      }),
+    );
+    // 已软删的行程不再被 inviteCode 命中 → 邀请码无效（404），无越权加入路径
+    expect(r.httpStatus).toBe(404);
   });
 
   it('C4：删除行程后 GET /expenses?tripId=<id> 空集；GET /expenses/summary 不报 500', async () => {

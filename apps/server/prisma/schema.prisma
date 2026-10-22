@@ -231,6 +231,10 @@ model Trip {
   actualJson   Json? @map("actual_json")
   /// A18：乐观锁版本号（保护 actual_json 并发写）
   version      BigInt @default(1) @db.UnsignedBigInt
+  /// D-2026-10-14-02：行程邀请码（8 位，去易混字符；NULL=尚未生成，读取时懒生成）
+  inviteCode   String? @map("invite_code") @db.VarChar(16)
+  /// D-2026-10-14-02：邀请码最近重置时间（无重置=创建时间；不复用 updated_at）
+  inviteUpdatedAt DateTime? @map("invite_updated_at") @db.DateTime(3)
   createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
   deletedAt    DateTime? @map("deleted_at") @db.DateTime(3)
@@ -249,6 +253,7 @@ model Trip {
   histories TripHistory[]
   memories  MemoryArchive[]
 
+  @@unique([inviteCode, deletedAt], name: "trip_invite_code_deleted_at_key")
   @@index([familyId, status, deletedAt], name: "idx_trip_family_status")
   @@index([leaderId], name: "idx_trip_leader")
   @@index([updatedAt], name: "idx_trip_updated")

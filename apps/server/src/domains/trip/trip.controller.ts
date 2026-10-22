@@ -9,6 +9,7 @@ import {
   addTripMemberSchema,
   createTripSchema,
   finishTripSchema,
+  joinTripSchema,
   leaveTripSchema,
   listTripQuerySchema,
   setLeaderSchema,
@@ -16,9 +17,10 @@ import {
   updateTripSchema,
   type CreateTripInput,
   type FinishTripInput,
+  type JoinTripInput,
   type LeaveTripInput,
   type ListTripQueryInput,
-  type SetLeaderInput
+  type SetLeaderInput,
 } from './trip.schema.js';
 
 export interface TripDomainOptions {
@@ -123,7 +125,10 @@ export function createTripDomain(o: TripDomainOptions): TripDomain {
       schema: finishTripSchema as never,
       handler: async (ctx, input) => {
         const b = input as FinishTripInput;
-        const r = await service.finish(ctx.userId!, ctx.resourceId!, { version: b.version, actual: b.actual });
+        const r = await service.finish(ctx.userId!, ctx.resourceId!, {
+          version: b.version,
+          actual: b.actual,
+        });
         return { data: r, meta: { updatedAt: r.updatedAt } };
       },
     },
@@ -203,9 +208,41 @@ export function createTripDomain(o: TripDomainOptions): TripDomain {
       handler: async (ctx, input) => {
         const b = input as LeaveTripInput;
         const r = await service.leave(ctx.userId!, ctx.resourceId!, {
-          successorMemberId: b.successorMemberId !== undefined ? BigInt(b.successorMemberId) : undefined,
+          successorMemberId:
+            b.successorMemberId !== undefined ? BigInt(b.successorMemberId) : undefined,
         });
         return { data: r, meta: { updatedAt: r.updatedAt } };
+      },
+    },
+
+    // ── 邀请码：取（成员可读）──────────────────────────────
+    {
+      method: 'GET',
+      path: '/trips/:id/invite',
+      auth: { public: false, resourceType: 'trip', mode: 'READ', ref: tripRef },
+      handler: async (ctx) => ({ data: await service.getInvite(ctx.userId!, ctx.resourceId!) }),
+    },
+
+    // ── 邀请码：重置（旧码作废）────────────────────────────
+    {
+      method: 'POST',
+      path: '/trips/:id/invite/reset',
+      auth: { public: false, resourceType: 'trip', mode: 'WRITE', ref: tripRef },
+      handler: async (ctx) => ({ data: await service.resetInvite(ctx.userId!, ctx.resourceId!) }),
+    },
+
+    // ── 凭码加入（外部同行者；GRP-02）──────────────────────
+    // 与 POST /families/join 完全同构：需登录，但不要求已是该行程成员
+    // （加入后才成为成员）。`idParam: '__none__'` 让链条第 5 段跳过资源归属解析。
+    {
+      method: 'POST',
+      path: '/trips/join',
+      auth: { public: false, resourceType: 'trip', mode: 'WRITE' },
+      idParam: '__none__',
+      schema: joinTripSchema as never,
+      handler: async (ctx, input) => {
+        const b = input as JoinTripInput;
+        return { data: await service.joinByInvite(ctx.userId!, b) };
       },
     },
   ];

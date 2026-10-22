@@ -64,6 +64,8 @@ export class MediaService {
     userId: bigint,
     input: {
       familyId: bigint;
+      /** D-2026-10-22-01 §2.3：带 tripId 时先做行程写入门判定 */
+      tripId?: bigint;
       fileName: string;
       mimeType: string;
       byteSize: string;
@@ -76,6 +78,11 @@ export class MediaService {
   }> {
     this.assertMimeAllowed(input.mimeType);
     await this.assertFamilyMember(this.o.ctx, input.familyId, userId);
+    // 🔴 有 tripId 就提前拦：已结束行程的成员不该拿到上传位。
+    //    confirm 才是必守点（那时 tripId 一定已知），此处是「早失败」优化。
+    if (input.tripId !== undefined) {
+      await this.assertTripActiveWritable(this.o.ctx, input.tripId, userId);
+    }
 
     const size = BigInt(input.byteSize);
     if (size <= 0n) throw new AppError(ErrorCode.VALIDATION_FAILED, '文件大小必须为正');
@@ -90,7 +97,8 @@ export class MediaService {
         id: tx.write.nextId(),
         fileKey,
         ownerId: userId,
-        tripId: null,
+        // 有行程归属就落库：孤儿清理与审计按 trip 维度回溯时要用
+        tripId: input.tripId ?? null,
         status: 'PENDING',
         // 🔴 必须落库：DB 有 chk_fp_size CHECK(expected_size > 0 AND <= 52428800)。
         // 漏传则落到 Prisma 默认值 0 → 真 MySQL 报 3819 违反约束 → POST /media/presign 恒 500。
@@ -133,6 +141,12 @@ export class MediaService {
 
     return this.o.ctx.tx(async (tx) => {
       await this.assertFamilyMember(tx, input.familyId, userId);
+      // 🔴 D-2026-10-22-01 §2.3 必守点：已结束行程（成员 access_level 已转
+      //    HISTORICAL_READONLY）不得再登记新照片，否则 B6「历史只读保留」
+      //    只是前端收起入口，改包/直连接口即可绕过。
+      if (input.tripId !== undefined) {
+        await this.assertTripActiveWritable(tx, input.tripId, userId);
+      }
 
       // filePending 必须存在且属于我（防「登记别人上传的文件」）
       const pending = await tx.db.findUnique('filePending', {
@@ -297,6 +311,16 @@ export class MediaService {
     return this.o.ctx.tx(async (tx) => {
       const r = await tx.db.findUnique('mediaAsset', { id: assetId, deletedAt: null });
       if (!r) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+
+      // D-2026-10-22-01 §2.3：资产带 tripId 时先过行程写入门（B6）。
+      // 用 `assertTripNotArchived`（非 Active）而非 `assertTripActiveWritable`：
+      // 行程被软删后照片仍是家庭资产、仍须允许上传者/户主清理 —— 派发单
+      // §2.4 第 4 条「家庭照片（tripId 为空）删除行为不变」的延伸口径。
+      const tripId = (r['tripId'] ?? null) as bigint | null;
+      if (tripId !== null) {
+        await this.assertTripNotArchived(tx, tripId, userId);
+      }
+
       // 仅上传者可删（避免他人删你照片）
       if (r['ownerId'] !== userId) {
         await this.assertFamilyOwner(tx, r['familyId'] as bigint, userId);
@@ -348,6 +372,74 @@ export class MediaService {
       deletedAt: null,
     });
     if (!o) throw new AppError(ErrorCode.FORBIDDEN, '仅上传者或户主可删除');
+  }
+
+  /**
+   * 行程写入门（B6 · D-2026-10-22-01 §2.3）：行程必须存在，且当前用户可写。
+   *
+   * 判定口径与 itinerary / expense / checklist / booking 四域**逐字对齐**
+   * （`assertTripWritable`）：成员 access_level !== ACTIVE → 403；
+   * 创建者兜底放行；其余 → 404（与「不存在」同形，防 ID 枚举）。
+   *
+   * 为什么不复用 media 既有的 `assertFamilyMember`：那道门只到**家庭**粒度，
+   * 行程结束后家庭成员身份不变，挡不住「历史行程仍可写照片」。
+   */
+  private async assertTripActiveWritable(
+    src: TxHandle | DomainContext,
+    tripId: bigint,
+    userId: bigint,
+  ): Promise<void> {
+    const db = 'db' in src ? src.db : src.read;
+    const t = await db.findUnique('trip', { id: tripId, deletedAt: null });
+    if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+    this.assertTripMemberWritable(t, await this.tripMemberRow(db, tripId, userId), userId);
+  }
+
+  /**
+   * 同上的「宽松版」：行程不存在（已软删）时**放行**。
+   *
+   * 用于 `remove` —— 行程删除不级联软删照片（照片是家庭资产，「我的照片」
+   * 仍应可见可清理），若在这里因行程已删而 404，用户就再也删不掉自己的图。
+   */
+  private async assertTripNotArchived(
+    src: TxHandle | DomainContext,
+    tripId: bigint,
+    userId: bigint,
+  ): Promise<void> {
+    const db = 'db' in src ? src.db : src.read;
+    const t = await db.findUnique('trip', { id: tripId, deletedAt: null });
+    if (!t) return;
+    this.assertTripMemberWritable(t, await this.tripMemberRow(db, tripId, userId), userId);
+  }
+
+  /** 成员的 access_level 读取（含代管人：虚拟成员的代管行为等同本人） */
+  private async tripMemberRow(
+    db: { findUnique: TxHandle['db']['findUnique']; findMany: TxHandle['db']['findMany'] },
+    tripId: bigint,
+    userId: bigint,
+  ): Promise<Record<string, unknown> | null> {
+    const own = await db.findUnique('tripMember', { tripId, userId, deletedAt: null });
+    if (own) return own;
+    const managed = await db.findMany('tripMember', {
+      where: { tripId, managedBy: userId, deletedAt: null },
+    });
+    return managed[0] ?? null;
+  }
+
+  /** 门禁判定本体 —— 四域同源的唯一实现，勿在此处另加分支 */
+  private assertTripMemberWritable(
+    t: Record<string, unknown>,
+    member: Record<string, unknown> | null,
+    userId: bigint,
+  ): void {
+    if (member) {
+      if (member['accessLevel'] === 'HISTORICAL_READONLY') {
+        throw new AppError(ErrorCode.FORBIDDEN, '该出行已归档，仅可查看');
+      }
+      return;
+    }
+    if (t['createdBy'] === userId) return;
+    throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
   }
 
   private async visibleFamilyIds(userId: bigint): Promise<Set<bigint>> {

@@ -38,6 +38,7 @@ import {
   type LeaderSuccession,
 } from '../../common/concurrency/row-lock.js';
 import { buildPageMeta, normalizePageQuery } from '../../common/pagination/pagination.js';
+import { randomInviteCode } from '../../common/invite-code.js';
 
 export interface TripServiceOptions {
   ctx: DomainContext;
@@ -46,6 +47,9 @@ export interface TripServiceOptions {
 
 const TRIP_BIGINT_FIELDS = ['id', 'familyId', 'createdBy', 'leaderId'];
 const MEMBER_BIGINT_FIELDS = ['id', 'tripId', 'userId', 'managedBy'];
+
+/** 不可再接受新成员的状态（GRP-08：结束后禁止加入） */
+const JOIN_BLOCKED_STATUS = new Set(['FINISHED', 'CANCELLED']);
 
 /**
  * D-2026-10-15-01：行程删除时级联软删的子域表（ Prisma 模型名 = 委托名）。
@@ -96,6 +100,11 @@ export class TripService {
         timezone: input.timezone ?? 'Asia/Shanghai',
         destinationsJson: input.destinations ? JSON.stringify(input.destinations) : null,
         actualJson: null,
+        // D-2026-10-14-02 §2.2：建行程即生成邀请码 ——
+        // 前端「创建完立即进入邀请步骤」直接读 create 响应里的 inviteCode，
+        // 不必再多打一次 GET /trips/:id/invite。
+        inviteCode: await this.uniqueTripInviteCode(tx),
+        inviteUpdatedAt: now,
         version: 0,
         createdAt: now,
         updatedAt: now,
@@ -266,9 +275,9 @@ export class TripService {
    * 🔴 media_asset **不随行程软删**：照片是家庭资产，行程删了照片墙仍应在
    *    「我的照片」可见；`GET /media?tripId=<已删行程>` 由 media 域按父行程
    *    已删返回空集（见 media.service.list）。
-   * 🔴 trip.invite_code：本版 Trip 模型尚无邀请码列（D-2026-10-14-02
-   *    「行程邀请码三端点」未落地），故无作废动作；该域上线时其 join 必须
-   *    校验 trip.deletedAt。
+   * 🔴 trip.invite_code：D-2026-10-14-02 落地后邀请码随父行软删一并失效
+   *    （`joinByInvite` 的 `findUnique` 恒带 `deletedAt: null`，无需显式吊销）；
+   *    唯一索引 `(invite_code, deleted_at)` 软删感知，同一码可被新行程复用。
    * 🔴 change_log 只写父实体一条 DELETE（同 dissolveFamily）：子行软删不逐行
    *    放大日志，同步游标以行程行失效为收敛点。
    */
@@ -288,6 +297,166 @@ export class TripService {
 
       await this.change(tx, 'trip', tripId, t['familyId'] as bigint, tripId, 'DELETE', now);
       return now;
+    });
+  }
+
+  // ── 邀请码（GRP-02 · D-2026-10-14-02）────────────────────
+
+  /**
+   * 取行程邀请码（成员可读）。
+   *
+   * 语义三条：
+   *   1. 行程不存在 → 404（与全站口径一致，不区分「码无效」与「行程不存在」）；
+   *   2. **调用方必须是行程成员** —— 码的传播靠组织者复制/分享，不靠接口枚举；
+   *   3. 历史行（迁移前创建 / 回填遗漏）`inviteCode` 为空 → 懒生成补写并返回，不报错。
+   *
+   * ⚠️ 这里要写库（懒生成），故必须走事务；只读路径不要复用本方法。
+   */
+  async getInvite(
+    userId: bigint,
+    tripId: bigint,
+  ): Promise<{ tripId: string; inviteCode: string; updatedAt: string }> {
+    return this.o.ctx.tx(async (tx) => {
+      const t = await tx.db.findUnique('trip', { id: tripId, deletedAt: null });
+      if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+      await this.assertTripMember(tx, t, userId);
+
+      const existing = t['inviteCode'];
+      if (typeof existing === 'string' && existing.length > 0) {
+        return {
+          tripId: tripId.toString(),
+          inviteCode: existing,
+          updatedAt: timeOfIso(t['inviteUpdatedAt'] ?? t['createdAt']),
+        };
+      }
+
+      // 懒生成兜底（历史行）：补写 invite_code + invite_updated_at 后返回。
+      // 不写 change_log —— 邀请码不是客户端可见的业务内容变更，
+      // 写进去会让同步游标产生一次「行程被改了」的假信号。
+      const now = await tx.db.dbNow();
+      const code = await this.uniqueTripInviteCode(tx);
+      await tx.db.update('trip', { id: tripId }, { inviteCode: code, inviteUpdatedAt: now });
+      return { tripId: tripId.toString(), inviteCode: code, updatedAt: now.toISOString() };
+    });
+  }
+
+  /**
+   * 重置行程邀请码（旧码即刻作废 —— 值被替换即失效，无需显式吊销）。
+   *
+   * 🔴 仅主导者或创建者，复用 `assertLeaderOrCreator`（与 `addMember` 同一判定，勿新造）。
+   * 🔴 **不走 CAS**：邀请码不属于 E7 版本管辖的行程内容字段，
+   *    reset 后客户端重新拉取即可；强行带 version 会把「重置邀请码」与
+   *    「改行程」两个语义搅在一起。family 域重置同样无 version，保持一致。
+   */
+  async resetInvite(
+    userId: bigint,
+    tripId: bigint,
+  ): Promise<{ tripId: string; inviteCode: string; updatedAt: string }> {
+    return this.o.ctx.tx(async (tx) => {
+      const t = await tx.db.findUnique('trip', { id: tripId, deletedAt: null });
+      if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+      await this.assertTripMember(tx, t, userId);
+      await this.assertLeaderOrCreator(tx, t, userId);
+
+      const now = await tx.db.dbNow();
+      const code = await this.uniqueTripInviteCode(tx);
+      await tx.db.update(
+        'trip',
+        { id: tripId },
+        { inviteCode: code, inviteUpdatedAt: now, updatedAt: now },
+      );
+
+      await this.change(tx, 'trip', tripId, t['familyId'] as bigint, tripId, 'UPDATE', now);
+
+      return { tripId: tripId.toString(), inviteCode: code, updatedAt: now.toISOString() };
+    });
+  }
+
+  /**
+   * 凭邀请码加入（外部同行者，GRP-02）。幂等。
+   *
+   * 判定顺序即优先级（勿调换）：
+   *   1. 码所指向的行程（含 `deletedAt: null`）不存在 → 404 `邀请码无效`
+   *   2. 已是成员 → 原样返回 `alreadyMember: true`（**不插行、不写 changeLog**）
+   *   3. 行程已结束/取消 → 403 `行程已结束，无法加入`（GRP-08：
+   *      不能只靠前端隐藏入口 —— 改包/直连接口都能绕过）
+   *   4. 插入 `tripMember`（MEMBER / isExternal=true / ACTIVE）
+   *
+   * 并发说明：双请求同时 join 同一码时，应用层查重存在极小窗口双插。
+   * 与 `addMember` 现有模式一致；`trip_member (trip_id, user_id, deleted_at)`
+   * 唯一索引涉及全表数据治理，另单评估。验收以功能幂等为准。
+   */
+  async joinByInvite(
+    userId: bigint,
+    input: { inviteCode: string; displayName?: string },
+  ): Promise<{
+    trip: Record<string, unknown>;
+    member: Record<string, unknown>;
+    alreadyMember: boolean;
+  }> {
+    return this.o.ctx.tx(async (tx) => {
+      const t = await tx.db.findUnique('trip', {
+        inviteCode: input.inviteCode,
+        deletedAt: null,
+      });
+      if (!t) throw new AppError(ErrorCode.NOT_FOUND, '邀请码无效');
+      const tripId = t['id'] as bigint;
+
+      // 幂等前置：已是成员直接返回，不重复插行
+      const existing = await tx.db.findUnique('tripMember', {
+        tripId,
+        userId,
+        deletedAt: null,
+      });
+      if (existing) {
+        return {
+          trip: serializeRow(t, TRIP_BIGINT_FIELDS),
+          member: serializeRow(existing, MEMBER_BIGINT_FIELDS),
+          alreadyMember: true,
+        };
+      }
+
+      // 状态门：必须在幂等判定**之后** —— 已结束行程的既有成员再点一次
+      // 邀请链接应当是「幂等成功」，而不是突然 403。
+      if (JOIN_BLOCKED_STATUS.has(String(t['status']))) {
+        throw new AppError(ErrorCode.FORBIDDEN, '行程已结束，无法加入');
+      }
+
+      const now = await tx.db.dbNow();
+      const memberId = tx.write.nextId();
+      await tx.db.insert('tripMember', {
+        id: memberId,
+        tripId,
+        userId,
+        managedBy: null,
+        role: 'MEMBER',
+        // 外部同行者：不属该家庭，靠邀请码进来
+        isExternal: true,
+        accessLevel: 'ACTIVE',
+        displayName: input.displayName ?? (await this.displayNameOf(tx, userId)),
+        joinedAt: now,
+        leftAt: null,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      });
+
+      await this.change(
+        tx,
+        'trip_member',
+        memberId,
+        t['familyId'] as bigint,
+        tripId,
+        'INSERT',
+        now,
+      );
+
+      const member = await tx.db.findUnique('tripMember', { id: memberId });
+      return {
+        trip: serializeRow(t, TRIP_BIGINT_FIELDS),
+        member: serializeRow(member ?? {}, MEMBER_BIGINT_FIELDS),
+        alreadyMember: false,
+      };
     });
   }
 
@@ -785,6 +954,42 @@ export class TripService {
     throw new AppError(ErrorCode.FORBIDDEN, '仅主导者可执行该操作');
   }
 
+  /**
+   * 行程成员判定（邀请码专用口径）：成员 ∨ 代管人，否则 403。
+   *
+   * 与 `assertTripVisible` 的区别：那里把「家庭成员」也算可见（只管看不暴露），
+   * 这里**收紧到行程成员** —— 邀请码是「谁的行程、谁能拉人」的凭证，
+   * 家庭成员的旁支访问不应拿到码。
+   */
+  private async assertTripMember(src: TxHandle, t: Row, userId: bigint): Promise<void> {
+    const member = await src.db.findUnique('tripMember', {
+      tripId: t['id'],
+      userId,
+      deletedAt: null,
+    });
+    if (member) return;
+    const managed = await src.db.findMany('tripMember', {
+      where: { tripId: t['id'], managedBy: userId, deletedAt: null },
+    });
+    if (managed.length > 0) return;
+    throw new AppError(ErrorCode.FORBIDDEN, '仅行程成员可查看邀请码');
+  }
+
+  /**
+   * 唯一邀请码（8 次重试 + 查重 + 失败抛 INTERNAL_ERROR）。
+   *
+   * 与 family 的 `uniqueInviteCode` 逐条对齐；查重范围是**活跃行程**
+   * （`deletedAt: null`），软删行程持有的码可被复用（索引同样软删感知）。
+   */
+  private async uniqueTripInviteCode(tx: TxHandle): Promise<string> {
+    for (let i = 0; i < 8; i += 1) {
+      const code = randomInviteCode();
+      const dup = await tx.db.findUnique('trip', { inviteCode: code, deletedAt: null });
+      if (!dup) return code;
+    }
+    throw new AppError(ErrorCode.INTERNAL_ERROR, '邀请码生成失败，请重试');
+  }
+
   private async displayNameOf(tx: TxHandle, userId: bigint): Promise<string> {
     const u = await tx.db.findUnique('user', { id: userId, deletedAt: null });
     return (u?.['nickname'] as string | undefined) ?? '成员';
@@ -866,6 +1071,18 @@ function timeOf(v: unknown): number {
   if (v instanceof Date) return v.getTime();
   const t = new Date(String(v)).getTime();
   return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * 把 Date / ISO 字符串统一成 ISO8601。
+ *
+ * 无法解析时返回 `''` 而**不是**「当前时刻」—— 邀请卡上的「重置时间」是
+ * 给用户看的事实陈述，编一个 now 会让「码刚被谁重置过」的判断失真。
+ * 实际数据里 `invite_updated_at ?? created_at` 恒可解析，此分支不可达。
+ */
+function timeOfIso(v: unknown): string {
+  const t = v instanceof Date ? v : new Date(String(v));
+  return Number.isFinite(t.getTime()) ? t.toISOString() : '';
 }
 
 function sameBigint(a: bigint | null, b: bigint | null): boolean {

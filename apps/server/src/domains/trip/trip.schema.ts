@@ -105,6 +105,21 @@ export const leaveTripSchema = z.object({
 
 export type LeaveTripInput = z.infer<typeof leaveTripSchema>;
 
+/**
+ * 凭行程邀请码加入（GRP-02 外部同行者）。
+ *
+ * 与 `joinFamilySchema` 同构：min4/max16 宽松兼容（前端固定发 8 位）。
+ * 大小写不敏感由**生成侧**保证（字符集全大写）+ 前端 `toUpperCase`，
+ * 🔴 后端不强制 transform —— 避免与 family 域行为分叉。
+ */
+export const joinTripSchema = z.object({
+  inviteCode: z.string().min(4).max(16),
+  /** 可选：加入后同行者看到的称呼 */
+  displayName: z.string().max(32).optional(),
+});
+
+export type JoinTripInput = z.infer<typeof joinTripSchema>;
+
 /** 结束出行 —— 把成员转为 HISTORICAL_READONLY（历史只读保留，B6） */
 export const finishTripSchema = z.object({
   version: z.coerce.number().int().min(0),

@@ -227,11 +227,25 @@ export function createChainDeps(deps: IdentityDeps): ChainDeps {
    */
   async function resolveSharedScope(
     rowId: bigint,
-  ): Promise<{ ownerId: bigint | null; managedBy: bigint | null; scope: string | undefined; familyId: bigint | null; tripId: bigint | null; type?: string } | null> {
+  ): Promise<{
+    ownerId: bigint | null;
+    managedBy: bigint | null;
+    scope: string | undefined;
+    familyId: bigint | null;
+    tripId: bigint | null;
+    type?: string;
+  } | null> {
     // ① family 自身
     const family = await driver.findUnique('family', { id: rowId });
     if (family) {
-      return { ownerId: null, managedBy: null, scope: undefined, familyId: rowId, tripId: null, type: 'family' };
+      return {
+        ownerId: null,
+        managedBy: null,
+        scope: undefined,
+        familyId: rowId,
+        tripId: null,
+        type: 'family',
+      };
     }
     // ② family_member（自身行）：归属其 familyId
     const famMember = await driver.findUnique('familyMember', { id: rowId, deletedAt: null });
@@ -275,11 +289,18 @@ export function createChainDeps(deps: IdentityDeps): ChainDeps {
       if (row) {
         // 某些表（如 trip_member）用 tripId 归属；trip 自身 id 就是 tripId
         const tripId = m === 'trip' ? rowId : ((row['tripId'] ?? null) as bigint | null);
-        // 若是 trip 本身或 trip 子表，回带 familyId 便于家庭维度兜底判定
-        const familyId =
-          m === 'trip'
-            ? ((row['familyId'] ?? null) as bigint | null)
-            : await familyIdOfTrip(tripId);
+        // 表自带 family_id 的行优先用**行上的值**，只有没有时才回查父行程。
+        //
+        // 🔴 D-2026-10-22-01 修复（P1 的前置缺陷）：原先一律走 `familyIdOfTrip(tripId)`，
+        //    导致 media_asset 两类行在权限层被误判为「不属于任何家庭」→ 恒 404：
+        //      · `trip_id IS NULL` 的家庭照片 → familyIdOfTrip(null) = null
+        //        （家庭照片**完全删不掉**）；
+        //      · 父行程已软删 → familyIdOfTrip 带 `deletedAt: null` → null
+        //        （行程删了照片也删不掉，与 trip.service「照片是家庭资产、
+        //          行程删了仍应在『我的照片』可见」的设计直接冲突）。
+        //    media_asset.family_id 是 NOT NULL 的物理列，不随行程软删失效，用它才对。
+        const ownFamilyId = (row['familyId'] ?? null) as bigint | null;
+        const familyId = ownFamilyId ?? (await familyIdOfTrip(tripId));
         return {
           ownerId: (row['ownerId'] ?? null) as bigint | null,
           managedBy: (row['managedBy'] ?? null) as bigint | null,
