@@ -1,8 +1,21 @@
 packages:
   - 'apps/*'
+
+# 构建脚本白名单（pnpm 11：strictDepBuilds 默认 true，未列出的包会让 install
+# 直接以 ERR_PNPM_IGNORED_BUILDS 失败；v11 起 package.json 的
+# pnpm.onlyBuiltDependencies 已废弃、不再被读取，本文件是唯一生效位置）
 allowBuilds:
   '@nestjs/core': true
   '@prisma/client': true
   '@prisma/engines': true
   esbuild: true
   prisma: true
+  # 以下 6 个属于 Taro 小程序侧依赖：服务器只构建 server，本地 taro build 已实证
+  # 不依赖它们的 postinstall（原生模块走 optionalDependencies 的 prebuilt 二进制）。
+  # 显式记 false = 已审阅并拒绝执行，pnpm 不再报错，也不跑第三方脚本。
+  '@parcel/watcher': false
+  '@swc/core': false
+  '@tarojs/binding': false
+  '@tarojs/cli': false
+  core-js: false
+  core-js-pure: false

@@ -75,7 +75,9 @@ pnpm install --frozen-lockfile
 pnpm --filter @family-trip/server build
 
 # Prisma：生成 client + 建表（migrate deploy 不创建库，库在第 2 步建好）
-cd apps/server && npx prisma migrate deploy
+# ⚠️ generate 不能省：migrate deploy 只改数据库，不更新 node_modules 里的 client。
+#    漏了它 → 新代码用旧 client 查新字段 → 运行时报 500（Prisma: Unknown argument）。
+cd apps/server && npx prisma generate && npx prisma migrate deploy
 ```
 
 > ⚠️ 若 `migrate deploy` 报「no migration found」：migrations 目录没进仓库——本地先提交迁移文件再上服务器。
@@ -179,6 +181,8 @@ sudo systemctl stop mysql                        # 仅当 MySQL 本身出问题
 
 ```bash
 # 更新代码（已配 GitHub 部署密钥）
+# 注意：build 脚本内置 prisma generate —— schema 改了必须重新生成 client，
+#       否则运行时报 500（Prisma: Unknown argument 'xxx'）。勿把 build 改回纯 tsc。
 cd /home/ubuntu/family-trip && git pull && \
   PATH=/home/ubuntu/.local/node22/bin:$PATH pnpm install --frozen-lockfile && \
   PATH=/home/ubuntu/.local/node22/bin:$PATH pnpm --filter @family-trip/server build && \
