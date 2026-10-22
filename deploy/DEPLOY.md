@@ -159,6 +159,40 @@ sudo systemctl stop mysql                        # 仅当 MySQL 本身出问题
 
 ---
 
+## 9. 实装记录（2026-10-22 生产已上线，运维基线）
+
+| 项       | 实际值                                                                                                                           |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| API 域名 | `https://api.familytripallinone.cn`（备案完成，A 记录在 DNSPod）                                                                 |
+| 进程     | pm2 `family-trip`，cwd `/home/ubuntu/family-trip/apps/server`，脚本 `dist/main.js`                                               |
+| 端口     | **3010**（3000 被 XLFamily 占用）                                                                                                |
+| 运行配置 | `apps/server/.env`（600，ubuntu）—— 密钥只存在此文件，不进 ecosystem、不进 git                                                   |
+| pm2 配置 | `apps/server/ecosystem.config.cjs`（**必须是 .cjs**：`package.json` 是 `type: module`，`.js` 会被当 ESM，`module.exports` 失效） |
+| 数据库   | MySQL 8.0.46，库 `family_trip`，账号 `family_trip@127.0.0.1`；4 个迁移已应用                                                     |
+| 证书     | Let's Encrypt，`/etc/letsencrypt/live/api.familytripallinone.cn/`，到期 2027-01-20，certbot 自动续期                             |
+| nginx    | `/etc/nginx/sites-available/family-trip`（独立 `server_name`，与 `default -> food-api` 共存）                                    |
+| 构建环境 | `/home/ubuntu/.local/node22`（Node 22.23.4）+ pnpm 11.0.1；系统 Node 20 仅供 XLFamily                                            |
+| 自启     | `pm2-ubuntu.service` enabled + dump 已 save                                                                                      |
+| 关键验证 | `/health` → `{"code":0,"status":"up"}`；`/api/fx/rate` → 4010 缺少 Authorization（链路+信封正常）                                |
+
+日常运维命令（都以 ubuntu 身份）：
+
+```bash
+# 更新代码（已配 GitHub 部署密钥）
+cd /home/ubuntu/family-trip && git pull && \
+  PATH=/home/ubuntu/.local/node22/bin:$PATH pnpm install --frozen-lockfile && \
+  PATH=/home/ubuntu/.local/node22/bin:$PATH pnpm --filter @family-trip/server build && \
+  cd apps/server && ./node_modules/.bin/prisma migrate deploy && pm2 restart family-trip
+
+# 看日志 / 状态
+pm2 logs family-trip --lines 50 --nostream
+pm2 list
+```
+
+> 运行期请以 ubuntu 用户执行 pm2 命令；root 侧的 pm2 管理的是 XLFamily，两边 daemon 独立，别混。
+
+---
+
 ## 附：本 runbook 不覆盖的事
 
 - **FX 签约源采购**：生产初期走人工录入（`MANUAL_RATE_ENTRY`，已实现，0 成本）；规模化后采购签约 API，在 `common/fx/sources/index.ts` 的 `resolveFxSource` 加一个分支 + `FX_AUTHORIZED_SOURCES` 追加源名即可，域代码零改动
