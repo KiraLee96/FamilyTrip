@@ -10,7 +10,14 @@
  *   ② 外部成员邀请 —— 创建成功进入邀请步骤：展示行程邀请码（复制/分享/重置），
  *      对方点开分享链接落入 JoinTripPage 凭码加入（isExternal 外部同行者）。
  * 家庭选择：多家庭时用 Picker 切换（原型期曾写死取第一个家庭）。
- * 日期用 Taro Picker，双端同构（H5 渲染为原生 date input）。
+ * 日期与地区都是**自绘组件**（不 fork、双端同一套）：
+ *   · 出行日期 —— components/Calendar 的区间日历，一次点出出发/返程，替代原来两个
+ *     原生 date picker（用户反馈：原生控件选不准、要弹两次、看不到总共几天）；
+ *   · 目的地 —— components/RegionPicker 的两级地区选择（内置常用目的地 + 关键词搜索
+ *     + 任意文本兜底），对应反馈「允许用户选择地区」。
+ *
+ * 邀请码取不到时的降级见 utils/constants 的 inviteUnavailableHint：后端端点
+ * `/trips/:id/invite` 尚未落地（dispatcher 回 4040），界面不许把「资源不存在」原样抛给用户。
  */
 
 import { useCallback, useMemo, useState } from 'react';
@@ -18,15 +25,18 @@ import { Button, Input, Picker, Text, View } from '@tarojs/components';
 import Taro from '@tarojs/taro';
 
 import { api } from '../api/index';
-import type { FamilyDetail, TripInvite } from '../api/types';
+import type { Destination, FamilyDetail, TripInvite } from '../api/types';
+import { DateRangeSheet } from '../components/Calendar';
 import { Icon } from '../components/Icon';
 import { ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
+import { RegionSheet } from '../components/RegionPicker';
 import { navigate } from '../nav';
 import { useAsync, type AsyncState } from '../hooks/useAsync';
 import { useSession } from '../hooks/useSession';
+import { rangeText } from '../utils/calendar';
 import { copyText } from '../utils/clipboard';
-import { defaultChecklistFor } from '../utils/constants';
+import { defaultChecklistFor, inviteUnavailableHint } from '../utils/constants';
 
 export function TripCreatePage() {
   const me = useSession();
@@ -63,6 +73,11 @@ export function TripCreatePage() {
   const [title, setTitle] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  /** 目的地（地区）：支持多个，整体随 createTrip 一起提交 */
+  const [dests, setDests] = useState<Destination[]>([]);
+  /** 区间日历 / 地区选择抽屉的开关（关掉即卸载，组件内部状态自然复位） */
+  const [rangeOpen, setRangeOpen] = useState(false);
+  const [regionOpen, setRegionOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
 
@@ -135,6 +150,7 @@ export function TripCreatePage() {
         title: name,
         ...(startDate ? { startDate } : {}),
         ...(endDate ? { endDate } : {}),
+        ...(dests.length > 0 ? { destinations: dests } : {}),
       });
       // 勾选的同行成员批量入队（失败不阻塞创建，与默认清单播种同策略）
       const picks = members.filter((m) => selectedIds.has(m.id));
@@ -243,31 +259,41 @@ export function TripCreatePage() {
         ) : null}
 
         <View className="field">
-          <Text className="field__label">出发日期</Text>
-          <Picker mode="date" value={startDate} onChange={(e) => setStartDate(e.detail.value)}>
-            <View className="picker-row">
-              <Text
-                className={startDate ? 'picker-row__val' : 'picker-row__val picker-row__val--empty'}
-              >
-                {startDate || '选择日期'}
-              </Text>
-              <Icon name="chevron-right" size={16} className="rotate-90 muted" />
-            </View>
-          </Picker>
+          <Text className="field__label">出行日期</Text>
+          <View className="picker-row" onClick={() => setRangeOpen(true)}>
+            <Text
+              className={
+                startDate || endDate ? 'picker-row__val' : 'picker-row__val picker-row__val--empty'
+              }
+            >
+              {rangeText(startDate, endDate) || '点选出发与返程日期'}
+            </Text>
+            <Icon name="chevron-right" size={16} className="rotate-90 muted" />
+          </View>
         </View>
 
         <View className="field">
-          <Text className="field__label">结束日期</Text>
-          <Picker mode="date" value={endDate} onChange={(e) => setEndDate(e.detail.value)}>
-            <View className="picker-row">
-              <Text
-                className={endDate ? 'picker-row__val' : 'picker-row__val picker-row__val--empty'}
-              >
-                {endDate || '选择日期'}
-              </Text>
-              <Icon name="chevron-right" size={16} className="rotate-90 muted" />
+          <Text className="field__label">目的地地区</Text>
+          {dests.length > 0 && (
+            <View className="dest-chips">
+              {dests.map((d) => (
+                <View key={d.name} className="chip">
+                  <Icon name="map-pin" size={12} />
+                  <Text className="dest-chips__name">{d.name}</Text>
+                  <View
+                    className="dest-chips__x"
+                    onClick={() => setDests((prev) => prev.filter((x) => x.name !== d.name))}
+                  >
+                    <Icon name="close" size={10} />
+                  </View>
+                </View>
+              ))}
             </View>
-          </Picker>
+          )}
+          <View className="add-bar" onClick={() => setRegionOpen(true)}>
+            <Icon name="plus" size={15} />
+            <Text className="add-bar__text">选择地区</Text>
+          </View>
         </View>
 
         {formError ? <Text className="form-error">{formError}</Text> : null}
@@ -325,6 +351,34 @@ export function TripCreatePage() {
           默认带上全家；点按可取消。家庭外的朋友结伴，创建后生成邀请码发给对方即可加入
         </Text>
       </View>
+
+      {/* 抽屉放在页面末尾：只在打开时挂载，内部临时选择状态随卸载自动复位 */}
+      {rangeOpen && (
+        <DateRangeSheet
+          title="出行日期"
+          initialStart={startDate}
+          initialEnd={endDate}
+          onCancel={() => setRangeOpen(false)}
+          onConfirm={(s, e) => {
+            setStartDate(s);
+            setEndDate(e);
+            setRangeOpen(false);
+          }}
+        />
+      )}
+
+      {regionOpen && (
+        <RegionSheet
+          title="选择目的地地区"
+          onCancel={() => setRegionOpen(false)}
+          onConfirm={(city) => {
+            setRegionOpen(false);
+            setDests((prev) =>
+              prev.some((d) => d.name === city) ? prev : [...prev, { name: city }],
+            );
+          }}
+        />
+      )}
     </PageLayout>
   );
 }
@@ -373,10 +427,16 @@ function InviteStep({
           <Loading text="生成邀请码…" />
         ) : invite.error ? (
           <>
-            <ErrorBox message={invite.error} onRetry={invite.reload} />
-            <Text className="muted" style={{ marginTop: 8 }}>
-              邀请功能暂未就绪（后端接口升级中）。可先进入行程，稍后重试
+            <Text className="form-error" style={{ marginTop: 4 }}>
+              {inviteUnavailableHint(invite.error)}
             </Text>
+            <View
+              className="btn btn--ghost btn--block"
+              style={{ marginTop: 10 }}
+              onClick={() => invite.reload()}
+            >
+              重新获取邀请码
+            </View>
           </>
         ) : code ? (
           <>

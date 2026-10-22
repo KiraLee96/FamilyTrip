@@ -2868,3 +2868,387 @@ p {
   height: 38px;
   font-size: 13.5px;
 }
+
+/* ============================================================================
+   底部抽屉（自绘弹出层）—— 日历 / 地区选择共用
+   ----------------------------------------------------------------------------
+   · 遮罩与面板是**兄弟节点**而不是父子：小程序端 View 的 click 冒泡在 catch 语义上
+     两端不一致，靠 stopPropagation 屏蔽遮罩点击不可靠；分层摆放从结构上没有这个问题。
+   · 面板 width 100% + max-width 375px 居中：H5 桌面「手机外壳」下也只在 375 内展开。
+   ========================================================================== */
+
+.sheet-root {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 90;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.sheet-mask {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: rgba(46, 42, 32, 0.42);
+}
+
+.sheet {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 375px;
+  max-height: 86vh;
+  padding: 14px 16px 18px;
+  background: var(--card);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  box-shadow: var(--shadow-up);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sheet__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.sheet__title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.sheet__close {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+}
+
+.sheet__summary {
+  display: block;
+  font-size: 12.5px;
+  color: var(--primary);
+  background: var(--primary-soft);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  margin-bottom: 8px;
+}
+
+.sheet__scroll {
+  height: 236px;
+}
+
+.sheet__quick {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.sheet__quick-item {
+  flex: 1 1 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-2);
+  background: var(--card-sunk);
+  border-radius: var(--radius-sm);
+  padding: 8px 0;
+}
+
+.sheet__ops {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.sheet__op {
+  flex: 1 1 0;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.sheet__hint {
+  display: block;
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  text-align: center;
+}
+
+/* ---------- 日历（月历网格 + 区间高亮） ---------- */
+
+.cal {
+  margin-top: 2px;
+}
+
+.cal__nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px 6px;
+}
+
+.cal__nav-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--card-sunk);
+  color: var(--text-2);
+}
+
+.cal__nav-title {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.cal__week {
+  display: flex;
+  padding-bottom: 2px;
+}
+
+.cal__week-cell {
+  flex: 1 1 0;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.cal__grid {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.cal__cell {
+  width: 14.2857%;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cal__cell--blank {
+  background: transparent;
+}
+
+.cal__cell-day {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.cal__cell--today .cal__cell-day {
+  border: 1px dashed var(--accent);
+  color: var(--accent-ink);
+}
+
+.cal__cell--in {
+  background: var(--primary-soft);
+}
+
+.cal__cell--start {
+  background: var(--primary-soft);
+  border-top-left-radius: 999px;
+  border-bottom-left-radius: 999px;
+}
+
+.cal__cell--end {
+  background: var(--primary-soft);
+  border-top-right-radius: 999px;
+  border-bottom-right-radius: 999px;
+}
+
+.cal__cell--edge .cal__cell-day {
+  background: var(--primary);
+  color: var(--on-primary);
+  font-weight: 700;
+  border: none;
+}
+
+/* ---------- 地区选择（左省右市 + 搜索） ---------- */
+
+.region__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 10px;
+  margin-bottom: 8px;
+  background: var(--card-sunk);
+  border-radius: var(--radius-sm);
+  color: var(--text-3);
+}
+
+.region__search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.region__search-clear {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--line-strong);
+  color: var(--card);
+}
+
+.region__cols {
+  display: flex;
+  gap: 8px;
+  height: 236px;
+}
+
+.region__cols-prov {
+  width: 116px;
+  flex: 0 0 116px;
+  height: 236px;
+  background: var(--card-sunk);
+  border-radius: var(--radius-sm);
+}
+
+.region__cols-city {
+  flex: 1 1 auto;
+  height: 236px;
+}
+
+.region__prov {
+  padding: 10px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.region__prov--on {
+  background: var(--primary);
+}
+
+.region__prov-text {
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.region__prov--on .region__prov-text {
+  color: var(--on-primary);
+  font-weight: 700;
+}
+
+.region__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 11px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.region__row-text {
+  flex: 1 1 auto;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.region__row-sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.region__row-check {
+  color: var(--primary);
+}
+
+.region__row--manual {
+  color: var(--accent-ink);
+}
+
+.region__row--manual .region__row-text {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.region__empty {
+  display: block;
+  padding: 12px 4px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+/* ---------- 目的地地区胶囊（新建行程 / 编辑行程共用） ---------- */
+
+.dest-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.dest-chips__name {
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.dest-chips__x {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: var(--line);
+  color: var(--text-3);
+}
+
+/* ---------- 目的地行：地区选择 + 备注（编辑行程表单） ---------- */
+
+.dest-row__main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.dest-row__pick {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 38px;
+  padding: 0 10px;
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+
+.dest-row__name {
+  flex: 1 1 auto;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.dest-row__name--empty {
+  color: var(--text-3);
+}

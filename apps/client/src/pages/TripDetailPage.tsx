@@ -25,14 +25,23 @@ import type {
   Trip,
   TripInvite,
 } from '../api/types';
+import { DateRangeSheet } from '../components/Calendar';
 import { Icon, TRANSPORT_ICON } from '../components/Icon';
 import { ItineraryContent } from '../components/ItineraryContent';
 import { MemoryCard } from '../components/MemoryCard';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
+import { RegionSheet } from '../components/RegionPicker';
 import { Progress, StatusChip, dateRange, shortDate, weekday } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
-import { EXPENSE_CATEGORIES, TRANSPORT_LABEL, TRANSPORT_MODES, todayYmd } from '../utils/constants';
+import { rangeText } from '../utils/calendar';
+import {
+  EXPENSE_CATEGORIES,
+  TRANSPORT_LABEL,
+  TRANSPORT_MODES,
+  inviteUnavailableHint,
+  todayYmd,
+} from '../utils/constants';
 import { copyText } from '../utils/clipboard';
 import { pickAndUploadPhotos } from '../utils/upload';
 
@@ -144,6 +153,17 @@ export function TripDetailPage() {
   if (trip.error) return <ErrorBox message={trip.error} onRetry={trip.reload} />;
   const t = trip.data!;
 
+  /**
+   * 已结束的行程一律只读（反馈「已完成的行程不能修改」）。
+   * ==========================================================================
+   * 口径与服务端一致：END 之后所有成员 accessLevel → HISTORICAL_READONLY，
+   * 各子域写接口会回 403「该出行已归档，仅可查看」（见 trip.service.finish）。
+   * 前端必须**先**把入口收起来，而不是让用户点开表单、填完才吃到 403。
+   * 因此这里把「状态只读」与「回忆墙只读」合并成同一个 ro 标志，向下透传。
+   */
+  const closed = t.status === 'FINISHED' || t.status === 'CANCELLED';
+  const ro = readonly || closed;
+
   return (
     <PageLayout title={t.title} sub={dateRange(t)}>
       <Link
@@ -155,11 +175,15 @@ export function TripDetailPage() {
         返回行程列表
       </Link>
 
-      {/* 回忆墙入口只读提示（需求②）：明示为什么没有编辑/删除入口 */}
-      {readonly && (
+      {/* 只读提示：区分「回忆墙入口」与「行程已结束」两种只读来源，明示原因 */}
+      {ro && (
         <View className="readonly-banner">
           <Icon name="route" size={14} />
-          <Text>来自回忆墙的行程仅可查看，不能修改或删除</Text>
+          <Text>
+            {closed
+              ? '行程已结束，记录转只读：可回看，不能再修改或删除'
+              : '来自回忆墙的行程仅可查看，不能修改或删除'}
+          </Text>
         </View>
       )}
 
@@ -196,8 +220,8 @@ export function TripDetailPage() {
           版本 v{t.version} · CAS 乐观锁，更新需回传该值
         </Text>
         {/* 行程本身的改 / 删（服务端 PATCH/DELETE 早已存在，此前无客户端入口）；
-            回忆墙只读入口不渲染（需求②） */}
-        {!readonly && (
+            只读入口（回忆墙 / 已结束）不渲染（需求② + 反馈「已完成不能修改」） */}
+        {!ro && (
           <View className="trip__ops">
             <View className="btn btn--ghost trip__op" onClick={() => setEditingTrip((v) => !v)}>
               <Icon name="edit" size={13} />
@@ -214,7 +238,7 @@ export function TripDetailPage() {
         )}
       </View>
 
-      {editingTrip && !readonly && (
+      {editingTrip && !ro && (
         <TripForm
           trip={t}
           onDone={() => {
@@ -225,12 +249,7 @@ export function TripDetailPage() {
         />
       )}
 
-      <TripInviteCard
-        tripId={tripId}
-        tripTitle={t.title}
-        shareRef={tripShareRef}
-        readonly={readonly}
-      />
+      <TripInviteCard tripId={tripId} tripTitle={t.title} shareRef={tripShareRef} readonly={ro} />
 
       <View className="tabs">
         {(
@@ -259,17 +278,13 @@ export function TripDetailPage() {
           defaultDate={t.startDate ?? undefined}
           localImages={localImages}
           onImageUploaded={rememberImage}
-          readonly={readonly}
+          readonly={ro}
         />
       )}
-      {tab === 'checklist' && (
-        <ChecklistTab tripId={tripId} familyId={t.familyId} readonly={readonly} />
-      )}
-      {tab === 'expense' && (
-        <ExpenseTab tripId={tripId} familyId={t.familyId} readonly={readonly} />
-      )}
-      {tab === 'photo' && <PhotoTab tripId={tripId} readonly={readonly} />}
-      {tab === 'memory' && <MemoryTab tripId={tripId} tripTitle={t.title} readonly={readonly} />}
+      {tab === 'checklist' && <ChecklistTab tripId={tripId} familyId={t.familyId} readonly={ro} />}
+      {tab === 'expense' && <ExpenseTab tripId={tripId} familyId={t.familyId} readonly={ro} />}
+      {tab === 'photo' && <PhotoTab tripId={tripId} readonly={ro} />}
+      {tab === 'memory' && <MemoryTab tripId={tripId} tripTitle={t.title} readonly={ro} />}
     </PageLayout>
   );
 }
@@ -299,6 +314,16 @@ function TripForm({
   const [dests, setDests] = useState<Destination[]>(trip.destinations ?? []);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  /** 区间日历抽屉开关（替换原生的两个 date picker） */
+  const [rangeOpen, setRangeOpen] = useState(false);
+  /** 地区选择抽屉：regionOpen 控制显隐，regionIdx 记录「改哪一行」（null = 新增） */
+  const [regionOpen, setRegionOpen] = useState(false);
+  const [regionIdx, setRegionIdx] = useState<number | null>(null);
+
+  const openRegionFor = (idx: number | null): void => {
+    setRegionIdx(idx);
+    setRegionOpen(true);
+  };
 
   const setDest = (idx: number, patch: Partial<Destination>): void => {
     setDests((prev) => prev.map((d, i) => (i === idx ? { ...d, ...patch } : d)));
@@ -361,42 +386,19 @@ function TripForm({
         />
       </View>
 
-      <View className="row-between" style={{ gap: 10 }}>
-        <View className="field" style={{ flex: 1 }}>
-          <Text className="field__label">开始日期</Text>
-          <Picker
-            mode="date"
-            value={startDate === '' ? todayStr() : startDate}
-            onChange={(e) => setStartDate(String(e.detail.value))}
+      <View className="field">
+        <Text className="field__label">出行日期</Text>
+        <View className="picker-row" onClick={() => setRangeOpen(true)}>
+          <Text
+            className={
+              startDate === '' && endDate === ''
+                ? 'picker-row__val picker-row__val--empty'
+                : 'picker-row__val'
+            }
           >
-            <View className="picker-row">
-              <Text
-                className={
-                  startDate === '' ? 'picker-row__val picker-row__val--empty' : 'picker-row__val'
-                }
-              >
-                {startDate === '' ? '未设置' : startDate}
-              </Text>
-            </View>
-          </Picker>
-        </View>
-        <View className="field" style={{ flex: 1 }}>
-          <Text className="field__label">结束日期</Text>
-          <Picker
-            mode="date"
-            value={endDate === '' ? startDate || todayStr() : endDate}
-            onChange={(e) => setEndDate(String(e.detail.value))}
-          >
-            <View className="picker-row">
-              <Text
-                className={
-                  endDate === '' ? 'picker-row__val picker-row__val--empty' : 'picker-row__val'
-                }
-              >
-                {endDate === '' ? '未设置' : endDate}
-              </Text>
-            </View>
-          </Picker>
+            {rangeText(startDate, endDate) || '点选出发与返程日期'}
+          </Text>
+          <Icon name="chevron-right" size={16} className="rotate-90 muted" />
         </View>
       </View>
       {(startDate !== '' || endDate !== '') && (
@@ -416,18 +418,25 @@ function TripForm({
         <Text className="field__label">目的地</Text>
         {dests.map((d, idx) => (
           <View className="dest-row" key={`d-${idx}`}>
-            <Input
-              className="add-row__input"
-              value={d.name}
-              onInput={(e) => setDest(idx, { name: e.detail.value })}
-              placeholder="城市 / 地点，如：吉隆坡"
-            />
-            <Input
-              className="add-row__input"
-              value={d.note ?? ''}
-              onInput={(e) => setDest(idx, { note: e.detail.value })}
-              placeholder="备注（选填）"
-            />
+            <View className="dest-row__main">
+              <View className="dest-row__pick" onClick={() => openRegionFor(idx)}>
+                <Icon name="map-pin" size={12} className="muted" />
+                <Text
+                  className={
+                    d.name === '' ? 'dest-row__name dest-row__name--empty' : 'dest-row__name'
+                  }
+                >
+                  {d.name === '' ? '点选地区' : d.name}
+                </Text>
+                <Icon name="chevron-right" size={13} className="rotate-90 muted" />
+              </View>
+              <Input
+                className="add-row__input"
+                value={d.note ?? ''}
+                onInput={(e) => setDest(idx, { note: e.detail.value })}
+                placeholder="备注（选填），如：住在老城区"
+              />
+            </View>
             <View
               className="icon-btn icon-btn--danger"
               onClick={() => setDests((prev) => prev.filter((_, i) => i !== idx))}
@@ -436,9 +445,9 @@ function TripForm({
             </View>
           </View>
         ))}
-        <View className="add-bar" onClick={() => setDests((prev) => [...prev, { name: '' }])}>
+        <View className="add-bar" onClick={() => openRegionFor(null)}>
           <Icon name="plus" size={15} />
-          <Text className="add-bar__text">添加目的地</Text>
+          <Text className="add-bar__text">添加目的地地区</Text>
         </View>
       </View>
 
@@ -452,6 +461,36 @@ function TripForm({
       <Text className="muted" style={{ fontSize: 11, marginTop: 8, lineHeight: 1.6 }}>
         保存会带上当前版本号 v{trip.version}；若期间有人改过这场行程，会提示刷新后重试。
       </Text>
+
+      {rangeOpen && (
+        <DateRangeSheet
+          title="出行日期"
+          initialStart={startDate}
+          initialEnd={endDate}
+          onCancel={() => setRangeOpen(false)}
+          onConfirm={(s, e) => {
+            setStartDate(s);
+            setEndDate(e);
+            setRangeOpen(false);
+          }}
+        />
+      )}
+
+      {regionOpen && (
+        <RegionSheet
+          title={regionIdx === null ? '添加目的地地区' : '修改目的地地区'}
+          initialCity={regionIdx === null ? '' : (dests[regionIdx]?.name ?? '')}
+          onCancel={() => setRegionOpen(false)}
+          onConfirm={(city) => {
+            setDests((prev) =>
+              regionIdx === null
+                ? [...prev, { name: city }]
+                : prev.map((d, i) => (i === regionIdx ? { ...d, name: city } : d)),
+            );
+            setRegionOpen(false);
+          }}
+        />
+      )}
     </View>
   );
 }
@@ -549,9 +588,18 @@ function TripInviteCard({
         把邀请码或分享链接发给朋友，对方点开即可加入这场行程，不占家庭名额
       </Text>
       {invite.error ? (
-        <Text className="form-error" style={{ marginTop: 6 }}>
-          {invite.error}
-        </Text>
+        <>
+          <Text className="muted" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.6 }}>
+            {inviteUnavailableHint(invite.error)}
+          </Text>
+          <Text
+            className="coord-line__clear"
+            style={{ marginTop: 4 }}
+            onClick={() => invite.reload()}
+          >
+            重新获取
+          </Text>
+        </>
       ) : null}
     </View>
   );

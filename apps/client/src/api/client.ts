@@ -18,6 +18,7 @@
 import type {
   ChecklistItem,
   ConfirmMediaAssetInput,
+  Destination,
   Expense,
   ExpenseSummary,
   Family,
@@ -110,6 +111,12 @@ export interface ApiClient {
     title: string;
     startDate?: string;
     endDate?: string;
+    /**
+     * 目的地（整体写入，服务端 createTripSchema 早已支持 `destinations`）。
+     * 🆕 客户端新增字段：此前创建行程无处填目的地，只能建完再进详情页补，
+     *    对应反馈「允许用户选择地区」。
+     */
+    destinations?: Destination[];
   }): Promise<Trip>;
   /**
    * PATCH /trips/:id —— 改行程本身（标题 / 起止日期 / 目的地）。
@@ -174,6 +181,24 @@ export interface ApiClient {
   // ---- wish ----
   /** GET /wishes */
   listWishes(familyId?: string): Promise<Wish[]>;
+  /**
+   * POST /wishes —— 提一条心愿（全家投票用）。
+   * 🆕 客户端新增方法：服务端 `createWishSchema` 与 POST 路由早已存在
+   *    （domains/wish/wish.controller.ts），此前只有「投票」没有「新建」，
+   *    界面上的「提心愿」按钮因此点了没反应。
+   * 🔴 字段口径：服务端叫 `description`，客户端模型暴露为 `note`
+   *    （投影在 api/http.ts 的 toWish 里统一做，界面只认知 note）。
+   */
+  createWish(input: {
+    familyId: string;
+    title: string;
+    /** 服务端 description（客户端公开名 note） */
+    description?: string;
+    /** 可选：直接挂到某次出行下 */
+    tripId?: string;
+    /** 优先级，0-100，越大越靠前 */
+    priority?: number;
+  }): Promise<Wish>;
   /** POST /wishes/:id/vote */
   voteWish(id: string): Promise<Wish>;
 

@@ -653,6 +653,7 @@ const seq = {
   member: 7004,
   trip: 103,
   tripMember: 9004,
+  wish: 205,
   itinerary: 305,
   checklist: 406,
   expense: 504,
@@ -892,7 +893,7 @@ export function createMockClient(): ApiClient {
         status: 'DRAFT',
         startDate: input.startDate ?? null,
         endDate: input.endDate ?? null,
-        destinations: [],
+        destinations: input.destinations ?? [],
         version: 1,
       };
       state.trips.push(t);
@@ -1052,6 +1053,28 @@ export function createMockClient(): ApiClient {
     async listWishes(familyId) {
       const list = familyId ? state.wishes.filter((w) => w.familyId === familyId) : state.wishes;
       return respond(list);
+    },
+    /**
+     * POST /wishes —— 提心愿（与后端 createWish 同口径）
+     * 新心愿默认 status=OPEN / votes=0 / 未投票；tags 不参与写入（服务端无该字段），
+     * 客户端只做展示兜底，不在 Mock 里凭空造标签。
+     */
+    async createWish(input) {
+      const w: Wish = {
+        id: nextId('wish'),
+        familyId: input.familyId,
+        ...(input.tripId !== undefined ? { tripId: input.tripId } : {}),
+        title: input.title,
+        ...(input.description !== undefined && input.description !== ''
+          ? { note: input.description }
+          : {}),
+        votes: 0,
+        votedByMe: false,
+        status: 'OPEN',
+      };
+      // 新提的排最前：用户可以立刻看到自己刚写的那条（列表按创建倒序更符合预期）
+      state.wishes.unshift(w);
+      return respond(w);
     },
     async voteWish(id) {
       const w = state.wishes.find((x) => x.id === id);

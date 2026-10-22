@@ -39,6 +39,21 @@ export const EXPENSE_CATEGORIES = ['交通', '住宿', '餐饮', '门票', '购�
 
 export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
 
+/**
+ * 邀请接口未就绪时的友好提示
+ * ============================================================================
+ * 后端 trip 域目前没有 `/trips/:id/invite` 三个端点，dispatcher 未命中路由时统一回
+ * `{ code: 4040, message: '资源不存在' }`（见 common/middleware/dispatcher.ts 的
+ * notFoundResult）。直接把「资源不存在」抛给用户，会被理解成「这场行程没了」——
+ * 这里按错误码/文案分流成人话，避免误判（派发单 D-2026-10-22-01）。
+ */
+export function inviteUnavailableHint(message: string): string {
+  if (message.includes('4040') || message.includes('资源不存在')) {
+    return '后端邀请接口尚未上线，邀请码暂时生成不了（行程本身正常，邀请码上线后自动可用）';
+  }
+  return message;
+}
+
 /** 今日 YYYY-MM-DD（记账/安排的默认日期） */
 export function todayYmd(): string {
   const d = new Date();

@@ -22,6 +22,9 @@ deploy/ecosystem.config.js
 apps/client/project.private.config.json
 # monorepo 根入口的本地私有配置（libVersion 等 IDE 状态，非资产）
 /project.private.config.json
+# apps/ 级别的开发者工具 scratch（误把 apps/ 当工程根开时生成，非仓库资产）
+apps/project.private.config.json
+apps/project.config.json
 
 # WorkBuddy 工作区记忆（Agent 内部资产，非仓库内容）
 .workbuddy/

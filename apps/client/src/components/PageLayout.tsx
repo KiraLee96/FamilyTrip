@@ -36,10 +36,17 @@ export function PageLayout({
           {sub ? (
             <View className="page-head__sub">
               <Text>{sub}</Text>
-              <View className={`badge badge--${DATA_SOURCE}`}>
-                <View className="badge__dot" />
-                <Text>{DATA_SOURCE === 'mock' ? '示例数据' : '已连后端'}</Text>
-              </View>
+              {/*
+                数据源标记只在 Mock 模式下出现（「示例数据」）。
+                真后端不再挂「已连后端」—— 用户反馈那是调试信息，进生产界面里属于噪声，
+                而且会让用户以为「连上了才是正常的」。（2026-10-22）
+              */}
+              {DATA_SOURCE === 'mock' && (
+                <View className="badge badge--mock">
+                  <View className="badge__dot" />
+                  <Text>示例数据</Text>
+                </View>
+              )}
             </View>
           ) : null}
         </View>

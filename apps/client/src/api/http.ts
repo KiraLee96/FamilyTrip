@@ -622,6 +622,11 @@ export function createHttpClient(): ApiClient {
       );
       return rows.map(toWish);
     },
+    createWish: async (input) => {
+      // 服务端 createWishSchema：familyId / tripId / title / description / priority
+      const r = await request<{ wish: Record<string, unknown> }>('POST', '/wishes', input);
+      return toWish(r.wish);
+    },
     voteWish: async (id) => {
       // 服务端 vote 幂等（同一用户重复投票只计一次），显式 vote:true
       const r = await request<{ wish: Record<string, unknown> }>('POST', `/wishes/${id}/vote`, {
