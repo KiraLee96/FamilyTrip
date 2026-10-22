@@ -125,21 +125,21 @@ sudo ln -s /etc/nginx/sites-available/family-trip /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 
 # 证书：先确保 80 段可达（备案解析生效后）
-sudo certbot --nginx -d api.<你的域名>
+sudo certbot --nginx -d api.familytripallinone.cn
 ```
 
 > certbot 自动续期已装 timer（`systemctl list-timers | grep certbot` 确认）。
 
 ## 6. 小程序后台配合法域名
 
-mp.weixin.qq.com → 开发管理 → 服务器域名 → request 合法域名添加 `https://api.<你的域名>`
+mp.weixin.qq.com → 开发管理 → 服务器域名 → request 合法域名添加 `https://api.familytripallinone.cn`
 （合法域名有月修改次数限制，一次填对）。
 
 ## 7. 端到端验证
 
 ```bash
 # 1. 链路：外网 → nginx → NestJS
-curl -s https://api.<你的域名>/health
+curl -s https://api.familytripallinone.cn/health
 
 # 2. 真实登录（需要小程序端发起 wx.login，本步在开发者工具里点登录看「我的」页）
 #    验收点：昵称不再每次变；改名后刷新仍在

@@ -47,7 +47,8 @@ module.exports = {
         FX_AUTHORIZED_SOURCES: 'MANUAL_RATE_ENTRY',
 
         // CORS：只放小程序/前端真实来源（勿用 *）
-        CORS_ORIGIN: 'https://<填 API 域名>',
+        // 小程序端请求不带 Origin，此项主要给 H5 预览与网页端用
+        CORS_ORIGIN: 'https://api.familytripallinone.cn',
 
         // 媒体公网基址：头像等 fileKey 拼成可访问 URL（对象存储/CDN 域名）
         MEDIA_PUBLIC_BASE_URL: 'https://<填媒体域名>',
