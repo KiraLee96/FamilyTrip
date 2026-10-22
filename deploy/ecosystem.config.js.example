@@ -24,7 +24,9 @@ module.exports = {
       // resolveTokenSecret 的 fail-fast 全部由 NODE_ENV=production 激活
       env: {
         NODE_ENV: 'production',
-        PORT: '3000',
+        // 🔴 端口必须避开 3000：该机 XLFamily（family-space）已占用 :3000
+        //    （2026-10-22 实测 ss -lntp 确认）。改端口时 nginx 反代同步改。
+        PORT: '3010',
 
         // 数据库：专用最小权限账号（勿用 root）
         // 格式：mysql://family_trip:<密码>@127.0.0.1:3306/family_trip

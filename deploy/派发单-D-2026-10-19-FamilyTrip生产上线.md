@@ -4,7 +4,7 @@
 - **目标**：FamilyTrip（家庭出行小程序）部署至轻量服务器 82.156.30.50 并上线
 - **共机风险基线**：该机跑着 XLFamily（pm2 family-space），所有操作以不影响它为前提
 - **关联资产**：`FamilyTrip/deploy/DEPLOY.md`（部署 runbook）、配置模板三件套
-- **状态**：执行中（D3–D7 已完成；D2 备案初审中；D9–D14 待备案放号后启动）
+- **状态**：执行中（D2 备案✅ / D3–D7 完成 / D9 MySQL 完成、建库待执行 / D10–D14 待推进）
 
 ---
 
@@ -22,22 +22,22 @@
 > 角色列为本环境可配合的专家/角色；「控制台/行政」类无专家可代，须 Kira 本人执行。
 > 依赖列空 = 可立即开始。
 
-| ID  | 任务                                                                  | 负责角色/专家                                      | 依赖            | 产出 / 验收                                                                |
-| --- | --------------------------------------------------------------------- | -------------------------------------------------- | --------------- | -------------------------------------------------------------------------- |
-| D1  | FX 授权源决策（Q1 拍板；接入则附供应商选型）                          | Kira 决策 + **backend-architect** 出接入方案       | —               | ✅ 已决：接，人工录入路径。`ManualRateSource` 已实现并入库，无需供应商采购 |
-| D2  | 域名备案提交（实名→解析→ ICP 备案）                                   | Kira（行政，控制台）                               | —               | 🔄 初审中（短信核验 24h 内须完成）                                         |
-| D3  | 云硬盘**自动快照**开启 + 2G swap 落地                                 | Kira（控制台）+ **backend-architect** 指导         | —               | ✅ 每周快照自动化已建（配额 2 个已用满纪律）；swap 2G 已验证               |
-| D4  | WECHAT_SECRET 获取（mp.weixin.qq.com 开发设置）                       | Kira（小程序管理员）                               | —               | ✅ AppSecret 已拿（入密码管理器；禁聊天工具传输——已拒收）                  |
-| D5  | JWT_SECRET 生成（`openssl rand -base64 48`）                          | **backend-architect**                              | —               | ✅ 已生成（Kira 侧 gitbash 执行；禁聊天工具传输——已拒收）                  |
-| D6  | 代码收尾：本地 7 个未提交文件 commit；检查 prisma migrations 是否入库 | **backend-architect**                              | —               | ✅ 多个干净提交入库；migrations 随 D10 前 `migrate deploy` 落地            |
-| D7  | 客户端 API 基址配置化（消除烤死的 127.0.0.1:34570）                   | 前端（**backend-architect** 可承接 frontend-dev）  | —               | ✅ `API_BASE_URL` 构建期注入；为空走 Mock，真后端构建时注入即可            |
-| D8  | FX 域摘除（仅当 Q1=下线）                                             | —                                                  | D1              | ❌ 已取消：Q1 拍板「接」，FX 域保留                                        |
-| D9  | 服务器基线：MySQL 8 安装 + 降配 + 建最小权限库账号                    | **backend-architect** 指挥 + Kira 在 OrcaTerm 执行 | D3              | `mysql-lightsail.cnf` 生效；family_trip 库 + 专用账号就绪                  |
-| D10 | 代码部署：源码上服务器 → install → build → prisma migrate deploy      | **backend-architect** 指挥 + Kira 执行             | D6, D9          | `family-trip` 可被 pm2 拉起（缺凭证时应拒绝启动，见对照表）                |
-| D11 | 生产凭证注入 + pm2 起服务                                             | **backend-architect** 指挥 + Kira 执行             | D1, D4, D5, D10 | `pm2 logs` 见 listening :3000；`/health` 返回 up                           |
-| D12 | nginx + certbot 证书（80→443 + 反代）                                 | **backend-architect** 指挥 + Kira 执行             | D2              | `https://api.<域名>/health` 外网可达                                       |
-| D13 | 小程序出包（注入真实域名）+ 后台配 request 合法域名                   | 前端 + Kira（管理员）                              | D2, D7          | 开发者工具登录→「我的」页身份稳定                                          |
-| D14 | 端到端验收 + 上线后 24h 内存/CPU 观察                                 | Kira 验收 + **backend-architect** 复盘             | D11, D12, D13   | 登录/昵称/家庭 CRUD 全通过；`free -h` 稳定 <75%                            |
+| ID  | 任务                                                                  | 负责角色/专家                                      | 依赖            | 产出 / 验收                                                                                                     |
+| --- | --------------------------------------------------------------------- | -------------------------------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
+| D1  | FX 授权源决策（Q1 拍板；接入则附供应商选型）                          | Kira 决策 + **backend-architect** 出接入方案       | —               | ✅ 已决：接，人工录入路径。`ManualRateSource` 已实现并入库，无需供应商采购                                      |
+| D2  | 域名备案提交（实名→解析→ ICP 备案）                                   | Kira（行政，控制台）                               | —               | ✅ **2026-10-22 备案已完成**；待补：域名 A 记录指向 82.156.30.50                                                |
+| D3  | 云硬盘**自动快照**开启 + 2G swap 落地                                 | Kira（控制台）+ **backend-architect** 指导         | —               | ✅ 每周快照自动化已建（配额 2 个已用满纪律）；swap 2G 已验证                                                    |
+| D4  | WECHAT_SECRET 获取（mp.weixin.qq.com 开发设置）                       | Kira（小程序管理员）                               | —               | ✅ AppSecret 已拿（入密码管理器；禁聊天工具传输——已拒收）                                                       |
+| D5  | JWT_SECRET 生成（`openssl rand -base64 48`）                          | **backend-architect**                              | —               | ✅ 已生成（Kira 侧 gitbash 执行；禁聊天工具传输——已拒收）                                                       |
+| D6  | 代码收尾：本地 7 个未提交文件 commit；检查 prisma migrations 是否入库 | **backend-architect**                              | —               | ✅ 多个干净提交入库；migrations 随 D10 前 `migrate deploy` 落地                                                 |
+| D7  | 客户端 API 基址配置化（消除烤死的 127.0.0.1:34570）                   | 前端（**backend-architect** 可承接 frontend-dev）  | —               | ✅ `API_BASE_URL` 构建期注入；为空走 Mock，真后端构建时注入即可                                                 |
+| D8  | FX 域摘除（仅当 Q1=下线）                                             | —                                                  | D1              | ❌ 已取消：Q1 拍板「接」，FX 域保留                                                                             |
+| D9  | 服务器基线：MySQL 8 安装 + 降配 + 建最小权限库账号                    | **backend-architect** 指挥 + Kira 在 OrcaTerm 执行 | D3              | 🟡 MySQL 8.0.46 已装 + 降配生效（128M/50/PS OFF/127.0.0.1）；**建库建号待 Kira 执行**（远程命令安全策略拦 DDL） |
+| D10 | 代码部署：源码上服务器 → install → build → prisma migrate deploy      | **backend-architect** 指挥 + Kira 执行             | D6, D9          | ⛔ 阻塞：私有仓库 + 本地 7 个提交未推 → 需 Kira push + GitHub 部署密钥                                          |
+| D11 | 生产凭证注入 + pm2 起服务                                             | **backend-architect** 指挥 + Kira 执行             | D1, D4, D5, D10 | `pm2 logs` 见 listening **:3010**（3000 被 XLFamily 占用）；`/health` 返回 up                                   |
+| D12 | nginx + certbot 证书（80→443 + 反代）                                 | **backend-architect** 指挥 + Kira 执行             | D2              | `https://api.<域名>/health` 外网可达                                                                            |
+| D13 | 小程序出包（注入真实域名）+ 后台配 request 合法域名                   | 前端 + Kira（管理员）                              | D2, D7          | 开发者工具登录→「我的」页身份稳定                                                                               |
+| D14 | 端到端验收 + 上线后 24h 内存/CPU 观察                                 | Kira 验收 + **backend-architect** 复盘             | D11, D12, D13   | 登录/昵称/家庭 CRUD 全通过；`free -h` 稳定 <75%                                                                 |
 
 ---
 
