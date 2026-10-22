@@ -17,6 +17,20 @@ import { defineConfig } from '@tarojs/cli';
 const isH5 = process.env.TARO_ENV === 'h5';
 const outputRoot = isH5 ? 'dist-h5' : 'dist';
 
+/**
+ * API 基址（构建期常量，见下方 defineConstants）
+ *
+ * 优先级：显式 `API_BASE_URL` > 生产默认值 > 空（Mock）
+ *   - `taro build`（NODE_ENV=production）→ 默认指向**线上后端**，不需要额外环境变量。
+ *     🔴 这条是硬性修正：此前生产基址只能靠命令行传 env，一旦漏传就静默回落 Mock，
+ *        表现为「包上传上去了但数据还是假的」（2026-10-22 实际踩过）。
+ *   - `taro dev:weapp`（watch）→ 默认空 = 走 Mock，本地联调不受线上数据干扰；
+ *     想让本地连线上后端，显式传 API_BASE_URL 即可。
+ */
+const PROD_API_BASE_URL = 'https://api.familytripallinone.cn/api';
+const isProdBuild = process.env.NODE_ENV === 'production';
+const apiBaseUrl = process.env.API_BASE_URL ?? (isProdBuild && !isH5 ? PROD_API_BASE_URL : '');
+
 export default defineConfig({
   projectName: 'family-trip-client',
   date: '2026-10-12',
@@ -31,7 +45,7 @@ export default defineConfig({
   outputRoot,
   plugins: [],
   defineConstants: {
-    'process.env.API_BASE_URL': JSON.stringify(process.env.API_BASE_URL ?? ''),
+    'process.env.API_BASE_URL': JSON.stringify(apiBaseUrl),
   },
   copy: {
     /**
