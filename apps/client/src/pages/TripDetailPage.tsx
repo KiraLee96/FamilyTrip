@@ -1,13 +1,16 @@
 /**
- * 行程详情 —— 按天时间轴 + 准备清单 + 花销（Taro 同构版）
+ * 行程详情 —— 只放「内容」：按天时间轴 + 清单 + 花销 + 照片 + 回忆
  * ============================================================================
- * 三个板块用标签页切换，避免长滚动。
+ * 2026-10-26 信息架构调整：邀请码与参与人（「谁能来」）不再各占一张卡长在页首，
+ * 统一收进 `pages/TripManagePage`（行程管理），页首信息卡只留一条入口。
+ * 详情页的职责因此更单一：进来就是看内容，管理动作去管理页。
+ *
  * 路由参数从 react-router 的 useParams 改为 nav 抽象层的 useRouteParams。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { MutableRefObject, ReactNode } from 'react';
-import { Button, Image, Input, Map, Picker, Text, Textarea, View } from '@tarojs/components';
+import { useCallback, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
+import { Image, Input, Map, Picker, Text, Textarea, View } from '@tarojs/components';
 import Taro from '@tarojs/taro';
 import { Link } from '../nav/Link';
 import { navigate, useRouteParams } from '../nav';
@@ -15,6 +18,7 @@ import { navigate, useRouteParams } from '../nav';
 import { ApiError, api } from '../api/index';
 import type {
   ChecklistItem,
+  ChecklistTemplate,
   Destination,
   Expense,
   ItineraryBlock,
@@ -23,9 +27,9 @@ import type {
   MemorySnapshot,
   TransportMode,
   Trip,
-  TripInvite,
 } from '../api/types';
 import { DateRangeSheet } from '../components/Calendar';
+import { BillImportSheet } from '../components/BillImportSheet';
 import { Icon, TRANSPORT_ICON } from '../components/Icon';
 import { ItineraryContent } from '../components/ItineraryContent';
 import { MemoryCard } from '../components/MemoryCard';
@@ -39,10 +43,11 @@ import {
   EXPENSE_CATEGORIES,
   TRANSPORT_LABEL,
   TRANSPORT_MODES,
-  inviteUnavailableHint,
+  photoWriteHint,
   todayYmd,
+  tripDisplayStatus,
+  tripIsEnded,
 } from '../utils/constants';
-import { copyText } from '../utils/clipboard';
 import { pickAndUploadPhotos } from '../utils/upload';
 
 type Tab = 'itinerary' | 'checklist' | 'expense' | 'photo' | 'memory';
@@ -122,7 +127,7 @@ export function TripDetailPage() {
   });
 
   const trip = useAsync(
-    useCallback(() => api.getTrip(tripId), [tripId]),
+    useCallback(() => api.getTripDetail(tripId), [tripId]),
     [tripId],
   );
 
@@ -139,30 +144,38 @@ export function TripDetailPage() {
     setLocalImages((m) => ({ ...m, [assetId]: localPath }));
   }, []);
 
-  // 分享卡片携带的行程邀请信息（由 TripInviteCard 回填；
-  // 微信 useShareAppMessage 是页面级钩子，必须在组件顶层、提前返回之前调用）
-  const tripShareRef = useRef<{ code: string; title: string } | null>(null);
-  Taro.useShareAppMessage(() => {
-    const s = tripShareRef.current;
-    return s
-      ? { title: `加入「${s.title}」`, path: `/pages/JoinTripPage?invite=${s.code}` }
-      : { title: '来看看这场家庭出行', path: '/pages/JoinTripPage' };
-  });
+  // 2026-10-26：邀请码/参与人搬到独立的「行程管理」页（TripManagePage），
+  // 详情页不再注册 useShareAppMessage —— 分享带码的入口统一在管理页，
+  // 避免详情页出现一个"分享出去不带码"的转发卡片（上一轮反馈 4 的同类坑）。
 
   if (trip.loading) return <Loading />;
   if (trip.error) return <ErrorBox message={trip.error} onRetry={trip.reload} />;
-  const t = trip.data!;
+  // 🆕 改用 getTripDetail：后端一直回 members，此前客户端只投影 trip，
+  //    导致「加入行程后看不到参与人」（反馈 2）。
+  const detail = trip.data!;
+  const t = detail.trip;
+  const tripMembers = detail.members;
 
   /**
-   * 已结束的行程一律只读（反馈「已完成的行程不能修改」）。
+   * 只读口径（2026-10-26 调整）。
    * ==========================================================================
-   * 口径与服务端一致：END 之后所有成员 accessLevel → HISTORICAL_READONLY，
-   * 各子域写接口会回 403「该出行已归档，仅可查看」（见 trip.service.finish）。
-   * 前端必须**先**把入口收起来，而不是让用户点开表单、填完才吃到 403。
-   * 因此这里把「状态只读」与「回忆墙只读」合并成同一个 ro 标志，向下透传。
+   * 三个来源，分两档：
+   *   · closed  —— 服务端已归档（FINISHED/CANCELLED）：信息类全部锁定；
+   *   · ended   —— **日期已过但服务端还没流转**（派生，见 tripIsEnded）：
+   *               只锁「行程信息」，安排/清单/花销仍可补录 —— 用户出行回来第一件事
+   *               就是补记账，这一档不能锁死；
+   *   · readonly —— 从回忆墙进入：信息只读（与 closed 同档展示）。
+   *
+   * 🔴 照片是唯一例外：用户明确要求「已完成的行程……只能添加或删除回忆照片」，
+   *    所以照片 tab **不再接 readonly**，任何状态下都保留上传/删除入口
+   *    （后端归档后媒体写仍会 403，见派发单 D-2026-10-26-02 P0-2）。
    */
   const closed = t.status === 'FINISHED' || t.status === 'CANCELLED';
-  const ro = readonly || closed;
+  const ended = tripIsEnded(t);
+  /** 信息类写操作是否锁定（标题/日期/目的地/删除行程） */
+  const ro = readonly || closed || ended;
+  /** 内容类写操作（安排/清单/花销）是否锁定 —— 只认服务端归档态 */
+  const contentRo = readonly || closed;
 
   return (
     <PageLayout title={t.title} sub={dateRange(t)}>
@@ -175,16 +188,23 @@ export function TripDetailPage() {
         返回行程列表
       </Link>
 
-      {/* 只读提示：区分「回忆墙入口」与「行程已结束」两种只读来源，明示原因 */}
+      {/* 只读提示：区分「回忆墙入口」「已归档」「日期已过」三种来源，明示原因 */}
       {ro && (
         <View className="readonly-banner">
           <Icon name="route" size={14} />
           <Text>
             {closed
-              ? '行程已结束，记录转只读：可回看，不能再修改或删除'
-              : '来自回忆墙的行程仅可查看，不能修改或删除'}
+              ? '行程已结束：信息锁定，仅可回看与补充回忆照片'
+              : readonly
+                ? '来自回忆墙的行程仅可查看，不能修改'
+                : '行程日期已过：信息锁定，仍可在下方补记花销与照片'}
           </Text>
         </View>
+      )}
+
+      {/* 日期已过但服务端还没流转 → 给一个明确的落库动作（不替用户改库） */}
+      {ended && !closed && (
+        <FinishTripBar tripId={tripId} version={t.version} onDone={trip.reload} />
       )}
 
       <View className="trip">
@@ -204,7 +224,7 @@ export function TripDetailPage() {
               )}
             </View>
           </View>
-          <StatusChip status={t.status} />
+          <StatusChip status={tripDisplayStatus(t)} />
         </View>
         {(t.destinations ?? []).length > 0 && (
           <View className="trip__dest">
@@ -216,23 +236,57 @@ export function TripDetailPage() {
             ))}
           </View>
         )}
-        <Text className="muted" style={{ marginTop: 10 }}>
-          版本 v{t.version} · CAS 乐观锁，更新需回传该值
-        </Text>
-        {/* 行程本身的改 / 删（服务端 PATCH/DELETE 早已存在，此前无客户端入口）；
-            只读入口（回忆墙 / 已结束）不渲染（需求② + 反馈「已完成不能修改」） */}
-        {!ro && (
-          <View className="trip__ops">
+
+        {/*
+          行程管理入口（2026-10-26 信息架构调整）：
+          邀请码与参与人不再各占一张卡，统一收进「行程管理」页；
+          这里只留一条可点的信息行，点整行进入管理页。
+        */}
+        <View className="trip__manage" onClick={() => navigate(`/trips/${tripId}/manage`)}>
+          <View className="trip__manage-main">
+            <Text className="trip__manage-count">
+              <Icon name="users" size={14} /> {tripMembers.length} 人同行
+            </Text>
+            <Text className="trip__manage-names">
+              {tripMembers
+                .slice(0, 4)
+                .map((m) => m.displayName)
+                .join('、')}
+              {tripMembers.length > 4 ? ' 等' : ''}
+            </Text>
+          </View>
+          <Text className="trip__manage-go">行程管理 ›</Text>
+        </View>
+
+        {/* 邀请同行人：直达管理页的邀请区块（她要求"最上面加一个按钮"） */}
+        <View className="trip__ops">
+          <View
+            className="btn btn--ghost trip__op trip__op--accent"
+            onClick={() => navigate(`/trips/${tripId}/manage`)}
+          >
+            <Icon name="link" size={13} />
+            邀请同行人
+          </View>
+          {!ro && (
             <View className="btn btn--ghost trip__op" onClick={() => setEditingTrip((v) => !v)}>
               <Icon name="edit" size={13} />
               {editingTrip ? '收起编辑' : '编辑行程'}
             </View>
+          )}
+        </View>
+
+        {!ro && (
+          <View className="trip__ops" style={{ marginTop: 8 }}>
             <View
               className="btn btn--ghost trip__op trip__op--danger"
               onClick={() => removeTrip(tripId, t.title, () => navigate('/trips'))}
             >
               <Icon name="trash" size={13} />
               删除行程
+            </View>
+            <View className="btn btn--ghost trip__op" onClick={() => navigate('/trips/new')}>
+              <Icon name="plus" size={13} />
+              再建一场
             </View>
           </View>
         )}
@@ -248,8 +302,6 @@ export function TripDetailPage() {
           onCancel={() => setEditingTrip(false)}
         />
       )}
-
-      <TripInviteCard tripId={tripId} tripTitle={t.title} shareRef={tripShareRef} readonly={ro} />
 
       <View className="tabs">
         {(
@@ -278,12 +330,17 @@ export function TripDetailPage() {
           defaultDate={t.startDate ?? undefined}
           localImages={localImages}
           onImageUploaded={rememberImage}
-          readonly={ro}
+          readonly={contentRo}
         />
       )}
-      {tab === 'checklist' && <ChecklistTab tripId={tripId} familyId={t.familyId} readonly={ro} />}
-      {tab === 'expense' && <ExpenseTab tripId={tripId} familyId={t.familyId} readonly={ro} />}
-      {tab === 'photo' && <PhotoTab tripId={tripId} readonly={ro} />}
+      {tab === 'checklist' && (
+        <ChecklistTab tripId={tripId} familyId={t.familyId} readonly={contentRo} />
+      )}
+      {tab === 'expense' && (
+        <ExpenseTab tripId={tripId} familyId={t.familyId} readonly={contentRo} />
+      )}
+      {/* 照片：任何状态都允许加/删（用户明确要求「已完成的行程只能添加或删除回忆照片」） */}
+      {tab === 'photo' && <PhotoTab tripId={tripId} />}
       {tab === 'memory' && <MemoryTab tripId={tripId} tripTitle={t.title} readonly={ro} />}
     </PageLayout>
   );
@@ -496,111 +553,61 @@ function TripForm({
 }
 
 /**
- * 行程邀请卡 —— 邀请码 + 复制 / 分享 / 重置（GRP-02 外部成员邀请落地）
+ * 「行程日期已过、但服务端状态还停在计划中」的落库入口（2026-10-26）。
  * ============================================================================
- * 邀请码在建行程时自动生成（Mock 已就绪；真后端三端点见派发单
- * D-2026-10-14-02）。外部朋友凭码在 JoinTripPage 加入，成为 isExternal
- * 行程成员（PRD §2.6 临时家庭模型，不占家庭名额）。
- * 接口未就绪时降级：码位显示「——」，操作键置灰，错误信息内联展示，
- * 不阻断详情页其余内容。
+ * 背景：用户要求「行程的时间结束后要自动变成已完成」。真正的自动流转属于服务端
+ * 职责（定时/惰性），客户端不能替用户改库 —— 见派发单 D-2026-10-26-02 P0-1。
+ * 但在这之前，界面不能只是"假装已完成"：那会让列表徽章与真实状态长期背离。
+ * 因此这里给一个明确的动作：告诉用户「日期已过」，并提供一键落库（POST /trips/:id/finish）。
+ * 服务端补上自动流转后，本提示条自然不再出现（ended && !closed 恒为 false）。
  */
-function TripInviteCard({
+function FinishTripBar({
   tripId,
-  tripTitle,
-  shareRef,
-  readonly = false,
+  version,
+  onDone,
 }: {
   tripId: string;
-  tripTitle: string;
-  shareRef: MutableRefObject<{ code: string; title: string } | null>;
-  /** 回忆墙只读入口：隐藏「重置邀请码」（写操作），复制/分享/凭码加入保留 */
-  readonly?: boolean;
+  version: number;
+  onDone: () => void;
 }) {
-  const invite = useAsync(
-    useCallback(() => api.getTripInvite(tripId), [tripId]),
-    [tripId],
-  );
-  const [resetBusy, setResetBusy] = useState(false);
-  const code = invite.data?.inviteCode ?? null;
+  const [busy, setBusy] = useState(false);
 
-  // 邀请码就位后回填分享信息（父页 useShareAppMessage 在分享时读取）
-  useEffect(() => {
-    shareRef.current = code ? { code, title: tripTitle } : null;
-  }, [code, tripTitle, shareRef]);
-
-  const onReset = (): void => {
+  const finish = useCallback(() => {
     void Taro.showModal({
-      title: '重置邀请码',
-      content: '重置后旧邀请码立即作废，确定重置？',
-      confirmText: '重置',
-      confirmColor: '#e5484d',
+      title: '标记为已完成',
+      content:
+        '行程日期已经结束。标记后这场行程转只读归档，仍可补记花销与上传回忆照片，但不能再改行程信息。',
+      confirmText: '标记完成',
     }).then(async (res) => {
       if (!res.confirm) return;
-      setResetBusy(true);
+      setBusy(true);
       try {
-        const next: TripInvite = await api.resetTripInvite(tripId);
-        invite.reload();
-        void Taro.showToast({ title: `新邀请码 ${next.inviteCode}`, icon: 'none' });
+        await api.finishTrip(tripId, version);
+        void Taro.showToast({ title: '已标记为完成', icon: 'none' });
+        onDone();
       } catch (e: unknown) {
-        void Taro.showToast({ title: e instanceof Error ? e.message : '重置失败', icon: 'none' });
+        // 带上后端错误码：500 只回「服务内部错误」时，没码就完全无法定位
+        const msg = e instanceof Error ? e.message : '标记失败';
+        const code = e instanceof ApiError ? `（code ${e.code}）` : '';
+        void Taro.showToast({ title: `${msg}${code}`, icon: 'none' });
       } finally {
-        setResetBusy(false);
+        setBusy(false);
       }
     });
-  };
+  }, [tripId, version, onDone]);
 
   return (
-    <View className="card">
-      <View className="invite">
-        <View className="invite__body">
-          <Text className="invite__label">同行邀请码</Text>
-          <Text className="invite__code">{code ?? '——'}</Text>
-        </View>
-        <View className="invite__ops">
-          <View
-            className={`btn btn--ghost invite__btn ${code ? '' : 'btn--busy'}`}
-            onClick={code ? () => copyText(code, '邀请码已复制') : undefined}
-          >
-            <Icon name="copy" size={14} />
-            复制
-          </View>
-          <Button className="btn btn--ghost invite__btn invite__share" openType="share">
-            <Icon name="share" size={14} />
-            分享
-          </Button>
-        </View>
+    <View className="finish-bar">
+      <View className="finish-bar__body">
+        <Text className="finish-bar__title">这场行程的日期已经结束</Text>
+        <Text className="finish-bar__sub">标记完成会归档为只读档案（照片仍可补传）</Text>
       </View>
-      {!readonly && (
-        <View className="invite__ops" style={{ marginTop: 8 }}>
-          <View
-            className={`btn btn--ghost invite__btn ${resetBusy || !code ? 'btn--busy' : ''}`}
-            onClick={resetBusy || !code ? undefined : onReset}
-          >
-            重置邀请码
-          </View>
-          <Link to="/trips/join" className="btn btn--ghost invite__btn">
-            <Icon name="link" size={14} />
-            凭码加入
-          </Link>
-        </View>
-      )}
-      <Text className="invite__hint">
-        把邀请码或分享链接发给朋友，对方点开即可加入这场行程，不占家庭名额
-      </Text>
-      {invite.error ? (
-        <>
-          <Text className="muted" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.6 }}>
-            {inviteUnavailableHint(invite.error)}
-          </Text>
-          <Text
-            className="coord-line__clear"
-            style={{ marginTop: 4 }}
-            onClick={() => invite.reload()}
-          >
-            重新获取
-          </Text>
-        </>
-      ) : null}
+      <View
+        className={`btn btn--ghost finish-bar__btn ${busy ? 'btn--busy' : ''}`}
+        onClick={busy ? undefined : finish}
+      >
+        {busy ? '处理中…' : '标记完成'}
+      </View>
     </View>
   );
 }
@@ -1340,6 +1347,8 @@ function ChecklistTab({
   const [draft, setDraft] = useState('');
   const [scope, setScope] = useState<'SHARED' | 'PERSONAL'>('SHARED');
   const [busy, setBusy] = useState(false);
+  /** 「引用长期清单」弹层开关 */
+  const [picking, setPicking] = useState(false);
 
   if (q.loading) return <Loading />;
   if (q.error) return <ErrorBox message={q.error} onRetry={q.reload} />;
@@ -1350,11 +1359,13 @@ function ChecklistTab({
   const done = list.filter((c) => c.done).length;
 
   const toggle = async (id: string) => {
+    const cur = list.find((c) => c.id === id);
     try {
-      const next = await api.toggleChecklistItem(id);
+      // 目标态由客户端算好再投递（显式传 checked）：连点时「取反」会把两次点击抵销
+      const next = await api.toggleChecklistItem(id, !(cur?.done ?? false));
       setLocal((m) => ({ ...m, [id]: next }));
     } catch {
-      /* 忽略：保持服务端状态 */
+      /* 忽略：保持服务端状态（409 时界面仍是服务端的真相） */
     }
   };
 
@@ -1377,9 +1388,22 @@ function ChecklistTab({
     <>
       <Progress done={done} total={list.length} label="整体准备度" />
 
+      {/* 引用长期清单：把「家庭常用 / 我的常用」一次性拉进来，不用重敲一遍 */}
+      {!readonly && (
+        <View className="cl-quick" onClick={() => setPicking(true)}>
+          <Icon name="package" size={15} />
+          <Text className="cl-quick__text">从长期清单引用</Text>
+          <Text className="cl-quick__hint">家庭清单 / 我的清单</Text>
+        </View>
+      )}
+
       {list.length === 0 && (
         <Empty
-          text={readonly ? '还没有清单项' : '还没有清单项。新建行程会自动带上往返票/住宿/证件/充电'}
+          text={
+            readonly
+              ? '还没有清单项'
+              : '还没有清单项。可以从长期清单引用，或新建行程自动带的往返票/住宿/证件/充电'
+          }
         />
       )}
 
@@ -1432,7 +1456,7 @@ function ChecklistTab({
           <View className="add-row">
             <Input
               className="add-row__input"
-              placeholder="添加物品，如：防晒霜"
+              placeholder="添加这次专属的物品，如：防晒霜"
               value={draft}
               maxlength={64}
               onInput={(e) => setDraft(e.detail.value)}
@@ -1448,7 +1472,107 @@ function ChecklistTab({
           </View>
         </View>
       )}
+
+      {picking && (
+        <TemplatePickerSheet
+          tripId={tripId}
+          familyId={familyId}
+          onClose={() => setPicking(false)}
+          onApplied={q.reload}
+        />
+      )}
     </>
+  );
+}
+
+/**
+ * 长期清单选择器 —— 把「家庭清单 / 我的清单」引用进当前行程
+ * ============================================================================
+ * 只列可见模板（后端 listTemplates 已按 scope 收口：共享的按家庭过滤，
+ * 私有的只回本人的），前端不做二次权限判断 —— 越权拦截是服务端的事。
+ * 引用是幂等的：同一套清单在同一行程里重复引用不会翻倍，界面提示「已引用过」。
+ */
+function TemplatePickerSheet({
+  tripId,
+  familyId,
+  onClose,
+  onApplied,
+}: {
+  tripId: string;
+  familyId: string;
+  onClose: () => void;
+  onApplied: () => void;
+}) {
+  const q = useAsync(
+    useCallback(
+      () => api.listChecklistTemplates(familyId === '' ? undefined : familyId),
+      [familyId],
+    ),
+    [familyId],
+  );
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const apply = useCallback(
+    async (tpl: ChecklistTemplate) => {
+      setBusyId(tpl.id);
+      try {
+        const r = await api.applyChecklistTemplate({ templateId: tpl.id, tripId, familyId });
+        void Taro.showToast({
+          title: r.alreadyApplied ? '这套清单已经引用过了' : `已加入 ${r.created} 项`,
+          icon: 'none',
+        });
+        onApplied();
+        onClose();
+      } catch (e: unknown) {
+        void Taro.showToast({ title: e instanceof Error ? e.message : '引用失败', icon: 'none' });
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [tripId, familyId, onApplied, onClose],
+  );
+
+  const list = q.data ?? [];
+
+  return (
+    <View className="sheet-root">
+      <View className="sheet-mask" onClick={onClose} />
+      <View className="sheet">
+        <View className="sheet__head">
+          <Text className="sheet__title">从长期清单引用</Text>
+          <View className="sheet__close" onClick={onClose}>
+            <Icon name="close" size={15} />
+          </View>
+        </View>
+
+        {q.loading ? (
+          <Loading text="读取清单…" />
+        ) : q.error ? (
+          <ErrorBox message={q.error} onRetry={q.reload} />
+        ) : list.length === 0 ? (
+          <Empty text="还没有长期清单。去「我的 → 物品清单」建一套，下次出行一键引用" />
+        ) : (
+          <View className="sheet__scroll">
+            {list.map((tpl) => (
+              <View
+                key={tpl.id}
+                className="pick-row"
+                onClick={busyId === null ? () => void apply(tpl) : undefined}
+              >
+                <View className="pick-row__body">
+                  <Text className="pick-row__title">{tpl.name}</Text>
+                  <Text className="pick-row__sub">
+                    {tpl.scope === 'SHARED' ? '家庭共享' : '仅自己'} · {tpl.items.length} 项
+                  </Text>
+                </View>
+                <Text className="pick-row__go">{busyId === tpl.id ? '引用中…' : '引用'}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+        <Text className="sheet__hint">引用后这些物品会变成可勾选的打包项，勾上就是装好了</Text>
+      </View>
+    </View>
   );
 }
 
@@ -1543,6 +1667,8 @@ function ExpenseTab({
   );
   const [mode, setMode] = useState<'idle' | 'add'>('idle');
   const [editingId, setEditingId] = useState<string | null>(null);
+  /** 账单导入弹层开关（反馈 3：一笔一笔记太麻烦） */
+  const [importing, setImporting] = useState(false);
 
   if (list.loading || sum.loading) return <Loading />;
   if (list.error) return <ErrorBox message={list.error} onRetry={list.reload} />;
@@ -1666,23 +1792,44 @@ function ExpenseTab({
         )}
       </View>
 
-      {!readonly &&
-        (mode === 'add' ? (
-          <ExpenseForm
-            tripId={tripId}
-            familyId={familyId}
-            onDone={() => {
-              setMode('idle');
-              reloadAll();
-            }}
-            onCancel={() => setMode('idle')}
-          />
-        ) : (
-          <View className="add-bar" onClick={() => setMode('add')}>
-            <Icon name="plus" size={16} />
-            <Text className="add-bar__text">记一笔花销</Text>
-          </View>
-        ))}
+      {!readonly && (
+        <>
+          {mode === 'add' ? (
+            <ExpenseForm
+              tripId={tripId}
+              familyId={familyId}
+              onDone={() => {
+                setMode('idle');
+                reloadAll();
+              }}
+              onCancel={() => setMode('idle')}
+            />
+          ) : (
+            <>
+              <View className="add-bar" onClick={() => setMode('add')}>
+                <Icon name="plus" size={16} />
+                <Text className="add-bar__text">记一笔花销</Text>
+              </View>
+              {/*
+                账单导入（反馈 3）：微信/支付宝导出 CSV 或直接粘贴，
+                解析后逐行确认再批量写入 —— 出行回来几十笔一次性录完。
+              */}
+              <View className="add-bar add-bar--ghost" onClick={() => setImporting(true)}>
+                <Icon name="package" size={16} />
+                <Text className="add-bar__text">导入账单（微信 / 支付宝）</Text>
+              </View>
+            </>
+          )}
+          {importing && (
+            <BillImportSheet
+              tripId={tripId}
+              familyId={familyId}
+              onClose={() => setImporting(false)}
+              onDone={reloadAll}
+            />
+          )}
+        </>
+      )}
     </>
   );
 }
@@ -1850,7 +1997,22 @@ function removeExpense(id: string, title: string, onDone: () => void): void {
  *   2. asset.url   —— 真后端拼接的持久 URL（方案 A，MEDIA_PUBLIC_BASE_URL+fileKey）；
  *   3. 占位卡       —— Mock 模式 url 为空，或远程图加载失败（onError 降级，不破图）。
  */
-function PhotoTab({ tripId, readonly = false }: { tripId: string; readonly?: boolean }) {
+/**
+ * 照片 tab —— 行程相册（2026-10-26 放开归档写入口）
+ * ============================================================================
+ * 用户反馈：「回忆墙无法上传照片」「已完成的行程……只能添加或删除回忆照片」。
+ *
+ * 根因：本组件原来接 `readonly`，而 readonly = 回忆墙入口 || 已结束，于是
+ * **行程一旦结束（或从回忆墙点进来），上传格子与删除角标全被收起** ——
+ * 看起来就是"回忆墙传不了照片"。
+ *
+ * 现在的口径：照片是「回忆」的载体，不属于「信息编辑」，任何状态都允许加/删。
+ * 🔴 服务端目前对归档行程的媒体写仍会 403（media.service 的
+ *    assertTripActiveWritable / assertTripMemberWritable 都认 HISTORICAL_READONLY），
+ *    所以这里保留入口 + 把 403 翻成人话，而不是把按钮藏起来假装不支持。
+ *    后端放开归属见派发单 D-2026-10-26-02 P0-2。
+ */
+function PhotoTab({ tripId }: { tripId: string }) {
   const q = useAsync(
     useCallback(() => api.listMedia({ tripId }), [tripId]),
     [tripId],
@@ -1879,37 +2041,42 @@ function PhotoTab({ tripId, readonly = false }: { tripId: string; readonly?: boo
       });
       q.reload();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : '上传失败，请重试');
+      setErr(photoWriteHint(e instanceof Error ? e.message : '上传失败，请重试', 'upload'));
     } finally {
       setBusy(false);
     }
   };
 
   const remove = async (id: string) => {
+    const res = await Taro.showModal({
+      title: '删除这张照片',
+      content: '删除后不可恢复，确定删除？',
+      confirmText: '删除',
+      confirmColor: '#e5484d',
+    });
+    if (!res.confirm) return;
     try {
       await api.deleteMediaAsset(id);
       q.reload();
-    } catch {
-      /* 忽略：仅上传者或户主可删，失败时保持原状 */
+    } catch (e: unknown) {
+      setErr(photoWriteHint(e instanceof Error ? e.message : '删除失败', 'delete'));
     }
   };
 
   return (
     <>
       <View className="photo-grid">
-        {!readonly && (
-          <View
-            className={
-              busy ? 'photo-cell photo-cell--add photo-cell--busy' : 'photo-cell photo-cell--add'
-            }
-            onClick={() => {
-              if (!busy) void upload();
-            }}
-          >
-            <Text className="photo-cell__plus">＋</Text>
-            <Text className="photo-cell__add-text">{busy ? '上传中…' : '上传照片'}</Text>
-          </View>
-        )}
+        <View
+          className={
+            busy ? 'photo-cell photo-cell--add photo-cell--busy' : 'photo-cell photo-cell--add'
+          }
+          onClick={() => {
+            if (!busy) void upload();
+          }}
+        >
+          <Text className="photo-cell__plus">＋</Text>
+          <Text className="photo-cell__add-text">{busy ? '上传中…' : '上传照片'}</Text>
+        </View>
         {photos.map((p) => {
           // 三级降级：本会话本地路径 > 真后端持久 URL（未加载失败时）> 占位卡
           const src = localPaths[p.id] ?? (brokenUrls[p.id] ? '' : p.url);
@@ -1928,11 +2095,9 @@ function PhotoTab({ tripId, readonly = false }: { tripId: string; readonly?: boo
                   <Text className="photo-cell__ph-date">{shortDate(p.createdAt.slice(0, 10))}</Text>
                 </View>
               )}
-              {!readonly && (
-                <View className="photo-cell__del" onClick={() => void remove(p.id)}>
-                  <Text className="photo-cell__del-x">×</Text>
-                </View>
-              )}
+              <View className="photo-cell__del" onClick={() => void remove(p.id)}>
+                <Text className="photo-cell__del-x">×</Text>
+              </View>
             </View>
           );
         })}

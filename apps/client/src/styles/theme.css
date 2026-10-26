@@ -3252,3 +3252,706 @@ p {
 .dest-row__name--empty {
   color: var(--text-3);
 }
+
+/* ============================================================================
+   2026-10-26 增量：参与人 / 长期清单 / 账单导入 / 我的页管理入口
+   ----------------------------------------------------------------------------
+   命名沿用既有 BEM 风格（块__元素--状态），不引入新颜色 —— 全部走上面那套
+   设计变量，保证换主题时这几块自动跟随。前缀：tm=参与人、cl=清单、bill=账单、
+   mgmt=管理入口、pick-row=选行程/选清单的通用行。
+   ========================================================================== */
+
+/* ---------- 我的页子 tab（比页面级 tabs 更轻，避免两套视觉抢戏） ---------- */
+
+.tabs--sub {
+  margin-bottom: 14px;
+  padding: 3px;
+}
+
+.tabs--sub .tabs__btn {
+  height: 30px;
+  font-size: 13px;
+}
+
+/* ---------- 管理入口宫格 ---------- */
+
+.mgmt-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.mgmt-entry {
+  flex: 1 1 calc(50% - 4px);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 12px;
+  background: var(--card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.mgmt-entry:active {
+  background: var(--primary-soft);
+}
+
+.mgmt-entry__icon {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--primary-soft);
+}
+
+.mgmt-entry__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.mgmt-entry__label {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mgmt-entry__hint {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.mgmt-entry__chev {
+  flex: 0 0 auto;
+  color: var(--text-3);
+}
+
+/* ---------- 参与人卡片 ---------- */
+
+.tm {
+  margin-bottom: 12px;
+}
+
+.tm__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.tm__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.tm__count {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--primary);
+  background: var(--primary-soft);
+  border-radius: 20px;
+  padding: 2px 10px;
+}
+
+.tm__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tm__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.tm__avatar {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tm__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tm__name-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.tm__name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tm__tag {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--card-sunk);
+  border-radius: 6px;
+  padding: 1px 5px;
+}
+
+.tm__tag--leader {
+  color: var(--on-primary);
+  background: var(--primary);
+}
+
+.tm__sub {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.tm__me {
+  display: block;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--line);
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+/* ---------- 长期清单 ---------- */
+
+.cl-intro {
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  background: var(--primary-soft);
+  border-radius: var(--radius);
+}
+
+.cl-intro__title {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--primary-ink);
+  margin-bottom: 4px;
+}
+
+.cl-intro__text {
+  display: block;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--primary-ink);
+  opacity: 0.82;
+}
+
+.cl-card {
+  margin-bottom: 10px;
+}
+
+.cl-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cl-card__title-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cl-card__name {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.cl-card__sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.cl-card__body {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.cl-card__apply {
+  margin: 10px 0 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.cl-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.cl-item:last-of-type {
+  border-bottom: none;
+}
+
+.cl-item__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.cl-item__qty {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.cl-paste {
+  margin: 8px 0 2px;
+}
+
+.cl-paste__area {
+  width: 100%;
+  min-height: 96px;
+  box-sizing: border-box;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--card-sunk);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.cl-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 10px 0 2px;
+}
+
+.cl-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--primary);
+}
+
+.cl-link--danger {
+  color: var(--danger);
+}
+
+/* 行程清单 tab 顶部的「从长期清单引用」快捷条 */
+.cl-quick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 11px 13px;
+  margin-bottom: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.cl-quick__text {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.cl-quick__hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--primary-ink);
+  opacity: 0.7;
+}
+
+/* ---------- 选行程 / 选清单 通用行 ---------- */
+
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.pick-row:last-child {
+  border-bottom: none;
+}
+
+.pick-row__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pick-row__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pick-row__sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.pick-row__go {
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+/* ---------- 账单导入 ---------- */
+
+.sheet--tall {
+  max-height: 92vh;
+}
+
+.sheet__scroll--tall {
+  height: auto;
+  max-height: 62vh;
+}
+
+.bill-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.bill-actions__btn {
+  flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.bill-textarea {
+  min-height: 84px;
+}
+
+.bill-parse {
+  margin: 8px 0 6px;
+}
+
+.bill-hint {
+  display: block;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--primary);
+  background: var(--primary-soft);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  margin-bottom: 8px;
+}
+
+.bill-rows {
+  margin-top: 10px;
+}
+
+.bill-rows__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px 6px;
+}
+
+.bill-rows__title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+.bill-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.bill-row--off {
+  opacity: 0.42;
+}
+
+.bill-row__box {
+  flex: 0 0 auto;
+  color: var(--primary);
+}
+
+.bill-row__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.bill-row__title {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bill-row__sub {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.bill-row__cat {
+  color: var(--primary);
+  font-weight: 700;
+  background: var(--primary-soft);
+  border-radius: 5px;
+  padding: 0 4px;
+}
+
+.bill-row__amt {
+  flex: 0 0 auto;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.bill-help {
+  margin: 14px 0 4px;
+  padding: 10px 12px;
+  background: var(--card-sunk);
+  border-radius: var(--radius-sm);
+}
+
+.bill-help__title {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-2);
+  margin-bottom: 5px;
+}
+
+.bill-help__line {
+  display: block;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.bill-help__note {
+  display: block;
+  margin-top: 6px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
+/* 次级添加条（如「导入账单」跟在「记一笔」下面） */
+.add-bar--ghost {
+  margin-top: -4px;
+  background: var(--card-sunk);
+  color: var(--text-2);
+}
+
+.add-bar--ghost .add-bar__text {
+  color: var(--text-2);
+}
+
+/* ============================================================================
+   2026-10-26 增量二：行程管理页 / 详情页信息行 / 到期提示条
+   ----------------------------------------------------------------------------
+   信息架构调整后，邀请码与参与人从详情页的两张卡收成一条可点信息行 + 一个独立页。
+   tm-summary / tm-block 是管理页的骨架，trip__manage 是详情页的入口行，
+   finish-bar 是「日期已过但还没归档」的落库提示。
+   ========================================================================== */
+
+/* ---------- 详情页：参与人 + 管理入口行 ---------- */
+
+.trip__manage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--primary-soft);
+}
+
+.trip__manage:active {
+  background: #d9e8de;
+}
+
+.trip__manage-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.trip__manage-count {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.trip__manage-names {
+  font-size: 11.5px;
+  color: var(--primary-ink);
+  opacity: 0.78;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trip__manage-go {
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+/* 强调样式的次要按钮（邀请同行人） */
+.trip__op--accent {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+/* ---------- 到期未归档提示条 ---------- */
+
+.finish-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 13px;
+  margin-bottom: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+}
+
+.finish-bar__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.finish-bar__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-ink);
+}
+
+.finish-bar__sub {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--accent-ink);
+  opacity: 0.85;
+}
+
+.finish-bar__btn {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12.5px;
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* ---------- 行程管理页 ---------- */
+
+.tm-summary {
+  margin-bottom: 12px;
+}
+
+.tm-summary__top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tm-summary__title {
+  display: block;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.tm-summary__sub {
+  display: block;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.tm-block {
+  margin-bottom: 12px;
+}
+
+.tm-block__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.tm-block__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.tm-block__hint {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.tm-block__count {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--primary);
+  background: var(--primary-soft);
+  border-radius: 20px;
+  padding: 2px 10px;
+}
+
+/* 回忆墙照片删除角标的忙碌态（防连点二次删除） */
+.photo-cell__del--busy {
+  opacity: 0.4;
+}

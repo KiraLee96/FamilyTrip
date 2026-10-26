@@ -65,10 +65,53 @@ function scopeOf(row: Row): string | undefined {
   return typeof raw === 'string' ? raw : undefined;
 }
 
-/** 读行里某个应当为字符串的单元格；非 string 一律当缺失（避免 `"[object Object]"`）。 */
-function stringCell(row: Row, field: string): string | undefined {
-  const raw = row[field];
-  return typeof raw === 'string' ? raw : undefined;
+/** 模板条目（落库形态：`items_json` 里的数组元素） */
+export interface TemplateItem {
+  name: string;
+  quantity: number;
+}
+
+/**
+ * 把 `items_json` 归一化成条目数组（D-2026-10-26-01 P1-2）。
+ *
+ * 🔴 为什么读路径必须容三种形态：
+ *   1. **数组** —— 本单之后写入的新形态（Prisma Json 列直接存数组）；
+ *   2. **JSON 字符串** —— 本单之前 `createTemplate` 写的是 `JSON.stringify(items)`，
+ *      而 `items_json` 是 MySQL **JSON 列**，于是落库成了「JSON 字符串」而不是数组，
+ *      读回是 `"[{\"name\":...}]"`。存量行全是这个形态，不能当脏数据丢弃；
+ *   3. **二次编码字符串** —— 历史数据若经手过两层序列化，`JSON.parse` 一次后
+ *      仍是字符串，再解一次。
+ *   任何解析失败一律回 `[]`：**一条脏数据不该让整页清单打不开**。
+ */
+export function parseTemplateItems(raw: unknown): TemplateItem[] {
+  let value: unknown = raw;
+  // 最多解两层：正常形态（数组）零次、存量形态一次、双重编码两次
+  for (let depth = 0; depth < 2; depth += 1) {
+    if (typeof value !== 'string') break;
+    const text = value.trim();
+    if (text === '') return [];
+    try {
+      value = JSON.parse(text) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(value)) return [];
+
+  const out: TemplateItem[] = [];
+  for (const it of value) {
+    if (typeof it !== 'object' || it === null) continue;
+    const row = it as Record<string, unknown>;
+    const name = typeof row['name'] === 'string' ? row['name'].trim() : '';
+    if (name === '') continue;
+    const qty = Number(row['quantity']);
+    // quantity 非法（NaN / 越界）按 1 兜底：宁可少显示数量，不可整条丢失
+    out.push({
+      name: name.slice(0, 64),
+      quantity: Number.isInteger(qty) && qty >= 1 && qty <= 9999 ? qty : 1,
+    });
+  }
+  return out;
 }
 
 export class ChecklistService {
@@ -430,7 +473,11 @@ export class ChecklistService {
         scope: input.scope,
         ownerId: input.scope === 'PERSONAL' ? (input.ownerId ?? userId) : null,
         name: input.name,
-        itemsJson: JSON.stringify(input.items),
+        // 🔴 存**数组本身**，不存 `JSON.stringify(items)` 的结果。
+        //    `items_json` 是 MySQL JSON 列：传字符串会落成「JSON 字符串标量」
+        //    （读回 `"[{\"name\":...}]"`），前端与 applyTemplate 都要多解一层；
+        //    传数组才落成 JSON array。存量行由 `parseTemplateItems` 兼容。
+        itemsJson: input.items,
         version: 0,
         createdAt: now,
         updatedAt: now,
@@ -438,26 +485,140 @@ export class ChecklistService {
       });
 
       const row = await tx.db.findUnique('checklistTemplate', { id });
-      return serializeRow(row ?? {}, TEMPLATE_BIGINT_FIELDS);
+      return this.withTemplateItems(serializeRow(row ?? {}, TEMPLATE_BIGINT_FIELDS));
     });
   }
 
-  /** 列模板（共享 + 自己的私有） */
+  /**
+   * 列模板（共享 + 自己的私有）。
+   *
+   * 🔴 两处口径（D-2026-10-26-01 P1-2 顺带修复）：
+   *   1. 回包补 `items` 数组，同时**保留** `itemsJson` 原始列 —— 纯加法，
+   *      老客户端不受影响；否则每个客户端都要自己 `JSON.parse` + 容错一次。
+   *   2. 共享模板按**用户所属家庭**过滤。此前用请求里传的 `familyId` 判定，
+   *      而该值来自 query 且 handler 从未真正读到（`ctx.familyId` 在链上只对
+   *      带 `:id` 的路由赋值）—— 结果是「任何家庭都能看到别人家的共享模板」。
+   *      现在以 `familyMember` 关系为准，请求参数只作为附加收窄。
+   *      `familyId` 为空的共享模板（未加入家庭时创建的）不携带任何家庭数据，
+   *      维持可见，避免这类用户看不到自己刚建的清单。
+   */
   async listTemplates(
     userId: bigint,
     familyId?: bigint,
   ): Promise<{ items: Record<string, unknown>[] }> {
     const all = await this.o.ctx.read.findMany('checklistTemplate', { where: { deletedAt: null } });
+    const myFamilyIds = await this.familyIdsOf(userId);
+
     const visible = all.filter((t) => {
       const domain = resolveChecklistDomain({
         scope: scopeOf(t),
         ownerId: (t['ownerId'] ?? null) as bigint | null,
       });
-      if (domain === AccessDomain.Private) return t['ownerId'] === userId;
-      if (familyId !== undefined) return t['familyId'] === familyId || t['familyId'] === null;
-      return true;
+      if (domain === AccessDomain.Private) {
+        const owner = (t['ownerId'] ?? null) as bigint | null;
+        if (owner !== userId) return false;
+        return familyId === undefined || t['familyId'] === familyId || t['familyId'] === null;
+      }
+      const rowFamilyId = (t['familyId'] ?? null) as bigint | null;
+      if (rowFamilyId === null) return true; // 孤儿共享模板：见上方第 2 条
+      if (!myFamilyIds.has(rowFamilyId)) return false;
+      return familyId === undefined || rowFamilyId === familyId;
     });
-    return { items: visible.map((t) => serializeRow(t, TEMPLATE_BIGINT_FIELDS)) };
+
+    return {
+      items: visible.map((t) => this.withTemplateItems(serializeRow(t, TEMPLATE_BIGINT_FIELDS))),
+    };
+  }
+
+  /**
+   * 改模板（D-2026-10-26-01 P0-1）—— CAS 强制。
+   *
+   * 🔴 `items` 是**整体替换**语义：传什么存什么，少一条就是删一条。
+   *    增量合并会让「删掉某条物品」永远无法表达，而用户的诉求恰恰是
+   *    「今年不带了，从清单里去掉」。
+   *
+   * 🔴 `name` 与 `items` 至少一项（schema 层已拦），避免空 PATCH 白涨 version
+   *    —— 那会让其它端的 CAS 全部失效（它们手里的 version 全是旧的）。
+   */
+  async updateTemplate(
+    userId: bigint,
+    templateId: bigint,
+    patch: { version: number; name?: string; items?: TemplateItem[] },
+  ): Promise<{ template: Record<string, unknown>; updatedAt: Date }> {
+    return this.o.ctx.tx(async (tx) => {
+      const tpl = await tx.db.findUnique('checklistTemplate', { id: templateId, deletedAt: null });
+      if (!tpl) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+      await this.assertTemplateWritable(tx, tpl, userId);
+
+      const now = await tx.db.dbNow();
+      const data: Row = { updatedAt: now, version: patch.version + 1 };
+      if (patch.name !== undefined) data['name'] = patch.name;
+      if (patch.items !== undefined) data['itemsJson'] = patch.items;
+
+      // CAS：where 带 version，0 行受影响 = 有人在你读到之后改过
+      const affected = await tx.db.update(
+        'checklistTemplate',
+        { id: templateId, version: patch.version, deletedAt: null },
+        data,
+      );
+      if (affected === 0) {
+        throw new AppError(
+          ErrorCode.VERSION_CONFLICT,
+          '该清单已被他人修改（可能刚加了物品），请刷新后重试',
+        );
+      }
+
+      await this.change(
+        tx,
+        'checklist_template',
+        templateId,
+        this.templateFamilyId(tpl),
+        null,
+        'UPDATE',
+        now,
+      );
+
+      const row = await tx.db.findUnique('checklistTemplate', { id: templateId });
+      return {
+        template: this.withTemplateItems(serializeRow(row ?? {}, TEMPLATE_BIGINT_FIELDS)),
+        updatedAt: now,
+      };
+    });
+  }
+
+  /**
+   * 删模板（D-2026-10-26-01 P0-2）—— 软删。
+   *
+   * 🔴 **不级联删行程里已引用它的清单项**：`trip_checklist_item.template_id`
+   *    保留原值用于追溯「这项是从哪套清单引用来的」，行程里那一项仍可勾选。
+   *    删模板是「以后不再用这套」，不是「把已经带出门的行李箱清空」。
+   *
+   * 🔴 已删再删 → 404（与「不存在」同形，不暴露「曾经存在」）。
+   *    软删行在 `findUnique({ deletedAt: null })` 里天然消失，无需额外判定。
+   */
+  async removeTemplate(userId: bigint, templateId: bigint): Promise<Date> {
+    return this.o.ctx.tx(async (tx) => {
+      const tpl = await tx.db.findUnique('checklistTemplate', { id: templateId, deletedAt: null });
+      if (!tpl) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+      await this.assertTemplateWritable(tx, tpl, userId);
+
+      const now = await tx.db.dbNow();
+      await tx.db.update(
+        'checklistTemplate',
+        { id: templateId },
+        { deletedAt: now, updatedAt: now },
+      );
+      await this.change(
+        tx,
+        'checklist_template',
+        templateId,
+        this.templateFamilyId(tpl),
+        null,
+        'DELETE',
+        now,
+      );
+      return now;
+    });
   }
 
   /**
@@ -493,10 +654,9 @@ export class ChecklistService {
         return { created: 0, skipped: existing.length, alreadyApplied: true };
       }
 
-      const items = JSON.parse(stringCell(tpl, 'itemsJson') ?? '[]') as Array<{
-        name: string;
-        quantity: number;
-      }>;
+      // 存量行的 `items_json` 可能是 JSON 字符串（旧代码 JSON.stringify 的残留），
+      // 统一走 parseTemplateItems —— 否则这里 `JSON.parse` 一个数组会抛 TypeError。
+      const items = parseTemplateItems(tpl['itemsJson']);
       const now = await tx.db.dbNow();
 
       let sort = 0;
@@ -581,7 +741,87 @@ export class ChecklistService {
     }
   }
 
+  /**
+   * 模板的可写性复核（D-2026-10-26-01 P0-1/P0-2）。
+   *
+   * 🔴 口径（与 applyTemplate 的「任意成员可引用」保持同源）：
+   *    · SHARED  → 该模板所属家庭的**任一成员**可改（长期清单是家庭共用资产，
+   *                只允许创建者改会让「另一个人加双鞋」变成不可完成的诉求）；
+   *    · PERSONAL→ 仅 owner 本人或代管人可改（私有短路，不回落到家庭维度）。
+   *    越权与不存在**逐字节同形**（404），不暴露「这个模板存在但不属于你」。
+   *
+   * ⚠️ 链第 5 段（checkAccess）已经在 dispatch 层判过一次；这里是
+   *    **纵深防御**的第二道 —— 链用的是 `checklist_template` 域声明，
+   *    而 service 直接面向行，两者判定依据必须一致，否则改一处漏一处。
+   */
+  private async assertTemplateWritable(tx: TxHandle, tpl: Row, userId: bigint): Promise<void> {
+    const domain = resolveChecklistDomain({
+      scope: scopeOf(tpl),
+      ownerId: (tpl['ownerId'] ?? null) as bigint | null,
+    });
+
+    if (domain === AccessDomain.Private) {
+      const owner = (tpl['ownerId'] ?? null) as bigint | null;
+      if (owner === userId) return;
+      if (owner !== null) {
+        const managed =
+          (
+            await tx.db.findMany('familyMember', {
+              where: { id: owner, managedBy: userId, deletedAt: null },
+            })
+          ).length > 0 ||
+          (
+            await tx.db.findMany('tripMember', {
+              where: { id: owner, managedBy: userId, deletedAt: null },
+            })
+          ).length > 0;
+        if (managed) return;
+      }
+      throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+    }
+
+    // SHARED：必须是该模板所属家庭的成员
+    const familyId = (tpl['familyId'] ?? null) as bigint | null;
+    if (familyId === null) {
+      // 无归属家庭的共享模板（未加入家庭时创建）—— 无成员关系可判，一律按不存在处理
+      throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+    }
+    const member = await tx.db.findUnique('familyMember', { familyId, userId, deletedAt: null });
+    if (member) return;
+    // 代管人（虚拟成员场景）同样视为家庭成员
+    const managedMembers = await tx.db.findMany('familyMember', {
+      where: { familyId, managedBy: userId, deletedAt: null },
+    });
+    if (managedMembers.length > 0) return;
+    throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+  }
+
+  /** 模板回包补 `items`（解析后的数组），并保留原始 `itemsJson`（纯加法） */
+  private withTemplateItems(row: Record<string, unknown>): Record<string, unknown> {
+    return { ...row, items: parseTemplateItems(row['itemsJson']) };
+  }
+
+  /** 模板所属家庭（change_log 的 familyId 维度；无归属时为 null） */
+  private templateFamilyId(tpl: Row): bigint | null {
+    return (tpl['familyId'] ?? null) as bigint | null;
+  }
+
+  /** 用户作为成员或代管人所属的家庭集合 */
+  private async familyIdsOf(userId: bigint): Promise<Set<bigint>> {
+    const mine = await this.o.ctx.read.findMany('familyMember', {
+      where: { userId, deletedAt: null },
+    });
+    const managed = await this.o.ctx.read.findMany('familyMember', {
+      where: { managedBy: userId, deletedAt: null },
+    });
+    const s = new Set<bigint>();
+    for (const m of mine) s.add(m['familyId'] as bigint);
+    for (const m of managed) s.add(m['familyId'] as bigint);
+    return s;
+  }
+
   /** 是否由 userId 代管（虚拟成员场景） */
+
   private async isManagedBy(userId: bigint, ownerId: bigint): Promise<boolean> {
     const rows = await this.o.ctx.read.findMany('familyMember', {
       where: { id: ownerId, managedBy: userId, deletedAt: null },

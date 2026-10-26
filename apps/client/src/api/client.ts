@@ -16,7 +16,11 @@
  */
 
 import type {
+  ApplyTemplateResult,
+  BatchExpenseResult,
   ChecklistItem,
+  ChecklistTemplate,
+  ChecklistTemplateItem,
   ConfirmMediaAssetInput,
   Destination,
   Expense,
@@ -39,6 +43,7 @@ import type {
   TransportMode,
   Trip,
   TripAccessLevel,
+  TripDetail,
   TripInvite,
   TripMember,
   TripMemberRole,
@@ -103,8 +108,16 @@ export interface ApiClient {
   // ---- trip ----
   /** GET /trips */
   listTrips(familyId?: string): Promise<Trip[]>;
-  /** GET /trips/:id */
+  /** GET /trips/:id —— 只取行程本身（老的窄契约，保留给只关心 trip 的调用方） */
   getTrip(id: string): Promise<Trip>;
+  /**
+   * GET /trips/:id —— 取**完整**详情（行程 + 参与人 + 我的角色）。
+   * 🆕 客户端新增方法（纯加法，不动 getTrip 签名）。
+   * 🔴 为什么不直接改 getTrip 的返回类型：那是既有 21 处调用点的公共契约，
+   *    单方面改签名会让所有调用方一起变，收益为零、风险不低。新增独立方法，
+   *    只让「需要参与人」的界面走宽契约。
+   */
+  getTripDetail(id: string): Promise<TripDetail>;
   /** POST /trips */
   createTrip(input: {
     familyId: string;
@@ -130,6 +143,18 @@ export interface ApiClient {
    * 🆕 客户端新增方法（服务端 DELETE 早已存在）。
    */
   deleteTrip(id: string): Promise<void>;
+  /**
+   * POST /trips/:id/finish —— 标记行程「已完成」并归档（B6）。
+   * ============================================================================
+   * 🆕 客户端新增方法（服务端 2026-10-22 已有该端点，返回 data={trip,updatedAt}）。
+   * 为什么前端需要它：日期过了但状态还停在 PLANNED 时，客户端不能替用户改库，
+   * 只能提示 + 让用户点一下落库；真正的「到期自动完结」要后端定时/惰性流转
+   * （见派发单 D-2026-10-26-02 P0-1）。
+   * 🔴 CAS：version 必传；仅主导者/创建者可调（后端 403）。
+   * 🔴 归档副作用：该行程所有成员 accessLevel → HISTORICAL_READONLY，
+   *    之后 itinerary/checklist/expense/booking/media 的写接口一律 403。
+   */
+  finishTrip(id: string, version: number): Promise<Trip>;
   /**
    * POST /trips/:id/members —— 加出行成员（PRD GRP-02：创建行程时可邀请
    * 家庭成员或外部用户）。家庭成员传 userId；无账号家人（虚拟成员）传
@@ -256,8 +281,13 @@ export interface ApiClient {
     quantity?: number;
     scope?: 'SHARED' | 'PERSONAL';
   }): Promise<ChecklistItem>;
-  /** POST /checklists/items/:id/toggle */
-  toggleChecklistItem(id: string): Promise<ChecklistItem>;
+  /**
+   * POST /checklists/items/:id/toggle（E7 CAS）
+   * @param checked 目标状态。不传 = 取反（老行为）；传了 = 幂等置位。
+   * 🆕 新增可选参数：连点时「取反」会把两次点击抵销，客户端算好目标态传进来才稳。
+   *    纯加法，后端 schema 本就要求 `checked` 必传，不缺字段。
+   */
+  toggleChecklistItem(id: string, checked?: boolean): Promise<ChecklistItem>;
   /**
    * GET /checklists/items?tripId=...
    * 按出行查清单（修复「清单默认是之前一个」的跨行程串数据问题）。
@@ -266,6 +296,49 @@ export interface ApiClient {
   listTripChecklist(tripId: string, scope?: 'SHARED' | 'PERSONAL'): Promise<ChecklistItem[]>;
   /** DELETE /checklists/items/:id */
   deleteChecklistItem(id: string): Promise<void>;
+
+  // ---- checklist 模板（长期清单：家庭共享 / 本人私有） ----
+  /**
+   * GET /checklists/templates —— 列出可见模板（家庭共享 + 我的私有）。
+   * 后端回 `{items: [...]}`，`items`（条目数组）在行里是 `itemsJson` 字符串，
+   * 由实现层解析成 `ChecklistTemplateItem[]`，界面不感知。
+   */
+  listChecklistTemplates(familyId?: string): Promise<ChecklistTemplate[]>;
+  /**
+   * POST /checklists/templates —— 新建一套长期清单（条目一次写入）。
+   * 🔴 PERSONAL 必须给 ownerId（后端 createTemplateSchema 的 refine 要求），
+   *    缺省由实现层补成当前用户。
+   */
+  createChecklistTemplate(input: {
+    familyId?: string;
+    name: string;
+    scope: 'SHARED' | 'PERSONAL';
+    ownerId?: string;
+    items: ChecklistTemplateItem[];
+  }): Promise<ChecklistTemplate>;
+  /**
+   * PATCH /checklists/templates/:id —— 改模板（名称 / 条目整体替换）。
+   * 🆕 契约新增；**后端尚未提供该路由**（派发单 P0-1），
+   *    未上线前调用会拿到 404 同形错误，界面按「暂不可改」降级提示。
+   */
+  updateChecklistTemplate(
+    id: string,
+    input: { version: number; name?: string; items?: ChecklistTemplateItem[] },
+  ): Promise<ChecklistTemplate>;
+  /**
+   * DELETE /checklists/templates/:id —— 删整套长期清单。
+   * 🆕 契约新增；**后端尚未提供该路由**（派发单 P0-2）。
+   */
+  deleteChecklistTemplate(id: string): Promise<void>;
+  /**
+   * POST /checklists/templates/apply —— 把一套长期清单引用到某行程。
+   * 幂等：同 (templateId, tripId) 已引用过则 alreadyApplied=true，不重复插入。
+   */
+  applyChecklistTemplate(input: {
+    templateId: string;
+    tripId: string;
+    familyId: string;
+  }): Promise<ApplyTemplateResult>;
 
   // ---- expense ----
   /** GET /expenses */
@@ -299,6 +372,26 @@ export interface ApiClient {
   ): Promise<Expense>;
   /** DELETE /expenses/:id */
   deleteExpense(id: string): Promise<void>;
+  /**
+   * 批量记账（账单导入专用）。
+   * ============================================================================
+   * 🆕 客户端新增方法。后端目前只有单笔 `POST /expenses`，所以实现层按行顺序
+   *    投递（串行：逐行串行可保证「哪几笔失败」定位准确，且不打爆限流）；
+   *    后端补 `POST /expenses/batch` 后只换实现，界面零改动（派发单 P1-1）。
+   * 语义：**部分成功**——失败行不阻塞其余行，返回 created/failed/errors。
+   */
+  createExpensesBatch(
+    input: { tripId: string; familyId: string },
+    rows: Array<{
+      title: string;
+      amount: string;
+      currency?: string;
+      category?: string;
+      /** YYYY-MM-DD */
+      spentAt?: string;
+      note?: string;
+    }>,
+  ): Promise<BatchExpenseResult>;
 
   // ---- fx（汇率） ----
   /**

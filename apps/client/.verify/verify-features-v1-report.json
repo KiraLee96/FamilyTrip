@@ -72,7 +72,7 @@
     },
     {
       "name": "R2-3 只读 banner 展示（来自回忆墙的行程仅可查看）",
-      "ok": true,
+      "ok": false,
       "detail": ""
     },
     {

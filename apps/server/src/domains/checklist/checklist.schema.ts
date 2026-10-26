@@ -90,7 +90,12 @@ export const createTemplateSchema = z
     scope: z.enum(['SHARED', 'PERSONAL']).default('SHARED'),
     ownerId: idInput.optional(),
     items: z
-      .array(z.object({ name: z.string().min(1).max(64), quantity: z.coerce.number().int().min(1).default(1) }))
+      .array(
+        z.object({
+          name: z.string().min(1).max(64),
+          quantity: z.coerce.number().int().min(1).default(1),
+        }),
+      )
       .max(200)
       .default([]),
   })
@@ -99,6 +104,48 @@ export const createTemplateSchema = z
   });
 
 export type CreateTemplateInput = z.infer<typeof createTemplateSchema>;
+
+/**
+ * 改模板（D-2026-10-26-01 P0-1）。
+ *
+ * 🔴 三条硬约束：
+ *   1. `version` **必传** —— CAS 的唯一依据。两人同时维护同一套长期清单
+ *      是常态（A 加「溯溪鞋」、B 加「登山杖」），无锁实现会静默吞掉前者。
+ *   2. `items` 是**整体替换语义**，不是增量合并 —— 前端传什么就存什么，
+ *      少一条就是删一条。增量语义会让「删掉某条物品」无法表达。
+ *   3. `name` 与 `items` 至少给一个；都不给直接拒（避免空 PATCH 白涨 version）。
+ */
+export const updateTemplateSchema = z
+  .object({
+    version: z.coerce.number().int().min(0),
+    name: z.string().trim().min(1, '名称不能为空').max(64).optional(),
+    items: z
+      .array(
+        z.object({
+          name: z.string().trim().min(1, '物品名不能为空').max(64),
+          quantity: z.coerce.number().int().min(1).max(9999).default(1),
+        }),
+      )
+      .max(200, '单套清单最多 200 条')
+      .optional(),
+  })
+  .refine((v) => v.name !== undefined || v.items !== undefined, {
+    message: 'name 与 items 至少提供一个',
+  });
+
+export type UpdateTemplateInput = z.infer<typeof updateTemplateSchema>;
+
+/**
+ * 列模板（D-2026-10-26-01 P1-2）。
+ *
+ * `familyId` 只作**附加收窄**：真正的可见范围由后端按「用户所属家庭」判定
+ * （见 `listTemplates`），请求参数不能用来扩大可见集合。
+ */
+export const listTemplatesQuerySchema = z.object({
+  familyId: idInput.optional(),
+});
+
+export type ListTemplatesQueryInput = z.infer<typeof listTemplatesQuerySchema>;
 
 /** 从模板套用到出行 */
 export const applyTemplateSchema = z.object({

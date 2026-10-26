@@ -18,8 +18,12 @@
 import Taro from '@tarojs/taro';
 import { ApiError, unwrap, type ApiClient } from './client';
 import type {
+  ApplyTemplateResult,
   AuthSession,
+  BatchExpenseResult,
   ChecklistItem,
+  ChecklistTemplate,
+  ChecklistTemplateItem,
   ConfirmMediaAssetInput,
   Envelope,
   Expense,
@@ -39,6 +43,7 @@ import type {
   TransportMode,
   Trip,
   TripAccessLevel,
+  TripDetail,
   TripInvite,
   TripMember,
   TripMemberRole,
@@ -231,6 +236,10 @@ function toTrip(raw: Record<string, unknown>): Trip {
       name: asString((d as Record<string, unknown>)?.['name']),
     })),
     version: asNumber(raw['version']),
+    // 同行人数：后端 list / detail 都带；老后端没有就不投影，界面据此不显示
+    ...(raw['memberCount'] !== undefined && raw['memberCount'] !== null
+      ? { memberCount: asNumber(raw['memberCount']) }
+      : {}),
   };
 }
 
@@ -375,7 +384,68 @@ function toChecklistItem(raw: Record<string, unknown>): ChecklistItem {
     ...(optString(raw['assigneeName']) !== undefined
       ? { assigneeName: optString(raw['assigneeName']) }
       : {}),
+    // version 供 toggle 的 CAS 回传；老后端不带 version 时缺省（界面按 0 兜底）
+    ...(raw['version'] !== undefined && raw['version'] !== null
+      ? { version: asNumber(raw['version']) }
+      : {}),
+    // 数量：后端列 quantity（applyTemplate 从模板带过来）；缺省不投影，界面按 1 处理
+    ...(raw['quantity'] !== undefined && raw['quantity'] !== null
+      ? { quantity: asNumber(raw['quantity']) || 1 }
+      : {}),
+    ...(optString(raw['templateId']) !== undefined
+      ? { templateId: optString(raw['templateId']) }
+      : {}),
   };
+}
+
+/**
+ * 后端 checklistTemplate 行 → 客户端 ChecklistTemplate。
+ *
+ * 🔴 条目字段名有两处不一致，必须在这一层吸收（界面只认 `items`）：
+ *   · 落库列叫 `itemsJson`（TEXT，JSON 字符串）
+ *   · 解析失败/为空时回空数组，绝不让一条脏数据把整页打挂
+ *     （历史数据可能是 `[]`、`null` 或手写的非 JSON）
+ */
+function toChecklistTemplate(raw: Record<string, unknown>): ChecklistTemplate {
+  const parsed = parseTemplateItems(raw['itemsJson'] ?? raw['items']);
+  const scope = (asString(raw['scope']) || 'SHARED') as ChecklistTemplate['scope'];
+  return {
+    id: asString(raw['id']),
+    familyId: optString(raw['familyId']) ?? null,
+    scope,
+    ownerId: optString(raw['ownerId']) ?? null,
+    name: asString(raw['name']),
+    items: parsed,
+    version: asNumber(raw['version']),
+    ...(optString(raw['updatedAt']) !== undefined
+      ? { updatedAt: optString(raw['updatedAt']) }
+      : {}),
+  };
+}
+
+/** itemsJson → ChecklistTemplateItem[]；任何异常形态一律降级为空数组 */
+function parseTemplateItems(src: unknown): ChecklistTemplateItem[] {
+  let arr: unknown = src;
+  if (typeof src === 'string') {
+    const t = src.trim();
+    if (t === '') return [];
+    try {
+      arr = JSON.parse(t) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(arr)) return [];
+  const out: ChecklistTemplateItem[] = [];
+  for (const it of arr) {
+    if (typeof it !== 'object' || it === null) continue;
+    const row = it as Record<string, unknown>;
+    const name = asString(row['name']).trim();
+    if (name === '') continue;
+    const q = asNumber(row['quantity']);
+    out.push({ name, quantity: q >= 1 ? q : 1 });
+  }
+  return out;
 }
 
 /**
@@ -472,6 +542,96 @@ async function requestVoid(method: HttpMethod, path: string, body?: unknown): Pr
   await request<unknown>(method, path, body, { allowNullData: true });
 }
 
+/**
+ * 批量记账 · 正规通道 —— `POST /expenses/batch`（一次提交，后端逐行返回结果）。
+ * ============================================================================
+ * 后端信封：`data = { created, failed, results: [{ index, ok, id?, error? }] }`。
+ * 这里把「行级结果」投影成界面认的 `{created, failed, errors}`：errors 取失败行
+ * 的 message，最多 5 条（100 行全挂时提示框不能被撑爆）。
+ */
+async function postBatch(
+  input: { tripId: string; familyId: string },
+  rows: Array<{
+    title: string;
+    amount: string;
+    currency?: string;
+    category?: string;
+    spentAt?: string;
+    note?: string;
+  }>,
+): Promise<BatchExpenseResult> {
+  const r = await request<{
+    created?: unknown;
+    failed?: unknown;
+    results?: Array<{ index: number; ok: boolean; error?: { message?: string } }>;
+  }>('POST', '/expenses/batch', {
+    tripId: input.tripId,
+    familyId: input.familyId,
+    requestId: newRequestId(),
+    rows: rows.map((row) => ({
+      title: row.title,
+      amount: row.amount,
+      currency: row.currency ?? 'CNY',
+      ...(row.category !== undefined ? { category: row.category } : {}),
+      ...(row.spentAt !== undefined ? { spentAt: row.spentAt } : {}),
+      ...(row.note !== undefined ? { note: row.note } : {}),
+    })),
+  });
+
+  const results = r.results ?? [];
+  const errors = results
+    .filter((x) => !x.ok)
+    .slice(0, 5)
+    .map((x) => {
+      const title = rows[x.index]?.title ?? `第 ${x.index + 1} 行`;
+      return `${title}：${x.error?.message ?? '写入失败'}`;
+    });
+
+  return { created: asNumber(r.created), failed: asNumber(r.failed), errors };
+}
+
+/**
+ * 批量记账 · 降级通道 —— 逐行 `POST /expenses`。
+ * ============================================================================
+ * 仅在「后端还没部署批量端点」时走这条（探测到 4040）。串行而非并发：
+ * 失败行要能精确归因，且后端有限流，几十个并发写容易半死不活。
+ * 🔴 有明确撤销条件，别让它变成常驻双实现（见调用处注释）。
+ */
+async function postRowByRow(
+  input: { tripId: string; familyId: string },
+  rows: Array<{
+    title: string;
+    amount: string;
+    currency?: string;
+    category?: string;
+    spentAt?: string;
+    note?: string;
+  }>,
+): Promise<BatchExpenseResult> {
+  let created = 0;
+  const errors: string[] = [];
+  for (const row of rows) {
+    try {
+      await request<{ expense: Record<string, unknown> }>('POST', '/expenses', {
+        tripId: input.tripId,
+        familyId: input.familyId,
+        title: row.title,
+        amount: row.amount,
+        ...(row.currency !== undefined ? { currency: row.currency } : {}),
+        ...(row.category !== undefined ? { category: row.category } : {}),
+        ...(row.spentAt !== undefined ? { spentAt: row.spentAt } : {}),
+        ...(row.note !== undefined ? { note: row.note } : {}),
+      });
+      created += 1;
+    } catch (e: unknown) {
+      if (errors.length < 5) {
+        errors.push(`${row.title}：${e instanceof Error ? e.message : '写入失败'}`);
+      }
+    }
+  }
+  return { created, failed: rows.length - created, errors };
+}
+
 export function createHttpClient(): ApiClient {
   return {
     login: async (code) => {
@@ -554,6 +714,26 @@ export function createHttpClient(): ApiClient {
       const r = await request<{ trip: Record<string, unknown> }>('GET', `/trips/${id}`);
       return toTrip(r.trip);
     },
+    /**
+     * GET /trips/:id 的完整投影。
+     * 🔴 后端一直回 members/myRole/myAccessLevel，是客户端此前只取了 trip
+     *    （反馈「加入行程后看不到参与人」的直接原因）。
+     */
+    getTripDetail: async (id) => {
+      const r = await request<{
+        trip: Record<string, unknown>;
+        members?: Array<Record<string, unknown>>;
+        myRole?: unknown;
+        myAccessLevel?: unknown;
+      }>('GET', `/trips/${id}`);
+      const detail: TripDetail = {
+        trip: toTrip(r.trip),
+        members: (r.members ?? []).map(toTripMember),
+        myRole: (optString(r.myRole) as TripMemberRole | undefined) ?? null,
+        myAccessLevel: (optString(r.myAccessLevel) as TripAccessLevel | undefined) ?? null,
+      };
+      return detail;
+    },
     createTrip: async (input) => {
       const r = await request<{ trip: Record<string, unknown> }>('POST', '/trips', input);
       return toTrip(r.trip);
@@ -570,6 +750,13 @@ export function createHttpClient(): ApiClient {
     // DELETE /trips/:id —— 服务端早已存在；data 为 null，成功即返回。
     deleteTrip: async (id) => {
       await requestVoid('DELETE', `/trips/${id}`);
+    },
+    finishTrip: async (id, version) => {
+      // 信封：data = { trip, updatedAt }（见 trip.controller 的 finish handler）
+      const r = await request<{ trip: Record<string, unknown> }>('POST', `/trips/${id}/finish`, {
+        version,
+      });
+      return toTrip(r.trip);
     },
     addTripMember: async (tripId, input) => {
       // 信封 { member }；家庭成员传 userId，虚拟成员传 displayName+isVirtual+managedBy
@@ -671,13 +858,14 @@ export function createHttpClient(): ApiClient {
       const r = await request<Record<string, unknown>>('POST', '/checklists/items', input);
       return toChecklistItem(r);
     },
-    toggleChecklistItem: async (id) => {
+    toggleChecklistItem: async (id, checked) => {
       // E7 CAS：toggle 必传 {version, checked}。先取当前项拿版本号再投递，
       // 409（version 冲突）由信封上抛，界面据此提示刷新重试。
+      // checked 显式传入时直接置位（连点场景：取反会把两次点击抵销）。
       const cur = await request<Record<string, unknown>>('GET', `/checklists/items/${id}`);
       const r = await request<Record<string, unknown>>('POST', `/checklists/items/${id}/toggle`, {
         version: asNumber(cur['version']),
-        checked: !asBoolean(cur['checked']),
+        checked: checked ?? !asBoolean(cur['checked']),
       });
       return toChecklistItem(r);
     },
@@ -691,6 +879,54 @@ export function createHttpClient(): ApiClient {
     },
     deleteChecklistItem: async (id) => {
       await requestVoid('DELETE', `/checklists/items/${id}`);
+    },
+
+    // ---- checklist 模板（长期清单）----
+    listChecklistTemplates: async (familyId) => {
+      // 后端 handler 返回 { data: { items: [...] } }，不是裸数组
+      const r = await request<{ items?: Array<Record<string, unknown>> }>(
+        'GET',
+        `/checklists/templates${familyId ? `?familyId=${familyId}` : ''}`,
+      );
+      return (r.items ?? []).map(toChecklistTemplate);
+    },
+    createChecklistTemplate: async (input) => {
+      const r = await request<{ template: Record<string, unknown> }>(
+        'POST',
+        '/checklists/templates',
+        input,
+      );
+      return toChecklistTemplate(r.template);
+    },
+    /**
+     * PATCH /checklists/templates/:id —— 后端尚未实现（派发单 P0-1）。
+     * 这里按最终契约定稿：条目整体替换（items 传数组 = 覆盖），version 走 CAS。
+     * 未上线时后端 dispatcher 回 4040「资源不存在」，界面按不可用降级提示。
+     */
+    updateChecklistTemplate: async (id, input) => {
+      const r = await request<{ template: Record<string, unknown> }>(
+        'PATCH',
+        `/checklists/templates/${id}`,
+        input,
+      );
+      return toChecklistTemplate(r.template);
+    },
+    /** DELETE /checklists/templates/:id —— 后端尚未实现（派发单 P0-2） */
+    deleteChecklistTemplate: async (id) => {
+      await requestVoid('DELETE', `/checklists/templates/${id}`);
+    },
+    applyChecklistTemplate: async (input) => {
+      const r = await request<{
+        created?: unknown;
+        skipped?: unknown;
+        alreadyApplied?: unknown;
+      }>('POST', '/checklists/templates/apply', input);
+      const result: ApplyTemplateResult = {
+        created: asNumber(r.created),
+        skipped: asNumber(r.skipped),
+        alreadyApplied: asBoolean(r.alreadyApplied),
+      };
+      return result;
     },
     listExpenses: async (tripId) => {
       const rows = await requestList<Record<string, unknown>>('GET', `/expenses?tripId=${tripId}`);
@@ -730,6 +966,28 @@ export function createHttpClient(): ApiClient {
     },
     deleteExpense: async (id) => {
       await requestVoid('DELETE', `/expenses/${id}`);
+    },
+    /**
+     * 批量记账 —— `POST /expenses/batch` 一次提交（后端 D-2026-10-26-01 P1-1 已上线）。
+     * ============================================================================
+     * 信封：`data = { created, failed, results: [{ index, ok, id?, error? }] }`。
+     * 这里的职责就是把「行级结果」投影成界面认的 `{created, failed, errors}`：
+     *   · errors 取失败行的 message，**最多 5 条**（100 行全挂时提示框不能被撑爆）；
+     *   · 后端是「部分成功」语义，失败行不回滚已成功行。
+     * 幂等：body 带 requestId，后端按 `scope + requestId` 重放首次结果，
+     * 弱网重试不会重复记账。
+     */
+    createExpensesBatch: async (input, rows) => {
+      try {
+        return await postBatch(input, rows);
+      } catch (e: unknown) {
+        // 过渡兼容（2026-10-26）：生产后端尚未部署 `POST /expenses/batch`，
+        // 探测到 4040「资源不存在」就退回「逐行 POST /expenses」。
+        // 🔴 撤销条件：后端部署完成、`POST /expenses/batch` 在生产返回 4010（而非 4040）后，
+        //    删掉这个 try/catch 与 postRowByRow 即可 —— 见派发单 D-2026-10-26-03 §6。
+        if (!(e instanceof ApiError) || e.code !== 4040) throw e;
+        return await postRowByRow(input, rows);
+      }
     },
 
     // ---- fx ----

@@ -54,11 +54,77 @@ export function inviteUnavailableHint(message: string): string {
   return message;
 }
 
+/**
+ * 长期清单「改条目 / 删整套」端点未上线时的友好提示（派发单 P0-1 / P0-2）。
+ * ============================================================================
+ * 后端 checklist 域目前只有 templates 的 建 / 列 / 套用 三个端点，
+ * PATCH / DELETE 未命中路由时 dispatcher 统一回 `4040 资源不存在`。
+ * 直接把这句抛给用户会被理解成「这套清单没了」——按错误码分流成人话。
+ */
+export function templateWriteUnavailableHint(message: string): string {
+  if (message.includes('4040') || message.includes('资源不存在') || message.includes('(code 404')) {
+    return '清单内容的修改需要配套后端接口，接口上线后这里就能改（新建与引用到行程现在可用）';
+  }
+  return message;
+}
+
+/**
+ * 归档行程的照片写被服务端拒绝时的人话提示（派发单 D-2026-10-26-02 P0-2）。
+ * ============================================================================
+ * 服务端 `media.service` 的两道门（assertTripActiveWritable / assertTripMemberWritable）
+ * 都认 HISTORICAL_READONLY，所以行程归档后**加/删照片都会 403「该出行已归档，仅可查看」**。
+ * 用户的要求正相反：「已完成的行程……只能添加或删除回忆照片」。
+ * 前端不藏按钮（藏了用户就以为功能不存在），而是把 403 翻成「需要后端放开」，
+ * 后端一放开，这里自然走成功分支，前端无需再改。
+ */
+export function photoWriteHint(message: string, action: 'upload' | 'delete' = 'upload'): string {
+  if (message.includes('已归档') || message.includes('(code 403')) {
+    return action === 'upload'
+      ? '这场行程已归档：照片可以查看，但新增照片需要后端放开归档写权限（已提交派发单 P0-2）'
+      : '这场行程已归档：删除照片需要后端放开归档写权限（已提交派发单 P0-2）';
+  }
+  return message;
+}
+
 /** 今日 YYYY-MM-DD（记账/安排的默认日期） */
 export function todayYmd(): string {
   const d = new Date();
   const pad = (n: number): string => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * 行程是否「已经走完」——**派生**判断，不改库。
+ * ============================================================================
+ * 口径（三选一即算结束）：
+ *   1. status 已经是 FINISHED / CANCELLED（服务端已流转）；
+ *   2. 结束日期早于今天（到期但服务端还没流转）。
+ *
+ * 🔴 为什么前端也要派生一次：用户反馈「行程的时间结束后要自动变成已完成」。
+ *    服务端目前**没有**定时/惰性流转（见派发单 P0-1），所以到期后 status 仍停在
+ *    PLANNED，界面上看起来「一直没结束」。前端先按日期派生，保证界面正确；
+ *    真正的状态落库仍由后端负责，前端不伪造写权限（撤销条件：后端补上自动流转，
+ *    本函数退化为「只读 status」的快路径，调用方无需改动）。
+ */
+export function tripIsEnded(t: { status: string; endDate?: string | null }): boolean {
+  if (t.status === 'FINISHED' || t.status === 'CANCELLED') return true;
+  if (t.endDate === undefined || t.endDate === null || t.endDate === '') return false;
+  // 字符串比较即可：两边都是 YYYY-MM-DD，字典序 == 时间序
+  return t.endDate < todayYmd();
+}
+
+/**
+ * 展示用状态：过期未流转的行程显示为「已完成」。
+ * 只影响展示，不参与任何写权限判断 —— 写权限一律以服务端返回的 status /
+ * accessLevel 为准，避免出现「界面说不能改、请求却成功」的不一致。
+ */
+export function tripDisplayStatus<T extends string>(t: {
+  status: T;
+  endDate?: string | null;
+}): T | 'FINISHED' {
+  const open = t.status === 'PLANNED' || t.status === 'ONGOING' || t.status === 'DRAFT';
+  if (open && tripIsEnded(t)) return 'FINISHED';
+  return t.status;
 }
 
 /** 含头含尾天数（与 components/shared.tsx 的 tripDays 同理，此处独立以免依赖 UI 层） */

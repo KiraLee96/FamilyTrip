@@ -12,7 +12,10 @@
 
 import { ApiError, unwrap, type ApiClient } from './client';
 import type {
+  ApplyTemplateResult,
+  BatchExpenseResult,
   ChecklistItem,
+  ChecklistTemplate,
   Expense,
   ExpenseSummary,
   Family,
@@ -29,6 +32,7 @@ import type {
   MemorySnapshot,
   PresignUploadResult,
   Trip,
+  TripDetail,
   TripInvite,
   TripMember,
   TripUpdateInput,
@@ -374,6 +378,63 @@ const CHECKLIST: ChecklistItem[] = [
   },
 ];
 
+/**
+ * 长期清单种子（模板）—— 与后端 checklistTemplate 同形。
+ * ============================================================================
+ * scope 决定域：SHARED = 家庭共享（familyId 有值，ownerId 为空）；
+ * PERSONAL = 我的私人清单（ownerId = 本人，家庭成员互相看不见）。
+ * 条目只有 name/quantity，与 createTemplateSchema.items 的口径一致。
+ */
+const TEMPLATES: ChecklistTemplate[] = [
+  {
+    id: '501',
+    familyId: '10',
+    scope: 'SHARED',
+    ownerId: null,
+    name: '家庭出行常用',
+    version: 1,
+    updatedAt: '2026-10-01T00:00:00.000Z',
+    items: [
+      { name: '身份证（全家 4 人）', quantity: 4 },
+      { name: '充电宝 + 数据线', quantity: 2 },
+      { name: '常备药（晕车 / 感冒 / 腹泻）', quantity: 1 },
+      { name: '雨伞 / 一次性雨衣', quantity: 2 },
+      { name: '纸巾 + 湿巾', quantity: 2 },
+      { name: '水杯（儿童保温杯）', quantity: 2 },
+    ],
+  },
+  {
+    id: '502',
+    familyId: '10',
+    scope: 'SHARED',
+    ownerId: null,
+    name: '海边赶海专项',
+    version: 1,
+    updatedAt: '2026-09-20T00:00:00.000Z',
+    items: [
+      { name: '防晒霜 SPF50+', quantity: 1 },
+      { name: '赶海小桶 + 铲子', quantity: 2 },
+      { name: '凉拖 / 溯溪鞋', quantity: 4 },
+      { name: '防水手机袋', quantity: 2 },
+    ],
+  },
+  {
+    id: '503',
+    familyId: '10',
+    scope: 'PERSONAL',
+    ownerId: '1',
+    name: '我的随身清单',
+    version: 1,
+    updatedAt: '2026-10-05T00:00:00.000Z',
+    items: [
+      { name: '常用药（个人处方药）', quantity: 1 },
+      { name: '隐形眼镜 + 护理液', quantity: 1 },
+      { name: 'kindle', quantity: 1 },
+      { name: '耳机', quantity: 1 },
+    ],
+  },
+];
+
 /** 个人物品库种子（PRIVATE 域；分类整理 + 必带物品用 category/note 承载） */
 const ITEMS: Item[] = [
   {
@@ -656,6 +717,7 @@ const seq = {
   wish: 205,
   itinerary: 305,
   checklist: 406,
+  template: 503,
   expense: 504,
   item: 805,
   media: 603,
@@ -726,6 +788,7 @@ const state = {
   wishes: [...WISHES],
   itinerary: [...ITINERARY],
   checklist: [...CHECKLIST],
+  templates: [...TEMPLATES],
   expenses: [...EXPENSES],
   items: [...ITEMS],
   media: [...MEDIA],
@@ -751,6 +814,16 @@ function withResolvedBlocks(item: ItineraryItem): ItineraryItem {
     return asset !== undefined && asset.url !== '' ? { ...b, url: asset.url } : { ...b, url: '' };
   });
   return { ...item, blocks };
+}
+
+/**
+ * 给行程行补 `memberCount`（本趟同行人数）。
+ * 与后端 `trip.service` 的 list/detail 同口径：`tripMember` 里未删行数。
+ * 🔴 注意不是 `family.memberCount` —— 家庭 4 人、本趟只去 3 人时两者不同，
+ *    列表显示错数字就是从这里来的。
+ */
+function withMemberCount(t: Trip): Trip {
+  return { ...t, memberCount: state.tripMembers.filter((m) => m.tripId === t.id).length };
 }
 
 export function createMockClient(): ApiClient {
@@ -878,12 +951,26 @@ export function createMockClient(): ApiClient {
     // ---- trip ----
     async listTrips(familyId) {
       const list = familyId ? state.trips.filter((t) => t.familyId === familyId) : state.trips;
-      return respond(list);
+      // 与后端同口径：列表带 memberCount（本趟人数，不是家庭人数）
+      return respond(list.map((t) => withMemberCount(t)));
     },
     async getTrip(id) {
       const t = state.trips.find((x) => x.id === id);
       if (!t) throw new ApiError(404, '出行不存在');
-      return respond(t);
+      return respond(withMemberCount(t));
+    },
+    async getTripDetail(id) {
+      const t = state.trips.find((x) => x.id === id);
+      if (!t) throw new ApiError(404, '出行不存在');
+      const members = state.tripMembers.filter((m) => m.tripId === id);
+      const mine = members.find((m) => m.userId === ME.id);
+      const detail: TripDetail = {
+        trip: t,
+        members,
+        myRole: mine?.role ?? null,
+        myAccessLevel: mine?.accessLevel ?? null,
+      };
+      return respond(detail);
     },
     async createTrip(input) {
       const t: Trip = {
@@ -948,6 +1035,20 @@ export function createMockClient(): ApiClient {
       state.tripInvites = state.tripInvites.filter((v) => v.tripId !== id);
       state.itinerary = state.itinerary.filter((it) => it.tripId !== id);
       await delay();
+    },
+    async finishTrip(id, version) {
+      const t = state.trips.find((x) => x.id === id);
+      if (!t) throw new ApiError(404, '出行不存在');
+      // 与后端 finish 同口径：CAS + 全员转历史只读
+      if (t.version !== version) {
+        throw new ApiError(409, '行程已被他人修改，请刷新后重试');
+      }
+      t.status = 'FINISHED';
+      t.version += 1;
+      for (const m of state.tripMembers) {
+        if (m.tripId === id) m.accessLevel = 'HISTORICAL_READONLY';
+      }
+      return respond(t);
     },
     async addTripMember(tripId, input) {
       const trip = state.trips.find((t) => t.id === tripId);
@@ -1168,10 +1269,13 @@ export function createMockClient(): ApiClient {
       state.checklist.push(item);
       return respond(item);
     },
-    async toggleChecklistItem(id) {
+    async toggleChecklistItem(id, checked) {
       const c = state.checklist.find((x) => x.id === id);
       if (!c) throw new ApiError(404, '清单项不存在');
-      c.done = !c.done;
+      // checked 显式传入 → 置位（连点幂等）；不传 → 取反（老行为）
+      c.done = checked ?? !c.done;
+      // CAS 版本递增，与后端 toggle 的 version+1 一致
+      c.version = (c.version ?? 0) + 1;
       return respond(c);
     },
     async listTripChecklist(tripId, scope) {
@@ -1185,6 +1289,101 @@ export function createMockClient(): ApiClient {
       if (i < 0) throw new ApiError(404, '清单项不存在');
       state.checklist.splice(i, 1);
       await delay();
+    },
+
+    // ---- checklist 模板（长期清单）----
+    async listChecklistTemplates(familyId) {
+      // 与后端同口径：共享模板按家庭过滤，私有模板只回本人的
+      const list = state.templates.filter((t) => {
+        if (t.scope === 'PERSONAL') return t.ownerId === ME.id;
+        return familyId === undefined || t.familyId === familyId || t.familyId === null;
+      });
+      return respond(list);
+    },
+    async createChecklistTemplate(input) {
+      const tpl: ChecklistTemplate = {
+        id: nextId('template'),
+        familyId: input.familyId ?? null,
+        scope: input.scope,
+        // PERSONAL 必须落 ownerId（后端 refine 要求，缺省补当前用户）
+        ownerId: input.scope === 'PERSONAL' ? (input.ownerId ?? ME.id) : null,
+        name: input.name,
+        items: input.items.map((it) => ({
+          name: it.name,
+          quantity: Math.max(1, it.quantity ?? 1),
+        })),
+        version: 0,
+        updatedAt: new Date().toISOString(),
+      };
+      state.templates.push(tpl);
+      return respond(tpl);
+    },
+    async updateChecklistTemplate(id, input) {
+      const tpl = state.templates.find((x) => x.id === id);
+      if (!tpl) throw new ApiError(404, '清单不存在');
+      // CAS：与后端一致，版本不一致回 409 语义
+      if (input.version !== tpl.version) {
+        throw new ApiError(409, '该清单已被他人修改，请刷新后重试');
+      }
+      if (input.name !== undefined) tpl.name = input.name;
+      if (input.items !== undefined) {
+        tpl.items = input.items.map((it) => ({
+          name: it.name,
+          quantity: Math.max(1, it.quantity ?? 1),
+        }));
+      }
+      tpl.version += 1;
+      tpl.updatedAt = new Date().toISOString();
+      return respond(tpl);
+    },
+    async deleteChecklistTemplate(id) {
+      const i = state.templates.findIndex((x) => x.id === id);
+      if (i < 0) throw new ApiError(404, '清单不存在');
+      state.templates.splice(i, 1);
+      await delay();
+    },
+    async applyChecklistTemplate(input) {
+      const tpl = state.templates.find((x) => x.id === input.templateId);
+      if (!tpl) throw new ApiError(404, '清单不存在');
+      const trip = state.trips.find((x) => x.id === input.tripId);
+      if (!trip) throw new ApiError(404, '出行不存在');
+      // 私有模板只能引用给自己（与后端 applyTemplate 的 404 同形策略一致）
+      if (tpl.scope === 'PERSONAL' && tpl.ownerId !== ME.id) {
+        throw new ApiError(404, '清单不存在');
+      }
+
+      // 幂等：同 (templateId, tripId) 已引用过就不重复插入
+      const existing = state.checklist.filter(
+        (c) => c.tripId === input.tripId && c.templateId === input.templateId,
+      );
+      if (existing.length > 0) {
+        const dup: ApplyTemplateResult = {
+          created: 0,
+          skipped: existing.length,
+          alreadyApplied: true,
+        };
+        return respond(dup);
+      }
+
+      for (const it of tpl.items) {
+        // 与后端 applyTemplate 一致：模板一条 → 行程一条（数量落在 quantity，不拆行）
+        state.checklist.push({
+          id: nextId('checklist'),
+          tripId: input.tripId,
+          scope: tpl.scope,
+          title: it.name,
+          done: false,
+          quantity: Math.max(1, it.quantity),
+          version: 0,
+          templateId: tpl.id,
+        });
+      }
+      const result: ApplyTemplateResult = {
+        created: tpl.items.length,
+        skipped: 0,
+        alreadyApplied: false,
+      };
+      return respond(result);
     },
     // ---- expense ----
     async listExpenses(tripId) {
@@ -1231,6 +1430,33 @@ export function createMockClient(): ApiClient {
       if (i < 0) throw new ApiError(404, '花销不存在');
       state.expenses.splice(i, 1);
       await delay();
+    },
+    async createExpensesBatch(input, rows) {
+      let created = 0;
+      const errors: string[] = [];
+      for (const row of rows) {
+        // 与 http 实现同口径：逐行落库，失败行不阻塞其余行
+        if (row.title.trim() === '' || !(Number(row.amount) > 0)) {
+          if (errors.length < 5) errors.push(`${row.title || '(无名称)'}：金额或名称非法`);
+          continue;
+        }
+        state.expenses.push({
+          id: nextId('expense'),
+          tripId: input.tripId,
+          title: row.title.trim(),
+          amount: row.amount,
+          currency: row.currency ?? 'CNY',
+          amountCny: row.amount,
+          payerName: ME.nickname,
+          spentAt: row.spentAt ?? today(),
+          ...(row.category !== undefined ? { category: row.category } : {}),
+          ...(row.note !== undefined ? { note: row.note } : {}),
+        });
+        created += 1;
+      }
+      const result: BatchExpenseResult = { created, failed: rows.length - created, errors };
+      await delay();
+      return result;
     },
 
     // ---- fx（汇率） ----

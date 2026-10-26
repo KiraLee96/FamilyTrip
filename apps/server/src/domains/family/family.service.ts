@@ -12,7 +12,7 @@
  *      复合键，解散家庭后码可被回收重用。
  */
 
-import { AppError, ErrorCode } from '../../common/errors/error-code.js';
+import { AppError, ErrorCode, inviteCodeInvalid } from '../../common/errors/error-code.js';
 import type { Row } from '../../common/db/table-client.js';
 import type { DomainContext, TxHandle } from '../domain-context.js';
 import { serializeRow } from '../domain-context.js';
@@ -231,7 +231,10 @@ export class FamilyService {
         inviteCode: input.inviteCode,
         deletedAt: null,
       });
-      if (!family) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+      // D-2026-10-26-01 P2-1：邀请码未命中回 4041（而不是 4040「资源不存在」）。
+      // 邀请码是用户输入的凭据、不构成 ID 枚举面，区分它能让客户端给出
+      // 「让家人重新发一次」这种可行动提示（HTTP 仍是 404）。
+      if (!family) throw inviteCodeInvalid();
       const familyId = family['id'] as bigint;
       const now = await tx.db.dbNow();
 

@@ -16,6 +16,7 @@
  *   /wishes      → pages/WishPoolPage  （非 tab，从首页/规划页心愿区块进入）
  *   /trips/new   → pages/TripCreatePage（非 tab，须先于 /trips/:id 匹配）
  *   /trips/:id   → pages/TripDetailPage（非 tab，带 query 参数，?tab=expense 可定位花销）
+ *   /trips/:id/manage → pages/TripManagePage（非 tab，邀请同行人 + 参与人，2026-10-26）
  *   /trips/join  → pages/JoinTripPage  （非 tab，?invite=CODE 凭行程邀请码加入）
  *   /join        → pages/JoinFamilyPage（非 tab，?invite=CODE 凭邀请码加入家庭）
  *
@@ -52,12 +53,26 @@ function toTaroUrl(to: string): { url: string; tab: boolean } {
   const qs = qIndex >= 0 ? to.slice(qIndex) : '';
 
   // 行程详情：/trips/:id → /pages/TripDetailPage?id=:id（须先于 /trips 前缀判断）
+  // 行程管理：/trips/:id/manage → /pages/TripManagePage?id=:id
+  // 🔴 2026-10-26：新增 /manage 子路径后，必须先拦它，否则会被下方 `/trips/` 分支
+  //    误当成 id（id 会变成 "101/manage"，页面拿到脏 id 静默显示空态）。
   // 🔴 2026-10-16 修复一：此前此分支漏拼 qs，导致 /trips/101?tab=expense（总览页
   //    「查看账本」入口）与 ?tab=memory&readonly=1（回忆墙只读入口）的 query 全丢，
   //    页面永远落到默认 itinerary tab。非 tab 页本就该原样透传查询串。
   // 🔴 2026-10-16 修复二：qs 自带前导 '?'，直接拼在 "?id=" 后会形成双重 '?'，
   //    浏览器把第二个 '?' 当作 id 值的一部分（id 被污染成 "103?tab=memory"），
   //    必须剥掉前导 '?' 并用 '&' 连接。
+  if (path.startsWith('/trips/') && path.endsWith('/manage')) {
+    const rawId = path.slice('/trips/'.length, path.length - '/manage'.length);
+    const id = encodeURIComponent(rawId);
+    const tail = qs.startsWith('?') ? qs.slice(1) : qs;
+    return {
+      url:
+        tail === '' ? `/pages/TripManagePage?id=${id}` : `/pages/TripManagePage?id=${id}&${tail}`,
+      tab: false,
+    };
+  }
+
   if (path.startsWith('/trips/') && path !== '/trips/new' && path !== '/trips/join') {
     const id = encodeURIComponent(path.slice('/trips/'.length));
     const tail = qs.startsWith('?') ? qs.slice(1) : qs;

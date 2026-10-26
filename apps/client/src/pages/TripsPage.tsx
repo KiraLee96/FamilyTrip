@@ -21,6 +21,7 @@ import { Icon } from '../components/Icon';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
 import { StatusChip, dateRange } from '../components/shared';
+import { tripDisplayStatus, tripIsEnded } from '../utils/constants';
 import { useAsync } from '../hooks/useAsync';
 
 /** 行程所属年份（优先出发日，其次结束日） */
@@ -31,9 +32,10 @@ function tripYear(t: Trip): number | null {
   return Number.isNaN(y) ? null : y;
 }
 
-/** 即将出行：PLANNED / ONGOING */
+/** 即将出行：PLANNED / ONGOING **且日期未过**（过期的显示成已完成，不再混进"即将"） */
 function isUpcoming(t: Trip): boolean {
-  return t.status === 'PLANNED' || t.status === 'ONGOING';
+  if (!(t.status === 'PLANNED' || t.status === 'ONGOING')) return false;
+  return !tripIsEnded(t);
 }
 
 const REST_LABEL: Partial<Record<TripStatus, string>> = {
@@ -48,10 +50,6 @@ export function TripsPage() {
 
   const q = useAsync(
     useCallback(() => api.listTrips(), []),
-    [],
-  );
-  const familiesQ = useAsync(
-    useCallback(() => api.listFamilies(), []),
     [],
   );
 
@@ -79,7 +77,6 @@ export function TripsPage() {
     .filter(isUpcoming)
     .sort((a, b) => (a.startDate ?? '').localeCompare(b.startDate ?? ''));
   const rest = list.filter((t) => !isUpcoming(t));
-  const memberCount = familiesQ.data?.[0]?.memberCount ?? 0;
 
   return (
     <PageLayout
@@ -116,7 +113,7 @@ export function TripsPage() {
           <Empty text="没有即将到来的行程" />
         </View>
       ) : (
-        upcoming.map((t) => <TripCard key={t.id} trip={t} memberCount={memberCount} hint />)
+        upcoming.map((t) => <TripCard key={t.id} trip={t} hint />)
       )}
 
       {/* ③ 其余行程 */}
@@ -124,7 +121,7 @@ export function TripsPage() {
         <>
           <View className="section-title">更早的行程</View>
           {rest.map((t) => (
-            <TripCard key={t.id} trip={t} memberCount={memberCount} label={REST_LABEL[t.status]} />
+            <TripCard key={t.id} trip={t} label={REST_LABEL[tripDisplayStatus(t)]} />
           ))}
         </>
       )}
@@ -138,17 +135,16 @@ export function TripsPage() {
   );
 }
 
-function TripCard({
-  trip,
-  memberCount,
-  hint,
-  label,
-}: {
-  trip: Trip;
-  memberCount: number;
-  hint?: boolean;
-  label?: string;
-}) {
+/**
+ * 行程卡 —— 点整张卡进入详情（内容），详情页首的信息行再进「行程管理」。
+ * ============================================================================
+ * 2026-10-26：去掉了「N 人同行」。原来那个数字取的是**家庭人数**
+ * （families[0].memberCount），不是本次行程的参与人数 —— 家庭 4 人、本趟只去 3 人时
+ * 会显示错的数字。列表接口不返回成员明细，拿不到准确值就不显示（不编造数据）；
+ * 准确的「共 N 人」在详情页与行程管理页。要列表也显示，需后端在 GET /trips 补
+ * memberCount（已列入派发单）。
+ */
+function TripCard({ trip, hint, label }: { trip: Trip; hint?: boolean; label?: string }) {
   const dests = trip.destinations ?? [];
   return (
     <Link to={`/trips/${trip.id}`} className="trip">
@@ -164,13 +160,17 @@ function TripCard({
               <Icon name="calendar" size={13} />
               {dateRange(trip)}
             </Text>
-            <Text>
-              <Icon name="users" size={13} />
-              {memberCount} 人同行
-            </Text>
+            {/* 同行人数：用后端给的 memberCount（本趟人数）。拿不到就不显示，不拿家庭人数顶替 */}
+            {trip.memberCount !== undefined && (
+              <Text>
+                <Icon name="users" size={13} />
+                {trip.memberCount} 人同行
+              </Text>
+            )}
           </View>
         </View>
-        <StatusChip status={trip.status} />
+        {/* 展示状态而非原始 status：日期过了但还没归档的行程，也要显示「已完成」 */}
+        <StatusChip status={tripDisplayStatus(trip)} />
       </View>
       {hint ? (
         <Text className="muted" style={{ display: 'block', marginTop: 10 }}>

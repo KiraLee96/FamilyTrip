@@ -5,7 +5,7 @@
  *
  *   ① `PERMISSION_MATRIX` —— 权限矩阵（资源类型 × 操作）。
  *      行语义 = `(resource, mode)`，角色维度收在 `roles` 字段。
- *      规模 = 15 资源 / 42 行，由 `assertMatrixSize()` 在启动与 CI 期强制。
+ *      规模 = 15 资源 / 43 行，由 `assertMatrixSize()` 在启动与 CI 期强制。
  *      它是**唯一权威口径**，CI 门禁据它校验每个路由的声明是否与矩阵一致。
  *
  *   ② `@RequireAccess(...)` —— 声明式权限标注。
@@ -22,7 +22,7 @@
 
 import type { AccessMode, ResourceType } from './access-policy.js';
 
-// ── 权限矩阵（15 资源 · 42 行）──────────────────────────────────
+// ── 权限矩阵（15 资源 · 43 行）──────────────────────────────────
 
 /** 矩阵行：一个「资源 × 操作」的可执行能力 */
 export interface PermissionCell {
@@ -37,7 +37,7 @@ export interface PermissionCell {
 }
 
 /**
- * 权限矩阵 —— 15 资源 / 42 行（行语义 = 资源 × 操作）。
+ * 权限矩阵 —— 15 资源 / 43 行（行语义 = 资源 × 操作）。
  *
  * 编号规则 `Rxx`，便于与 TP-02C 评审结论逐格对账。
  * 规模与唯一性由 `assertMatrixSize()` 在启动期与 CI 中强制。
@@ -50,13 +50,36 @@ export const PERMISSION_MATRIX: readonly PermissionCell[] = [
 
   // ── family · 3 行 ─────────────────────────────────────────
   { resource: 'family', mode: 'READ', dimension: 'SHARED_FAMILY' },
-  { resource: 'family', mode: 'WRITE', dimension: 'SHARED_FAMILY', roles: ['OWNER'], note: '改名等仅户主' },
-  { resource: 'family', mode: 'DELETE', dimension: 'SHARED_FAMILY', roles: ['OWNER'], note: '解散仅户主' },
+  {
+    resource: 'family',
+    mode: 'WRITE',
+    dimension: 'SHARED_FAMILY',
+    roles: ['OWNER'],
+    note: '改名等仅户主',
+  },
+  {
+    resource: 'family',
+    mode: 'DELETE',
+    dimension: 'SHARED_FAMILY',
+    roles: ['OWNER'],
+    note: '解散仅户主',
+  },
 
   // ── family_member · 3 行 ──────────────────────────────────
   { resource: 'family_member', mode: 'READ', dimension: 'SHARED_FAMILY' },
-  { resource: 'family_member', mode: 'WRITE', dimension: 'SHARED_FAMILY', roles: ['OWNER'], note: '改角色/转让户主' },
-  { resource: 'family_member', mode: 'DELETE', dimension: 'SHARED_FAMILY', note: '退出（本人）或移除（户主）' },
+  {
+    resource: 'family_member',
+    mode: 'WRITE',
+    dimension: 'SHARED_FAMILY',
+    roles: ['OWNER'],
+    note: '改角色/转让户主',
+  },
+  {
+    resource: 'family_member',
+    mode: 'DELETE',
+    dimension: 'SHARED_FAMILY',
+    note: '退出（本人）或移除（户主）',
+  },
 
   // ── wish · 3 行 ───────────────────────────────────────────
   { resource: 'wish', mode: 'READ', dimension: 'SHARED_FAMILY' },
@@ -65,13 +88,35 @@ export const PERMISSION_MATRIX: readonly PermissionCell[] = [
 
   // ── trip · 3 行 ───────────────────────────────────────────
   { resource: 'trip', mode: 'READ', dimension: 'SHARED_TRIP' },
-  { resource: 'trip', mode: 'WRITE', dimension: 'SHARED_TRIP', note: 'ACTIVE 成员；HISTORICAL_READONLY 拒' },
-  { resource: 'trip', mode: 'DELETE', dimension: 'SHARED_TRIP', roles: ['LEADER'], note: '仅主导者/创建者' },
+  {
+    resource: 'trip',
+    mode: 'WRITE',
+    dimension: 'SHARED_TRIP',
+    note: 'ACTIVE 成员；HISTORICAL_READONLY 拒',
+  },
+  {
+    resource: 'trip',
+    mode: 'DELETE',
+    dimension: 'SHARED_TRIP',
+    roles: ['LEADER'],
+    note: '仅主导者/创建者',
+  },
 
   // ── trip_member · 3 行 ────────────────────────────────────
   { resource: 'trip_member', mode: 'READ', dimension: 'SHARED_TRIP' },
-  { resource: 'trip_member', mode: 'WRITE', dimension: 'SHARED_TRIP', roles: ['LEADER'], note: '改代管/角色仅主导者' },
-  { resource: 'trip_member', mode: 'DELETE', dimension: 'SHARED_TRIP', note: '退出（本人）或移除（主导者）' },
+  {
+    resource: 'trip_member',
+    mode: 'WRITE',
+    dimension: 'SHARED_TRIP',
+    roles: ['LEADER'],
+    note: '改代管/角色仅主导者',
+  },
+  {
+    resource: 'trip_member',
+    mode: 'DELETE',
+    dimension: 'SHARED_TRIP',
+    note: '退出（本人）或移除（主导者）',
+  },
 
   // ── itinerary_item · 3 行 ─────────────────────────────────
   { resource: 'itinerary_item', mode: 'READ', dimension: 'SHARED_TRIP' },
@@ -83,13 +128,39 @@ export const PERMISSION_MATRIX: readonly PermissionCell[] = [
   { resource: 'booking', mode: 'WRITE', dimension: 'SHARED_TRIP' },
   { resource: 'booking', mode: 'DELETE', dimension: 'SHARED_TRIP' },
 
-  // ── checklist_template · 2 行（双语义）────────────────────
-  { resource: 'checklist_template', mode: 'READ', dimension: 'SHARED_FAMILY', note: 'SHARED 模板；PERSONAL 走私有短路' },
-  { resource: 'checklist_template', mode: 'WRITE', dimension: 'SHARED_FAMILY' },
+  // ── checklist_template · 3 行（双语义）────────────────────
+  {
+    resource: 'checklist_template',
+    mode: 'READ',
+    dimension: 'SHARED_FAMILY',
+    note: 'SHARED 模板；PERSONAL 走私有短路',
+  },
+  {
+    resource: 'checklist_template',
+    mode: 'WRITE',
+    dimension: 'SHARED_FAMILY',
+    note: '改名称/条目（CAS）；PERSONAL 走私有短路',
+  },
+  {
+    resource: 'checklist_template',
+    mode: 'DELETE',
+    dimension: 'SHARED_FAMILY',
+    note: '软删整套模板（D-2026-10-26-01 P0-2）；不级联删行程清单项',
+  },
 
   // ── trip_checklist_item · 3 行（双语义 + CAS）─────────────
-  { resource: 'trip_checklist_item', mode: 'READ', dimension: 'SHARED_TRIP', note: 'SHARED 清单；PERSONAL 走私有短路' },
-  { resource: 'trip_checklist_item', mode: 'WRITE', dimension: 'SHARED_TRIP', note: '勾选走 CAS 乐观锁' },
+  {
+    resource: 'trip_checklist_item',
+    mode: 'READ',
+    dimension: 'SHARED_TRIP',
+    note: 'SHARED 清单；PERSONAL 走私有短路',
+  },
+  {
+    resource: 'trip_checklist_item',
+    mode: 'WRITE',
+    dimension: 'SHARED_TRIP',
+    note: '勾选走 CAS 乐观锁',
+  },
   { resource: 'trip_checklist_item', mode: 'DELETE', dimension: 'SHARED_TRIP' },
 
   // ── item（个人物品库 · 私有）· 3 行 ───────────────────────
@@ -113,7 +184,12 @@ export const PERMISSION_MATRIX: readonly PermissionCell[] = [
   { resource: 'media_asset', mode: 'DELETE', dimension: 'SHARED_TRIP' },
 
   // ── memory_archive（只读快照）· 1 行 ──────────────────────
-  { resource: 'memory_archive', mode: 'READ', dimension: 'SHARED_FAMILY', note: 'C8 只读快照，不提供写/删' },
+  {
+    resource: 'memory_archive',
+    mode: 'READ',
+    dimension: 'SHARED_FAMILY',
+    note: 'C8 只读快照，不提供写/删',
+  },
 ] as const;
 
 /**
@@ -145,9 +221,7 @@ export function assertMatrixSize(expectedResources = PERMISSION_RESOURCE_COUNT):
   for (const c of PERMISSION_MATRIX) {
     const key = `${c.resource}:${c.mode}`;
     if (seen.has(key)) {
-      throw new Error(
-        `权限矩阵存在重复格：${key}。重复会让后一格静默失效，必须合并或删除。`,
-      );
+      throw new Error(`权限矩阵存在重复格：${key}。重复会让后一格静默失效，必须合并或删除。`);
     }
     seen.add(key);
   }

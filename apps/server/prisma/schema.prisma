@@ -274,7 +274,12 @@ model TripMember {
   /// 是否外部成员（无微信账号）
   isExternal  Boolean @default(false) @map("is_external")
   /// A11：ACTIVE / HISTORICAL_READONLY（退出后转只读）
-  accessLevel String @default("ACTIVE") @map("access_level") @db.VarChar(16)
+  ///
+  /// 🔴 D-2026-10-26-03：宽度必须 ≥ 19（`HISTORICAL_READONLY` 的实际长度）。
+  ///    原先的 VARCHAR(16) 让 MySQL 严格模式报 1406「Data too long」，
+  ///    整个 finish 事务回滚 → 线上 `POST /trips/:id/finish` 恒 500。
+  ///    内存驱动不校验列宽，故 CI 全绿也测不出（见 test/schema-enum-width.test.ts）。
+  accessLevel String @default("ACTIVE") @map("access_level") @db.VarChar(32)
   displayName String @map("display_name") @db.VarChar(64)
   joinedAt    DateTime @default(now()) @map("joined_at") @db.DateTime(3)
   /// A11：退出时间（非空即已退出）
@@ -371,7 +376,9 @@ model ItineraryItem {
   /// M-Client-2：交通方式 WALK/BIKE/CAR/BUS/TRAIN/FLIGHT（连线着色）
   transport  String? @db.VarChar(8)
   /// A21：AUTO / MANUAL（汇率来源）
-  rateSource String @default("AUTO") @map("rate_source") @db.VarChar(8)
+  /// 🔴 D-2026-10-26-03：宽度必须 ≥ 13（`SAME_CURRENCY` 的实际长度）。
+  ///    原先 VARCHAR(8) 让同币种记账/预订在 MySQL 严格模式报 1406 → 整事务回滚。
+  rateSource String @default("AUTO") @map("rate_source") @db.VarChar(32)
   /// A21：手动覆盖汇率操作人（审计）
   rateBy     BigInt? @map("rate_by")
   createdAt  DateTime @default(now()) @map("created_at") @db.DateTime(3)
@@ -411,7 +418,9 @@ model Booking {
   amountBase BigInt? @map("amount_base")
   currency   String @default("CNY") @db.VarChar(8)
   /// A21：AUTO / MANUAL
-  rateSource String @default("AUTO") @map("rate_source") @db.VarChar(8)
+  /// 🔴 D-2026-10-26-03：宽度必须 ≥ 13（`SAME_CURRENCY` 的实际长度）。
+  ///    原先 VARCHAR(8) 让同币种记账/预订在 MySQL 严格模式报 1406 → 整事务回滚。
+  rateSource String @default("AUTO") @map("rate_source") @db.VarChar(32)
   rateBy     BigInt? @map("rate_by")
   status     String @default("PENDING") @db.VarChar(16)
   createdAt  DateTime @default(now()) @map("created_at") @db.DateTime(3)
@@ -474,6 +483,8 @@ model ChecklistTemplate {
   ownerId   BigInt? @map("owner_id")
   name      String @db.VarChar(128)
   itemsJson Json? @map("items_json")
+  /// 乐观锁版本号 —— D-2026-10-26-01 P0-1：改模板走 CAS，与 trip / checklist item 同口径
+  version   Int @default(0)
   createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
   deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
@@ -568,7 +579,9 @@ model Expense {
   exchangeRate  Decimal? @map("exchange_rate") @db.Decimal(18, 8)
   rateDate      String? @map("rate_date") @db.VarChar(10)
   tier          String @default("SPOT_SELL") @db.VarChar(16)
-  rateSource    String @default("AUTO") @map("rate_source") @db.VarChar(8)
+  /// 🔴 D-2026-10-26-03：宽度必须 ≥ 13（`SAME_CURRENCY` 的实际长度）。
+  ///    原先 VARCHAR(8) 让同币种记账在 MySQL 严格模式报 1406 → 整事务回滚（500）。
+  rateSource    String @default("AUTO") @map("rate_source") @db.VarChar(32)
   rateBy        BigInt? @map("rate_by")
   category      String? @db.VarChar(32)
   spentAt       DateTime? @map("spent_at") @db.DateTime(3)

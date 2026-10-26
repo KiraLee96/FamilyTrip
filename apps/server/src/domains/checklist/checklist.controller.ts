@@ -12,12 +12,15 @@ import {
   createChecklistItemSchema,
   createTemplateSchema,
   listChecklistQuerySchema,
+  listTemplatesQuerySchema,
   toggleChecklistItemSchema,
   updateChecklistItemSchema,
+  updateTemplateSchema,
   type ApplyTemplateInput,
   type CreateChecklistItemInput,
   type CreateTemplateInput,
   type ListChecklistQueryInput,
+  type ListTemplatesQueryInput,
 } from './checklist.schema.js';
 
 export interface ChecklistDomainOptions {
@@ -56,6 +59,35 @@ export function createChecklistDomain(o: ChecklistDomainOptions): ChecklistDomai
     id,
     familyId: resolved.familyId,
     tripId: resolved.tripId,
+    ownerId: resolved.ownerId,
+    managedBy: resolved.managedBy,
+    scope: resolved.scope ?? 'SHARED',
+  });
+
+  /**
+   * 模板的 ref（D-2026-10-26-01 P0-1/P0-2）。
+   *
+   * 与 `itemRef` 同构，但 `tripId` 恒为 null（模板不挂行程）——
+   * 家庭维度来自链第 5 段对 `checklist_template` 行的读取（见 chain-deps 的
+   * `familyScoped` 登记），PERSONAL 则由 ownerId/managedBy 走私有短路。
+   */
+  const templateRef = (
+    id: bigint,
+    _req: unknown,
+    resolved: ResolvedOwnership,
+  ): {
+    type: 'checklist_template';
+    id: bigint;
+    familyId: bigint | null;
+    tripId: null;
+    ownerId: bigint | null;
+    managedBy: bigint | null;
+    scope: string;
+  } => ({
+    type: 'checklist_template',
+    id,
+    familyId: resolved.familyId,
+    tripId: null,
     ownerId: resolved.ownerId,
     managedBy: resolved.managedBy,
     scope: resolved.scope ?? 'SHARED',
@@ -187,9 +219,16 @@ export function createChecklistDomain(o: ChecklistDomainOptions): ChecklistDomai
       path: '/checklists/templates',
       auth: { public: false, resourceType: 'user', mode: 'READ' },
       idParam: '__none__',
-      handler: async (ctx) => {
-        const familyId = (ctx as unknown as { familyId?: bigint }).familyId;
-        const r = await service.listTemplates(ctx.userId!, familyId);
+      schema: listTemplatesQuerySchema as never,
+      handler: async (ctx, input) => {
+        // 🔴 familyId 必须从 **query** 读：链上的 `ctx.familyId` 只在带 `:id`
+        //    的路由才会被 withOwner 段赋值，这条路由没有路径参数，此前恒为
+        //    undefined —— 于是「前端传了 familyId 也没被用在过滤上」。
+        const q = input as ListTemplatesQueryInput;
+        const r = await service.listTemplates(
+          ctx.userId!,
+          q.familyId !== undefined ? BigInt(q.familyId) : undefined,
+        );
         return { data: r };
       },
     },
@@ -208,6 +247,34 @@ export function createChecklistDomain(o: ChecklistDomainOptions): ChecklistDomai
           familyId: BigInt(b.familyId),
         });
         return { data: r };
+      },
+    },
+
+    // ── 模板：改 / 删（D-2026-10-26-01 P0-1 / P0-2）────────────
+    // 上线后前端「暂不可改」的入口自动变为可用，前端零改动（按最终契约实现）。
+    {
+      method: 'PATCH',
+      path: '/checklists/templates/:id',
+      auth: { public: false, resourceType: 'checklist_template', mode: 'WRITE', ref: templateRef },
+      schema: updateTemplateSchema as never,
+      handler: async (ctx, input) => {
+        const r = await service.updateTemplate(ctx.userId!, ctx.resourceId!, input);
+        return { data: { template: r.template }, meta: { updatedAt: r.updatedAt.toISOString() } };
+      },
+    },
+
+    {
+      method: 'DELETE',
+      path: '/checklists/templates/:id',
+      auth: {
+        public: false,
+        resourceType: 'checklist_template',
+        mode: 'DELETE',
+        ref: templateRef,
+      },
+      handler: async (ctx) => {
+        const at = await service.removeTemplate(ctx.userId!, ctx.resourceId!);
+        return { data: null as never, meta: { updatedAt: at.toISOString() } };
       },
     },
   ];

@@ -20,6 +20,17 @@ export const ErrorCode = {
   FORBIDDEN: 4030,
   /** 越权与资源不存在**返回逐字节一致的 404，防 ID 枚举 */
   NOT_FOUND: 4040,
+  /**
+   * 邀请码无效或已失效（D-2026-10-26-01 P2-1）。
+   *
+   * 🔴 为什么这一格**允许**与 4040 区分（破例说明，勿随意扩展到别的资源）：
+   *    4040 的「同形」是为了防 ID 枚举 —— 攻击者拿一串自增 ID 试探资源是否存在。
+   *    邀请码是**用户输入的凭据**（8 位、31^8 空间），不构成枚举面；
+   *    而它与「路径写错 / 家庭已解散」同形时，用户只会得到「资源不存在」这种
+   *    无法行动的提示 —— 反馈里「邀请码分享之后无效」正是卡在这里。
+   *    HTTP 仍是 404（不额外暴露资源存在性），只让客户端能按码给文案。
+   */
+  INVITE_CODE_INVALID: 4041,
   VERSION_CONFLICT: 4090,
   IDEMPOTENT_IN_PROGRESS: 4091,
   RATE_LIMITED: 4290,
@@ -46,6 +57,7 @@ const HTTP_STATUS: Record<number, number> = {
   [ErrorCode.TOKEN_EXPIRED]: 401,
   [ErrorCode.FORBIDDEN]: 403,
   [ErrorCode.NOT_FOUND]: 404,
+  [ErrorCode.INVITE_CODE_INVALID]: 404,
   [ErrorCode.VERSION_CONFLICT]: 409,
   [ErrorCode.IDEMPOTENT_IN_PROGRESS]: 409,
   [ErrorCode.PAYLOAD_TOO_LARGE]: 413,
@@ -100,4 +112,14 @@ export const decryptFormatError = (msg: string): AppError =>
  */
 export function notFoundIndistinguishable(): AppError {
   return new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+}
+
+/**
+ * 邀请码未命中 —— 与 4040 唯一允许「可区分」的 404。
+ *
+ * HTTP 状态仍是 404（不暴露资源存在性），但 `code = 4041` 让客户端能把提示
+ * 从「资源不存在」改成「邀请码无效，请让家人重新发一次」（见上方码表注释）。
+ */
+export function inviteCodeInvalid(): AppError {
+  return new AppError(ErrorCode.INVITE_CODE_INVALID, '邀请码无效或已失效');
 }

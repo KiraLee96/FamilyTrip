@@ -1,0 +1,101 @@
+{
+  "results": [
+    {
+      "name": "R1-1 我的页 4 个管理入口",
+      "ok": true,
+      "detail": "entries=4/4"
+    },
+    {
+      "name": "R1-2 子 tab 切到「物品清单」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R1-3 家庭清单种子渲染（家庭出行常用）",
+      "ok": true,
+      "detail": "found"
+    },
+    {
+      "name": "R1-4 展开后可看条目与引用入口",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R1-5 选行程弹层列出 3 场行程",
+      "ok": true,
+      "detail": "pick-row=3"
+    },
+    {
+      "name": "R1-6 引用成功提示",
+      "ok": true,
+      "detail": "已加入 6 项到「国庆 · 青岛看海」"
+    },
+    {
+      "name": "R1-7 引用后行程清单条目 6 → 12",
+      "ok": true,
+      "detail": "check=12"
+    },
+    {
+      "name": "R2-1 行程详情出现参与人卡与人数",
+      "ok": true,
+      "detail": "共 3 人"
+    },
+    {
+      "name": "R2-2 名单含三位成员 + 主导标签",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R3-0 清单 tab 有「从长期清单引用」入口",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R3-1 花销 tab 有「导入账单」入口",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R3-2 导入弹层打开（含导出指引）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R3-3 解析出 2 笔并显示合计 ¥310.50",
+      "ok": true,
+      "detail": "bill-row=2"
+    },
+    {
+      "name": "R3-4 导入完成提示",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R3-5 明细出现导入的两笔",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R4-1 家庭卡片展示邀请码",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R4-2 H5 用「复制链接」替代转发按钮",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R4-3 复制链接有成功反馈且无「复制失败」",
+      "ok": true,
+      "detail": "加入链接已复制"
+    },
+    {
+      "name": "GLOBAL 控制台无 error",
+      "ok": true,
+      "detail": "errors=0"
+    }
+  ],
+  "consoleErrors": [],
+  "at": "2026-10-26T03:31:22.184Z"
+}

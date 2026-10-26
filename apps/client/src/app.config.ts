@@ -21,6 +21,7 @@ export default {
     'pages/MemoryPage',
     'pages/WishPoolPage',
     'pages/TripDetailPage',
+    'pages/TripManagePage',
     'pages/TripCreatePage',
     'pages/JoinFamilyPage',
     'pages/JoinTripPage',

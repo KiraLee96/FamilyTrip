@@ -13,6 +13,7 @@
 
 import { useCallback, useState } from 'react';
 import { Text, View } from '@tarojs/components';
+import Taro from '@tarojs/taro';
 import { Link } from '../nav/Link';
 
 import { api } from '../api/index';
@@ -22,6 +23,7 @@ import { ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
 import { shortDate } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
+import { photoWriteHint } from '../utils/constants';
 import { pickAndUploadPhotos } from '../utils/upload';
 
 export function MemoryPage() {
@@ -46,8 +48,12 @@ export function MemoryPage() {
     try {
       await pickAndUploadPhotos();
       reloadAll();
-    } catch {
-      /* 用户取消或失败：静默，保持原状 */
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '上传失败，请重试';
+      // 用户主动取消不提示（chooseImage 的 fail 也是这个文案）
+      if (!/cancel|取消/i.test(msg)) {
+        void Taro.showToast({ title: photoWriteHint(msg, 'upload'), icon: 'none' });
+      }
     } finally {
       setBusy(false);
     }
@@ -145,19 +151,40 @@ function MemoryArchiveCard({ archive }: { archive: MemoryArchive }) {
   );
 }
 
-/** 照片格：Mock 无真实图片字节时渲染占位；长按删除角标 */
+/**
+ * 照片格 —— 有 URL 显示真图，否则占位卡；删除走二次确认。
+ * ============================================================================
+ * 2026-10-26 修复：此前整格 `onClick` 直接调删除接口 —— 用户想看大图、手一滑
+ * 就把照片删了（回忆墙是"照片归档"的地方，误删代价最高）。改为点 ✕ 才触发，
+ * 且必须过一道确认框；删除失败按错误码翻成人话（归档行程的媒体写后端会 403）。
+ */
 function PhotoCell({ asset, onDeleted }: { asset: MediaAsset; onDeleted: () => void }) {
-  const remove = async () => {
+  const [busy, setBusy] = useState(false);
+
+  const remove = useCallback(async () => {
+    const res = await Taro.showModal({
+      title: '删除这张照片',
+      content: '删除后不可恢复，确定删除？',
+      confirmText: '删除',
+      confirmColor: '#e5484d',
+    });
+    if (!res.confirm) return;
+    setBusy(true);
     try {
       await api.deleteMediaAsset(asset.id);
       onDeleted();
-    } catch {
-      /* 删除失败：保持原状 */
+    } catch (e: unknown) {
+      void Taro.showToast({
+        title: photoWriteHint(e instanceof Error ? e.message : '删除失败', 'delete'),
+        icon: 'none',
+      });
+    } finally {
+      setBusy(false);
     }
-  };
+  }, [asset.id, onDeleted]);
 
   return (
-    <View className="photo-cell" onClick={() => void remove()}>
+    <View className="photo-cell">
       {asset.url !== '' ? (
         <View
           className="photo-cell__img"
@@ -173,7 +200,10 @@ function PhotoCell({ asset, onDeleted }: { asset: MediaAsset; onDeleted: () => v
           <Text className="photo-cell__ph-date">{asset.createdAt.slice(0, 10)}</Text>
         </View>
       )}
-      <View className="photo-cell__del">
+      <View
+        className={`photo-cell__del ${busy ? 'photo-cell__del--busy' : ''}`}
+        onClick={busy ? undefined : () => void remove()}
+      >
         <Text className="photo-cell__del-x">✕</Text>
       </View>
     </View>

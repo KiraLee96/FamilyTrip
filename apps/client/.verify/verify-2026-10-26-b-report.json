@@ -1,0 +1,86 @@
+{
+  "results": [
+    {
+      "name": "A1 详情页无独立「同行邀请码」区",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "A2 出现参与人信息行 + 行程管理入口",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "A3 出现「邀请同行人」按钮",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "C1 五个内容 tab 都在且可切",
+      "ok": true,
+      "detail": "行程/清单/花销/照片/回忆"
+    },
+    {
+      "name": "C2 照片 tab 有上传格子",
+      "ok": true,
+      "detail": "add-cell=1"
+    },
+    {
+      "name": "D1 日期已过 → 出现「标记完成」提示条",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "B1 进入行程管理页并展示邀请码",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "B2 参与人区块：共 3 人 + 名单 + 主导标签",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "B3 有重置邀请码与凭码加入",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "D1c 提示条按钮可点中",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "D1b modal 确认键可点中",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "D2 标记后转已完成：提示条消失、信息锁定",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "D3 归档后照片仍有上传格子",
+      "ok": true,
+      "detail": "add-cell=1"
+    },
+    {
+      "name": "D4 已归档行程进入即只读",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "D5 已归档行程照片可上传",
+      "ok": true,
+      "detail": "add-cell=1"
+    },
+    {
+      "name": "E 控制台无 error",
+      "ok": true,
+      "detail": "errors=0"
+    }
+  ],
+  "consoleErrors": [],
+  "at": "2026-10-26T04:02:14.093Z"
+}

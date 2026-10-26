@@ -21,12 +21,19 @@
 
 import { Decimal } from 'decimal.js';
 import { AppError, ErrorCode } from '../../common/errors/error-code.js';
-import type { Row } from '../../common/db/table-client.js';
+import type { Row, TableDriver } from '../../common/db/table-client.js';
 import type { DomainContext, TxHandle } from '../domain-context.js';
 import { serializeRow } from '../domain-context.js';
 import { ACTIVE_RATE_TIER } from '../../common/fx/rate-tier.js';
 import { sumMinorUnits, toMinorUnits } from '../../common/fx/amount.js';
 import { buildPageMeta, normalizePageQuery } from '../../common/pagination/pagination.js';
+import {
+  IdempotencyConflictError,
+  InMemoryIdempotencyStore,
+  withIdempotency,
+  type IdempotencyStore,
+} from '../../common/idempotency/idempotency.js';
+import type { MinIntervalLimiter } from '../../common/security/rate-limit.js';
 
 export interface ExpenseServiceOptions {
   ctx: DomainContext;
@@ -43,6 +50,23 @@ export interface ExpenseServiceOptions {
   auditRetentionDays?: number;
   /** 「今天」的来源（默认 DB 时间取日期部分） */
   today?: () => string;
+  /**
+   * 批量导入的幂等仓储（D-2026-10-26-01 P1-1）。
+   *
+   * 缺省用**进程内**实现：pm2 fork 单实例下正确，多实例 / 重启即失效。
+   * 真要做跨实例幂等需要 Redis 或 DB 唯一索引（另单）。
+   */
+  idempotencyStore?: IdempotencyStore;
+  /**
+   * 批量导入限流器（单用户 1 次/秒）。
+   *
+   * 🔴 施力点在**幂等占位之后**（`run()` 内），不在 handler 入口：
+   *    同一 `requestId` 的重放是「零副作用的回放」，不该被限流拒。
+   *    若把限流放在最外层，弱网客户端 1 秒内的那次重试会拿到 429，
+   *    而它本该顺利拿到首次结果 —— 用户看到的是「导入过于频繁」，
+   *    真实情况却是「服务端早就写成功了」。
+   */
+  batchLimiter?: MinIntervalLimiter;
 }
 
 /**
@@ -61,6 +85,23 @@ const EXPENSE_BIGINT_FIELDS = [
   'rateBy',
 ];
 
+/** 批量记账的逐行结果（部分成功语义） */
+export interface BatchExpenseRowResult {
+  /** 该行在请求 `rows` 数组里的下标 —— 客户端据此把失败行标回预览列表 */
+  index: number;
+  ok: boolean;
+  /** 成功时为新账目 id（字符串化，与其它回包口径一致） */
+  id?: string;
+  /** 失败原因；成功时不存在 */
+  error?: { code: number; message: string };
+}
+
+export interface BatchExpenseResult {
+  created: number;
+  failed: number;
+  results: BatchExpenseRowResult[];
+}
+
 export interface ExpenseSummary {
   displayCurrency: string;
   totalMinor: string;
@@ -72,9 +113,11 @@ export interface ExpenseSummary {
 
 export class ExpenseService {
   private readonly retentionDays: number;
+  private readonly idempotencyStore: IdempotencyStore;
 
   constructor(private readonly o: ExpenseServiceOptions) {
     this.retentionDays = o.auditRetentionDays ?? 365;
+    this.idempotencyStore = o.idempotencyStore ?? new InMemoryIdempotencyStore();
   }
 
   /** 记一笔花费 —— 落库时做**一次**汇率折算快照 */
@@ -95,7 +138,7 @@ export class ExpenseService {
     return this.o.ctx.tx(async (tx) => {
       const t = await tx.db.findUnique('trip', { id: input.tripId, deletedAt: null });
       if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
-      await this.assertTripWritable(tx, t, userId);
+      await this.assertTripExpenseWritable(tx.db, t, userId);
 
       // 字符串 → 最小单位整数（不经 number）
       const amountMinor = toMinorUnits(input.amount, input.currency);
@@ -140,6 +183,122 @@ export class ExpenseService {
       const row = await tx.db.findUnique('expense', { id });
       return serializeRow(row ?? {}, EXPENSE_BIGINT_FIELDS);
     });
+  }
+
+  /**
+   * 批量记账（D-2026-10-26-01 P1-1）。
+   *
+   * 语义（三条，勿自行改动）：
+   *   1. **部分成功** —— 逐行独立事务，一行失败不回滚整批。用户的真实场景是
+   *      「导 80 笔账单，其中 3 笔金额格式怪」，此时正确的行为是写入 77 笔
+   *      并把你标出这 3 行，而不是整批归零重来。
+   *   2. **幂等** —— 带 `requestId` 时同 id 重放返回首次结果，不重复记账。
+   *      弱网下"超时但服务端已写入"是必然发生的，没有幂等的重试 = 记两遍。
+   *   3. **前置整体门** —— 行程不存在 / 不是成员时整批 404，
+   *      不要把权限错误铺成 200 条「资源不存在」让人以为是数据问题。
+   *      ⚠️ 归档行程**不拦**（D-2026-10-26-02：回来导一份账单是合理动作）。
+   *
+   * ⚠️ 性能：每行一个事务，200 行 = 200 次事务。相对「200 次 HTTP 往返」
+   *    已是数量级改善；真要再快需要批量 insert + 单事务失败隔离（另单）。
+   */
+  async createBatch(
+    userId: bigint,
+    input: {
+      tripId: bigint;
+      familyId: bigint;
+      requestId?: string;
+      rows: Array<{
+        title: string;
+        amount: string;
+        currency: string;
+        ownerMemberId?: bigint;
+        category?: string;
+        spentAt?: string;
+        note?: string;
+      }>;
+    },
+  ): Promise<BatchExpenseResult> {
+    // ① 前置整体门：用读驱动判一次，避免逐行各判一次
+    const t = await this.o.ctx.read.findUnique('trip', { id: input.tripId, deletedAt: null });
+    if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+    await this.assertTripExpenseWritable(this.o.ctx.read, t, userId);
+
+    // ② 幂等包裹：scope 含 userId，防跨用户撞 key
+    const run = async (): Promise<BatchExpenseResult> => {
+      // 限流在这里而不是 handler 入口：重放走 REPLAY 分支、不进入 run，
+      // 因此「弱网重试」永远拿得到首次结果（见 options.batchLimiter 的注释）
+      if (this.o.batchLimiter !== undefined) {
+        const decision = this.o.batchLimiter.tryAcquire(userId.toString());
+        if (!decision.ok) {
+          const secs = Math.max(1, Math.ceil(decision.retryAfterMs / 1_000));
+          throw new AppError(ErrorCode.RATE_LIMITED, `导入过于频繁，请 ${secs} 秒后重试`);
+        }
+      }
+
+      const results: BatchExpenseRowResult[] = [];
+      let created = 0;
+
+      for (let index = 0; index < input.rows.length; index += 1) {
+        const row = input.rows[index]!;
+        try {
+          const expense = await this.create(userId, {
+            tripId: input.tripId,
+            familyId: input.familyId,
+            title: row.title,
+            amount: row.amount,
+            currency: row.currency,
+            ...(row.ownerMemberId !== undefined ? { ownerMemberId: row.ownerMemberId } : {}),
+            ...(row.category !== undefined ? { category: row.category } : {}),
+            ...(row.spentAt !== undefined ? { spentAt: row.spentAt } : {}),
+            ...(row.note !== undefined ? { note: row.note } : {}),
+          });
+          created += 1;
+          // id 由 serializeRow 转成字符串；这里显式分支而不是 `String(...)`，
+          // 否则非 string 值会被拼成 "[object Object]" 且无人发现
+          const rawId = expense['id'];
+          results.push({
+            index,
+            ok: true,
+            id:
+              typeof rawId === 'string' ? rawId : typeof rawId === 'bigint' ? rawId.toString() : '',
+          });
+        } catch (e) {
+          // 单行失败只记录、不中断 —— 见方法头第 1 条
+          const err = e as { code?: number; message?: string };
+          results.push({
+            index,
+            ok: false,
+            error: {
+              code: err.code ?? ErrorCode.INTERNAL_ERROR,
+              message: err.message ?? '记账失败',
+            },
+          });
+        }
+      }
+
+      return { created, failed: results.length - created, results };
+    };
+
+    let outcome: { result: unknown };
+    try {
+      outcome = await withIdempotency(
+        {
+          // scope 收敛到「方法 + 用户」：同用户的同 id 才算重放
+          scope: `POST /expenses/batch#${userId.toString()}`,
+          requestId: input.requestId,
+          store: this.idempotencyStore,
+        },
+        run,
+      );
+    } catch (e) {
+      // 同 requestId 并发在途 → 4091（而不是 500 INTERNAL_ERROR）
+      if (e instanceof IdempotencyConflictError) {
+        throw new AppError(ErrorCode.IDEMPOTENT_IN_PROGRESS, e.message);
+      }
+      throw e;
+    }
+
+    return outcome.result as BatchExpenseResult;
   }
 
   /** 列表 */
@@ -259,7 +418,13 @@ export class ExpenseService {
     };
   }
 
-  /** 更新（CAS） */
+  /**
+   * 更新（CAS）。
+   *
+   * ⚠️ D-2026-10-26-02：归档行程**也允许改**（补记完发现写错金额/错别字，
+   *    不能只让加不让改）。删除同理 —— `remove` 走的是「创建者自删 / 主导者删」，
+   *    本来就不受归档影响。
+   */
   async update(
     userId: bigint,
     expenseId: bigint,
@@ -278,7 +443,7 @@ export class ExpenseService {
       if (!e) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
       const t = await tx.db.findUnique('trip', { id: e['tripId'], deletedAt: null });
       if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
-      await this.assertTripWritable(tx, t, userId);
+      await this.assertTripExpenseWritable(tx.db, t, userId);
 
       const now = await tx.db.dbNow();
       const expectedVersion = requireVersionOrSkip(patch.version, e['version']);
@@ -450,14 +615,32 @@ export class ExpenseService {
     return s;
   }
 
-  private async assertTripWritable(tx: TxHandle, t: Row, userId: bigint): Promise<void> {
-    const m = await tx.db.findUnique('tripMember', { tripId: t['id'], userId, deletedAt: null });
-    if (m) {
-      if (m['accessLevel'] === 'HISTORICAL_READONLY') {
-        throw new AppError(ErrorCode.FORBIDDEN, '该出行已归档，仅可查看');
-      }
-      return;
-    }
+  /**
+   * 行程写入门（记账专用）。
+   *
+   * 🔴 D-2026-10-26-02 口径扩展：**归档（HISTORICAL_READONLY）不再拒写**。
+   *    产品新增口径「出行回来可以补记最后一笔」——记账与回忆照片同属
+   *    「回填事实」，不是「改行程信息」。产品拍板清单：
+   *
+   *      归档后**可写**：media（回忆照片）、expense（补记/改错/删除账目）
+   *      归档后**仍锁**：trip 自身（改期/改标题）、itinerary、checklist、booking
+   *
+   *    ⛔ 不要「顺手」把 `assertTripWritable` 的只读门复制回来 —— 那会让
+   *       本次放开静默回退；也不要反过来改 itinerary / checklist / booking，
+   *       「信息锁定」是用户明确要的。
+   *
+   * 判定：行程成员 ∨ 创建者；其余 404（与「不存在」同形，防 ID 枚举）。
+   * ⚠️ 不看 `access_level`，但**也不放宽到代管人**（记账口径历来只认本人/创建者，
+   *    与 media 的含代管人口径不同，勿混同）。
+   *
+   * 参数是 `TableDriver` 而非 `TxHandle`：批量导入（`createBatch`）需要在
+   * 逐行事务**之前**先做一次整体门（否则 200 行会各判一次、且权限错误会被
+   * 埋进逐行 results 里，变成 200 条「资源不存在」）。三处必须同一份判定，
+   * 否则「单笔能记、批量记不了」这种分裂迟早出现。
+   */
+  private async assertTripExpenseWritable(db: TableDriver, t: Row, userId: bigint): Promise<void> {
+    const m = await db.findUnique('tripMember', { tripId: t['id'], userId, deletedAt: null });
+    if (m) return;
     if (t['createdBy'] === userId) return;
     throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
   }

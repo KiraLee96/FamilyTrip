@@ -225,9 +225,7 @@ export function createChainDeps(deps: IdentityDeps): ChainDeps {
    * 顺序：先探「直接带 familyId 的表」，再探「经 tripId 间接归属的表」。
    * 返回 null 表示该 id 不属于任何已知业务表 → 上层按 404 处理。
    */
-  async function resolveSharedScope(
-    rowId: bigint,
-  ): Promise<{
+  async function resolveSharedScope(rowId: bigint): Promise<{
     ownerId: bigint | null;
     managedBy: bigint | null;
     scope: string | undefined;
@@ -260,7 +258,14 @@ export function createChainDeps(deps: IdentityDeps): ChainDeps {
       };
     }
     // ③ 直接带 familyId 的共享域表
-    const familyScoped = ['wish', 'expense'] as const;
+    //
+    // 🔴 `checklistTemplate` 必须在此登记（D-2026-10-26-01 P0-1 的前置缺陷）：
+    //    它是**双语义**表，SHARED 行在上面 dualProbes 里 `break` 出来走本函数，
+    //    但本表既不在 tripScoped（它没有 tripId）也不在旧 familyScoped 里 ——
+    //    于是 loadOwnerRef 返回 null → 链第 5 段直接 404。
+    //    表现为「共享清单模板的详情/改/删恒 404」，而 PERSONAL 模板正常
+    //    （走私有短路，不经过这里）—— 极难从现象反推。
+    const familyScoped = ['wish', 'expense', 'checklistTemplate'] as const;
     for (const m of familyScoped) {
       const row = await driver.findUnique(m, { id: rowId, deletedAt: null });
       if (row) {

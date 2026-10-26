@@ -448,7 +448,7 @@ function InviteStep({
               <View className="invite__ops">
                 <View
                   className="btn btn--ghost invite__btn"
-                  onClick={() => copyText(code, '邀请码已复制')}
+                  onClick={() => void copyText(code, '邀请码已复制')}
                 >
                   <Icon name="copy" size={14} />
                   复制

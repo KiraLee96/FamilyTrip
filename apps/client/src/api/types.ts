@@ -149,6 +149,12 @@ export interface Trip {
   destinations?: Destination[];
   /** E7 CAS 乐观锁版本号；更新时必须原样回传 */
   version: number;
+  /**
+   * 本趟同行人数（后端 D-2026-10-26-02 P1-1 已补，`GET /trips` 与 `GET /trips/:id` 都带）。
+   * 🔴 与 `Family.memberCount`（**家庭**总人数）不是一回事 —— 家庭 4 人、本趟只去 3 人时
+   *    列表曾误用家庭人数显示「4 人同行」。缺省表示老后端没给，界面不显示（不编数据）。
+   */
+  memberCount?: number;
 }
 
 /** 心愿（愿望池条目） */
@@ -263,6 +269,104 @@ export interface ChecklistItem {
   title: string;
   done: boolean;
   assigneeName?: string;
+  /** CAS 乐观锁版本号（toggle 必须原样回传；缺省 = 老后端，按 0 处理） */
+  version?: number;
+  /** 数量（后端列 quantity，缺省 1）；引用长期清单时由模板带过来 */
+  quantity?: number;
+  /** 由哪套长期清单引用而来（templateId；手工加的个性化物品为空） */
+  templateId?: string;
+}
+
+/**
+ * 长期清单条目（模板内的一条）。
+ * 后端存储为 `checklistTemplate.items_json` 的数组元素，只有 name/quantity 两个字段。
+ */
+export interface ChecklistTemplateItem {
+  name: string;
+  quantity: number;
+}
+
+/**
+ * 长期清单（模板）—— 「每次出门都带的东西」清单池，可被任意行程反复引用。
+ * ============================================================================
+ * 对齐后端 `checklistTemplate` 行（见 domains/checklist/checklist.service.ts）：
+ *   · `scope = SHARED`   → 家庭共享清单，`familyId` 有值、`ownerId` 为 null
+ *   · `scope = PERSONAL` → 我的私人清单，`ownerId` = 本人，仅本人可见
+ * 🔴 后端 GET /checklists/templates 回的是原始行，`items` 藏在 `itemsJson` 字符串里，
+ *    投影在 api/http.ts 的 toChecklistTemplate 统一解析，界面只认 `items` 数组。
+ */
+export interface ChecklistTemplate {
+  id: string;
+  familyId: string | null;
+  scope: 'SHARED' | 'PERSONAL';
+  ownerId: string | null;
+  name: string;
+  items: ChecklistTemplateItem[];
+  /** CAS 乐观锁版本号；改模板时必须原样回传 */
+  version: number;
+  updatedAt?: string;
+}
+
+/** 把长期清单引用到行程的结果（幂等：同模板同行程重复引用不重复插入） */
+export interface ApplyTemplateResult {
+  created: number;
+  skipped: number;
+  alreadyApplied: boolean;
+}
+
+/**
+ * 行程详情（GET /trips/:id 的完整 data）。
+ * ============================================================================
+ * 🔴 后端该端点一直返回 `{trip, members, myRole, myAccessLevel}`，
+ *    此前客户端 `getTrip()` 只投影了 trip、把 members 丢掉，
+ *    于是「加入行程后看不到参与人」—— 是客户端裁剪造成的，不是后端缺能力。
+ */
+export interface TripDetail {
+  trip: Trip;
+  members: TripMember[];
+  myRole: TripMemberRole | null;
+  myAccessLevel: TripAccessLevel | null;
+}
+
+/**
+ * 账单导入的一行（解析产物，尚未提交）。
+ * 金额是**主单位字符串**（如 "38.50"），与 createExpense 的口径一致。
+ */
+export interface BillImportRow {
+  title: string;
+  amount: string;
+  /** YYYY-MM-DD */
+  spentAt: string;
+  category?: string;
+  note?: string;
+  currency?: string;
+}
+
+/**
+ * 批量记账的**行级结果**（对齐后端 expense.service 的 BatchExpenseRowResult）。
+ * `index` 是该行在请求 `rows` 数组里的下标 —— 客户端据此把失败行标回预览列表。
+ */
+export interface BatchExpenseRowResult {
+  index: number;
+  ok: boolean;
+  /** 成功时为新账目 id */
+  id?: string;
+  /** 失败原因；成功时不存在 */
+  error?: { code: number; message: string };
+}
+
+/**
+ * 批量记账结果（客户端视图）。
+ * ============================================================================
+ * 🔴 后端回包是 `{created, failed, results}`（逐行结果），本结构是它的**投影**：
+ *    `errors` 由实现层从 results 里取失败行的 message 拼成（最多 5 条供提示框展示）。
+ *    界面只认 created/failed/errors 三个字段，不直接消费 results ——
+ *    这样弹层文案逻辑不必关心后端行级结构的变化。
+ */
+export interface BatchExpenseResult {
+  created: number;
+  failed: number;
+  errors: string[];
 }
 
 /** 记账 */

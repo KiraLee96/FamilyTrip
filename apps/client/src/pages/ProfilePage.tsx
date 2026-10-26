@@ -17,7 +17,7 @@
  *         / addFamilyMember / removeFamilyMember / updateMe（Mock 与真后端同形）
  */
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Text, View, Input, Button } from '@tarojs/components';
 import Taro from '@tarojs/taro';
 
@@ -26,19 +26,48 @@ import type { Family, FamilyDetail, FamilyMember, User } from '../api/types';
 import { patchSessionUser, retryLogin } from '../api/session';
 import { navigate } from '../nav';
 import { Avatar } from '../components/Avatar';
+import { ChecklistPanel } from '../components/ChecklistPanel';
 import { Icon } from '../components/Icon';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
 import { SectionTitle } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
 import { useSession } from '../hooks/useSession';
-import { copyText } from '../utils/clipboard';
+import { buildJoinLink, copyText } from '../utils/clipboard';
 import { pickAndUploadAvatar, uploadAvatarImage } from '../utils/upload';
+
+/** 编译期常量：分享面板在小程序是原生能力，H5 只能给链接（不 fork 组件，只分行为） */
+const IS_WEAPP = process.env.TARO_ENV === 'weapp';
+
+/** 我的页子 tab —— 2026-10-26：清单不作为 tabBar 入口，收进「我的」里 */
+type ProfileTab = 'account' | 'checklist';
 
 export function ProfilePage() {
   const user = useSession();
+  const [tab, setTab] = useState<ProfileTab>('account');
   // 分享卡片携带的邀请信息（由展开的家庭卡片回填）
   const shareRef = useRef<{ code: string; name: string } | null>(null);
+
+  const q = useAsync(
+    useCallback(() => api.listFamilies(), []),
+    [],
+  );
+
+  /**
+   * 分享卡片必须**常驻**邀请码，不能只在「展开家庭卡片」时才回填。
+   * ==========================================================================
+   * 反馈「家庭邀请码分享之后无效」的根因之一：原实现只在卡片展开的瞬间写
+   * shareRef，用户直接从右上角菜单转发 → shareRef 为 null → 分享路径不带
+   * invite 参数 → 对方打开只有空表单，看起来就是「码无效」。
+   * 这里在家庭列表到位后先兜底成第一个有邀请码的家庭，展开时再覆盖成具体那家。
+   */
+  useEffect(() => {
+    const families = q.data ?? [];
+    const first = families.find((f) => (f.inviteCode ?? '') !== '');
+    if (first?.inviteCode !== undefined && shareRef.current === null) {
+      shareRef.current = { code: first.inviteCode, name: first.name };
+    }
+  }, [q.data]);
 
   Taro.useShareAppMessage(() => {
     const s = shareRef.current;
@@ -47,48 +76,128 @@ export function ProfilePage() {
       : { title: '来加入我的家庭出行计划', path: '/pages/JoinFamilyPage' };
   });
 
-  const q = useAsync(
-    useCallback(() => api.listFamilies(), []),
-    [],
-  );
-
   Taro.useDidShow(() => {
     q.reload();
   });
 
-  return (
-    <PageLayout title="我的" sub="账号与家庭成员">
-      <AccountCard user={user} />
+  const familyId = (q.data ?? [])[0]?.id ?? '';
 
-      <SectionTitle icon="users">我的家庭</SectionTitle>
-      {q.loading ? (
-        <Loading />
-      ) : q.error ? (
-        <ErrorBox message={q.error} onRetry={q.reload} />
+  return (
+    <PageLayout
+      title="我的"
+      sub={tab === 'account' ? '账号与家庭成员' : '长期清单：维护一次，处处引用'}
+    >
+      <View className="tabs tabs--sub">
+        {(
+          [
+            ['account', '账号与家庭'],
+            ['checklist', '物品清单'],
+          ] as Array<[ProfileTab, string]>
+        ).map(([k, label]) => (
+          <View
+            key={k}
+            className={tab === k ? 'tabs__btn tabs__btn--on' : 'tabs__btn'}
+            onClick={() => setTab(k)}
+          >
+            {label}
+          </View>
+        ))}
+      </View>
+
+      {tab === 'checklist' ? (
+        <ChecklistPanel familyId={familyId} />
       ) : (
         <>
-          {(q.data ?? []).length === 0 ? (
-            <Empty text="还没有家庭，下面新建一个或凭邀请码加入" />
+          <AccountCard user={user} />
+
+          {/* 管理入口：家里各种要维护的数据，从一个地方进 */}
+          <SectionTitle icon="package">管理</SectionTitle>
+          <View className="mgmt-grid">
+            <MgmtEntry
+              icon="package"
+              label="物品清单"
+              hint="家庭 / 我的两套"
+              onClick={() => setTab('checklist')}
+            />
+            <MgmtEntry
+              icon="map"
+              label="物品库"
+              hint="按分类整理"
+              onClick={() => navigate('/items')}
+            />
+            <MgmtEntry
+              icon="heart"
+              label="心愿池"
+              hint="想去的地方"
+              onClick={() => navigate('/wishes')}
+            />
+            <MgmtEntry
+              icon="sparkles"
+              label="回忆墙"
+              hint="出行档案"
+              onClick={() => navigate('/memory')}
+            />
+          </View>
+
+          <SectionTitle icon="users">我的家庭</SectionTitle>
+          {q.loading ? (
+            <Loading />
+          ) : q.error ? (
+            <ErrorBox message={q.error} onRetry={q.reload} />
           ) : (
-            (q.data ?? []).map((f) => (
-              <FamilyCard
-                key={f.id}
-                family={f}
-                onChanged={q.reload}
-                onShareInfo={(info) => (shareRef.current = info)}
-              />
-            ))
+            <>
+              {(q.data ?? []).length === 0 ? (
+                <Empty text="还没有家庭，下面新建一个或凭邀请码加入" />
+              ) : (
+                (q.data ?? []).map((f) => (
+                  <FamilyCard
+                    key={f.id}
+                    family={f}
+                    onChanged={q.reload}
+                    onShareInfo={(info) => (shareRef.current = info)}
+                  />
+                ))
+              )}
+            </>
           )}
+
+          <CreateFamilyForm onCreated={q.reload} />
+
+          <View className="add-bar" onClick={() => navigate('/join')}>
+            <Icon name="link" size={16} />
+            <Text className="add-bar__text">凭邀请码加入家庭</Text>
+          </View>
         </>
       )}
-
-      <CreateFamilyForm onCreated={q.reload} />
-
-      <View className="add-bar" onClick={() => navigate('/join')}>
-        <Icon name="link" size={16} />
-        <Text className="add-bar__text">凭邀请码加入家庭</Text>
-      </View>
     </PageLayout>
+  );
+}
+
+/** 管理入口宫格单项 */
+function MgmtEntry({
+  icon,
+  label,
+  hint,
+  onClick,
+}: {
+  icon: 'package' | 'map' | 'heart' | 'sparkles';
+  label: string;
+  hint: string;
+  onClick: () => void;
+}) {
+  return (
+    <View className="mgmt-entry" onClick={onClick}>
+      <Text className="mgmt-entry__icon">
+        <Icon name={icon} size={18} />
+      </Text>
+      <View className="mgmt-entry__body">
+        <Text className="mgmt-entry__label">{label}</Text>
+        <Text className="mgmt-entry__hint">{hint}</Text>
+      </View>
+      <Text className="mgmt-entry__chev">
+        <Icon name="chevron-right" size={14} />
+      </Text>
+    </View>
   );
 }
 
@@ -391,24 +500,47 @@ function FamilyCard({
               <View className="invite">
                 <View className="invite__body">
                   <Text className="invite__label">邀请码</Text>
-                  <Text className="invite__code">{inviteCode ?? '——'}</Text>
+                  {/* selectable：复制通道全失败时，用户能长按选中这几个字符（最后一道兜底） */}
+                  <Text className="invite__code" selectable>
+                    {inviteCode ?? '——'}
+                  </Text>
                 </View>
                 <View className="invite__ops">
                   <View
                     className={`btn btn--ghost invite__btn ${inviteCode ? '' : 'btn--busy'}`}
-                    onClick={inviteCode ? () => copyCode(inviteCode) : undefined}
+                    onClick={inviteCode ? () => void copyCode(inviteCode) : undefined}
                   >
                     <Icon name="copy" size={14} />
                     复制
                   </View>
-                  <Button className="btn btn--ghost invite__btn invite__share" openType="share">
-                    <Icon name="share" size={14} />
-                    分享
-                  </Button>
+                  {/*
+                    分享分流（2026-10-26 修复「分享之后无效」）：
+                      · 小程序：<Button openType="share"> 唤起原生转发面板，path 带 invite
+                      · H5：没有转发面板，openType="share" 点了完全没反应 —— 改成
+                        「复制加入链接」，把可粘贴的 URL 发给对方，这才是 Web 端的正解
+                  */}
+                  {IS_WEAPP ? (
+                    <Button className="btn btn--ghost invite__btn invite__share" openType="share">
+                      <Icon name="share" size={14} />
+                      分享
+                    </Button>
+                  ) : (
+                    <View
+                      className={`btn btn--ghost invite__btn ${inviteCode ? '' : 'btn--busy'}`}
+                      onClick={inviteCode ? () => void copyJoinLink(inviteCode) : undefined}
+                    >
+                      <Icon name="share" size={14} />
+                      复制链接
+                    </View>
+                  )}
                 </View>
               </View>
               {inviteCode ? (
-                <Text className="invite__hint">把邀请码或分享链接发给家人，对方点开即可加入</Text>
+                <Text className="invite__hint">
+                  {IS_WEAPP
+                    ? '把邀请码或分享链接发给家人，对方点开即可加入'
+                    : '把邀请码或复制的链接发给家人，对方打开链接即可加入'}
+                </Text>
               ) : null}
 
               <Text className="family-card__label">成员（{members.length}）</Text>
@@ -629,9 +761,14 @@ function CreateFamilyForm({ onCreated }: { onCreated: () => void }) {
   );
 }
 
-/** 复制邀请码到剪贴板（H5 / 小程序共用 Taro API，实现见 utils/clipboard） */
+/** 复制邀请码到剪贴板（H5 / 小程序共用，实现见 utils/clipboard 的三档降级） */
 function copyCode(code: string): void {
-  copyText(code, '邀请码已复制');
+  void copyText(code, '邀请码已复制');
+}
+
+/** 复制「凭邀请码加入」的链接（H5 专用：没有转发面板时的分享正解） */
+function copyJoinLink(code: string): void {
+  void copyText(buildJoinLink(code), '加入链接已复制');
 }
 
 /** 解散家庭：二次确认后调用（仅管理员可操作，后端校验） */
