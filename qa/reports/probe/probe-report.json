@@ -1,0 +1,26 @@
+{
+  "results": [
+    {
+      "name": "P1 回忆墙：单击照片即删除且无二次确认（缺陷复现）",
+      "ok": true,
+      "detail": "照片格 4 → 3；确认弹层=无；容器数 5 → 4"
+    },
+    {
+      "name": "P3 花销明细双币展示（需求 §5.2）",
+      "ok": false,
+      "detail": "明细仅见 ¥ 金额，无币种区分"
+    },
+    {
+      "name": "P4 只读行程仍展示邀请码复制/分享（待产品确认）",
+      "ok": false,
+      "detail": "复制=true 分享=true 重置=false"
+    },
+    {
+      "name": "G 本次探针全程 console.error 计数为 0",
+      "ok": true,
+      "detail": "0 条"
+    }
+  ],
+  "consoleErrors": [],
+  "generatedAt": "2026-10-22T08:53:42.539Z"
+}
