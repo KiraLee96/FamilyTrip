@@ -20,6 +20,10 @@ import { APP_TOKEN } from './http/app-token.js';
 import type { BuiltApp } from './composition-root.js';
 import type { TripService } from './domains/trip/trip.service.js';
 import { readAutoFinishConfig, startAutoFinishScheduler } from './common/scheduler/auto-finish.js';
+import {
+  createMediaFileHandlers,
+  mountMediaFileRoutes,
+} from './common/object-storage/media-file-routes.js';
 
 /**
  * 启动期 M3 fail-fast：生产环境未配置合规授权汇率源则拒绝启动。
@@ -148,14 +152,45 @@ async function bootstrap(): Promise<void> {
 
   const app = await NestFactory.create(AppModule);
 
+  // 取到**正在服务这 14 个域的那一个组合根实例**（`buildApp()` 由容器工厂惰性调用）。
+  // 媒体端点与自动完结定时器都要用它，故在最前面取一次，后面不再重复 `app.get`。
+  const built = app.get<BuiltApp>(APP_TOKEN);
+
   // 🔴 BigInt 安全出口（派发单 D-2026-10-15-02 P0-B）：
   // 各域白名单万一漏列某个 BigInt 列，真库下 res.json() 会抛 TypeError →
   // 500 且丢信封。装上 replacer 后最坏退化为「多一个字符串字段」，不会丢信封。
   // 必须在此处（而非 controller）装配：controller 的契约是「除转发外无第二个分支」。
   const http = app.getHttpAdapter().getInstance() as {
     set: (key: string, value: unknown) => unknown;
+    get: (p: string, h: unknown) => unknown;
+    post: (p: string, h: unknown) => unknown;
+    put: (p: string, h: unknown) => unknown;
   };
   http.set('json replacer', bigintSafeReplacer);
+
+  // ── D-2026-10-26-04：媒体收单 / 回读端点 ──────────────────────────────
+  // 🔴 挂 `/media-files`（不是 `/api`）：Nest 的 HttpAdapterController 已把 `/api/*`
+  //    全量 ALL 路由注册成派发入口，晚注册的同前缀路由会被它吃掉。
+  //    生产由 nginx 处理：`/media-files/upload` 反代到这里，其余 `/media-files/`
+  //    走 alias 静态直出（见 deploy/nginx-family-trip.conf）。
+  if (built.mediaStorage.mountRoutes) {
+    mountMediaFileRoutes(
+      http,
+      createMediaFileHandlers({
+        storage: built.mediaStorage.storage,
+        uploadSecret: built.mediaStorage.uploadSecret,
+      }),
+    );
+    console.log(
+      `[family-trip] 媒体上传：${built.mediaStorage.storage.kind}，回读基址 ${built.mediaStorage.publicBaseUrl}`,
+    );
+  } else if (built.mediaStorage.problems.length > 0) {
+    // 不 fail-fast（不让一个功能缺配置把整个 API 拖死），但要让运维一眼看到
+    console.warn(
+      `[family-trip] ⚠️ 媒体上传不可用：${built.mediaStorage.problems.join('；')}` +
+        '（presign 将返回 5008，客户端提示「媒体存储未配置」）',
+    );
+  }
 
   // CORS：放行 H5 预览等前端 origin（联调期可设 CORS_ORIGIN=* 放开全部）。
   // 注意：前端走 Authorization 头，故 credentials 必须与具体 origin 配合（* 时自动关闭）。
@@ -176,9 +211,6 @@ async function bootstrap(): Promise<void> {
   console.log(`family-trip server listening on :${port}`);
 
   // ── D-2026-10-26-02 P0-1：过期行程自动完结 ────────────────────────────
-  // 必须在 `app.get(APP_TOKEN)` 之后取 service：`buildApp()` 由容器工厂惰性调用，
-  // 此处拿到的就是**正在服务这 14 个域的那一个实例**（不是另建一份对象图）。
-  const built = app.get<BuiltApp>(APP_TOKEN);
   const autoFinishConfig = readAutoFinishConfig(process.env);
   const scheduler = startAutoFinishScheduler({
     config: autoFinishConfig,

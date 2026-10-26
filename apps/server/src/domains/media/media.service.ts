@@ -66,6 +66,8 @@ export class MediaService {
       familyId: bigint;
       /** D-2026-10-22-01 §2.3：带 tripId 时先做行程写入门判定 */
       tripId?: bigint;
+      /** D-2026-10-26-04 §7：用途分流（MEDIA / AVATAR），缺省 MEDIA */
+      purpose?: 'MEDIA' | 'AVATAR';
       fileName: string;
       mimeType: string;
       byteSize: string;
@@ -88,9 +90,13 @@ export class MediaService {
     const size = BigInt(input.byteSize);
     if (size <= 0n) throw new AppError(ErrorCode.VALIDATION_FAILED, '文件大小必须为正');
 
+    const purpose = input.purpose ?? 'MEDIA';
     // fileKey 由服务端生成 —— 不让客户端指定路径（防目录穿越 / 覆盖他人文件）
+    // D-2026-10-26-04 §7：头像走 `a/<userId>/`，家庭照片走 `f/<familyId>/`，两种用途不再共池
+    const prefix =
+      purpose === 'AVATAR' ? `a/${userId.toString()}` : `f/${input.familyId.toString()}`;
     const ext = safeExt(input.fileName);
-    const fileKey = `f/${input.familyId}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
+    const fileKey = `${prefix}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
 
     return this.o.ctx.tx(async (tx) => {
       const now = await tx.db.dbNow();
@@ -107,7 +113,8 @@ export class MediaService {
         // 语义：签名时申报的字节数上限 —— 正是上面已校验过 size > 0 的那个 size。
         expectedSize: size,
         contentType: input.mimeType,
-        purpose: 'MEDIA',
+        // D-2026-10-26-04 §7：落真实用途（此前硬编码 MEDIA，头像也被当成家庭照片）
+        purpose,
         createdAt: now,
         updatedAt: now,
         deletedAt: null,

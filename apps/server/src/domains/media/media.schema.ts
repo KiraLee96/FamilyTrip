@@ -59,6 +59,14 @@ export const presignUploadSchema = z.object({
    * （`confirm` 是必守点，`presign` 是提前拦截）。
    */
   tripId: idInput.optional(),
+  /**
+   * D-2026-10-26-04 §7：用途分流。
+   *
+   * 头像与家庭照片此前同池（fileKey 前缀都是 `f/<familyId>/`），孤儿清理 / 配额 /
+   * 按用途过滤都无法区分。现在：`MEDIA` → `f/<familyId>/`，`AVATAR` → `a/<userId>/`。
+   * 缺省 MEDIA —— 老客户端不传也走原路径（纯加法）。
+   */
+  purpose: z.enum(['MEDIA', 'AVATAR']).default('MEDIA'),
   fileName: z.string().min(1).max(256),
   mimeType: z.string().min(3).max(128),
   byteSize: z

@@ -58,6 +58,7 @@ import { createFxDomain } from './domains/fx/fx.controller.js';
 import { createMemoryDomain } from './domains/memory/memory.controller.js';
 import { createHash } from 'node:crypto';
 import { InMemoryIdempotencyStore } from './common/idempotency/idempotency.js';
+import { resolveMediaStorage, type ResolvedMediaStorage } from './common/object-storage/index.js';
 import { FieldCryptoService } from './common/crypto/field-crypto-service.js';
 import { KeyState, type DekMaterial, type KmsClient } from './common/crypto/dek-store.js';
 import { readAutoFinishConfig, type AutoFinishConfig } from './common/scheduler/auto-finish.js';
@@ -97,6 +98,12 @@ export interface BuildAppOptions {
   allowedMimePrefixes?: readonly string[];
   /** 媒体公网访问基址（方案 A） */
   mediaPublicBaseUrl?: string;
+  /**
+   * D-2026-10-26-04：媒体存储装配结果（缺省从环境变量解析）。
+   * 测试可注入一个指向临时目录的 `LocalDiskStorage`，把
+   * 「presign → 上传 → 回读 → confirm → list.url 可访问」整条链路跑真。
+   */
+  mediaStorage?: ResolvedMediaStorage;
   defaultTimezone?: string;
   auditRetentionDays?: number;
   now?: () => Date;
@@ -118,6 +125,12 @@ export interface BuiltApp {
   issueToken(userId: bigint): string;
   /** 服务实例（测试可直接调用，绕过 HTTP） */
   services: Record<string, unknown>;
+  /**
+   * D-2026-10-26-04：媒体存储装配结果。
+   * `main.ts` 据 `mountRoutes` 决定是否挂收单/回读端点；
+   * 测试据 `storage` 断言字节确实落盘、`publicBaseUrl` 与 list.url 同源。
+   */
+  mediaStorage: ResolvedMediaStorage;
 }
 
 export const DEFAULT_DEV_SECRET = 'dev-only-secret-change-me';
@@ -235,8 +248,12 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
   const retentionDays = options.auditRetentionDays ?? 365;
   // D-2026-10-15-01：媒体公网基址唯一来源 —— media 域与 itinerary 域共用，
   // 保证 image 块 url 解析与 media list/confirm 是同一环境变量、同一拼接方式。
-  const mediaPublicBaseUrl =
-    options.mediaPublicBaseUrl ?? process.env['MEDIA_PUBLIC_BASE_URL'] ?? 'https://media.local';
+  //
+  // D-2026-10-26-04：媒体存储（对象存储 / 本地磁盘）在同一次解析里给出基址，
+  // 避免「上传位指向 A 域名、回读拼 B 域名」这种必然对不上的分裂。
+  const mediaStorage: ResolvedMediaStorage =
+    options.mediaStorage ?? resolveMediaStorage(process.env);
+  const mediaPublicBaseUrl = options.mediaPublicBaseUrl ?? mediaStorage.publicBaseUrl;
 
   // D-2026-10-26-02 P0-1：自动完结配置 —— 环境变量为唯一来源，测试可局部覆盖。
   // 定时器本体不在 buildApp 里启动（本函数是纯同步装配，不碰 I/O、不留句柄），
@@ -320,9 +337,20 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
   const notifyDomain = createNotifyDomain(common);
   const mediaDomain = createMediaDomain({
     ...common,
-    ...(options.signUpload !== undefined ? { signUpload: options.signUpload } : {}),
-    ...(options.fetchObject !== undefined ? { fetchObject: options.fetchObject } : {}),
-    ...(options.putObject !== undefined ? { putObject: options.putObject } : {}),
+    // D-2026-10-26-04：真实存储能力（signUpload / putObject / fetchObject）统一从这里注入。
+    // 注入优先级：显式 options（测试用假实现）> 环境解析出的 driver。
+    ...(options.signUpload !== undefined
+      ? { signUpload: options.signUpload }
+      : { signUpload: (args) => mediaStorage.storage.signUpload(args) }),
+    ...(options.fetchObject !== undefined
+      ? { fetchObject: options.fetchObject }
+      : { fetchObject: (fileKey: string) => mediaStorage.storage.fetchObject(fileKey) }),
+    ...(options.putObject !== undefined
+      ? { putObject: options.putObject }
+      : {
+          putObject: (fileKey: string, data: Buffer, mime: string) =>
+            mediaStorage.storage.putObject(fileKey, data, mime),
+        }),
     ...(options.processor !== undefined ? { processor: options.processor } : {}),
     ...(options.allowedMimePrefixes !== undefined
       ? { allowedMimePrefixes: options.allowedMimePrefixes }
@@ -386,6 +414,7 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
       memory: memoryDomain.service,
       cryptoFor,
     },
+    mediaStorage,
   };
 }
 

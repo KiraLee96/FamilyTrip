@@ -45,6 +45,14 @@ export const ErrorCode = {
   TX_QUOTA_EXCEEDED: 5005,
   FX_SOURCE_MISCONFIGURED: 5006,
   KMS_ERROR: 5007,
+  /**
+   * 媒体存储未配置（D-2026-10-26-04）。
+   *
+   * 为什么不复用 INTERNAL_ERROR：客户端把 5000 统一翻成「服务内部错误」，用户与
+   * 前端都无从判断该找谁。这一格的 message 会明确写出缺哪个环境变量，
+   * HTTP 给 503（能力暂时不可用），而不是 500（服务出错）。
+   */
+  MEDIA_STORAGE_UNCONFIGURED: 5008,
 } as const;
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -69,6 +77,8 @@ const HTTP_STATUS: Record<number, number> = {
   [ErrorCode.TX_QUOTA_EXCEEDED]: 500,
   [ErrorCode.FX_SOURCE_MISCONFIGURED]: 500,
   [ErrorCode.KMS_ERROR]: 500,
+  // 能力暂时不可用（不是服务出错）：前端据此提示「联系管理员配置」而不是「稍后重试」
+  [ErrorCode.MEDIA_STORAGE_UNCONFIGURED]: 503,
 };
 
 export function httpStatusOf(code: number): number {

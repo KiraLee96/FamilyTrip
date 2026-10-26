@@ -63,12 +63,31 @@ for (const [method, path, body, name] of probes) {
 const oldest = await call('POST', '/trips/1/finish', { version: 0 });
 line(oldest.code === 4010, '旧版路由仍在：POST /trips/:id/finish', `code=${String(oldest.code)}`);
 
+// ── ②b 媒体上传端点（D-2026-10-26-04：旧版没有 /media-files/upload）────────
+// 判据：新版的收单端点在没有签名时回 JSON 403；旧版这个路径根本不存在（404 / nginx 404 页）。
+try {
+  const mediaRes = await fetch(`${BASE.replace(/\/api$/, '')}/media-files/upload`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(20_000),
+  });
+  const body = await mediaRes.text();
+  const isJson = body.trim().startsWith('{');
+  const parsed = isJson ? JSON.parse(body) : {};
+  line(
+    mediaRes.status === 403 && parsed?.code === 4030,
+    '媒体收单端点已上线：POST /media-files/upload（无签名应回 403 JSON）',
+    `HTTP ${mediaRes.status} ${isJson ? `code=${String(parsed?.code)}` : '非 JSON（多半是 nginx 404 页）'}`,
+  );
+} catch (e) {
+  line(false, '媒体收单端点已上线', e instanceof Error ? e.message : String(e));
+}
+
 // ── ③ 结论 ────────────────────────────────────────────────────────────
 const newRoutesPresent = results.filter((r) => r.code === 4010).length;
 console.log('\n──────────── 结论 ────────────');
 if (newRoutesPresent === probes.length) {
   console.log('✅ 新版后端已上线（本轮全部新增路由都在）');
-  console.log('   → 接着用真 token 验 finish 与同币种记账（见 deploy 上线清单 §5）');
+  console.log('   → 接着用真 token 验 finish、同币种记账与媒体上传（见 deploy 上线清单 §5）');
 } else if (newRoutesPresent === 0) {
   console.log('❌ 生产仍是旧版（10-22 构建）：本轮改动一个都没上线');
   console.log('   → 依次执行：commit+push → 服务器 git pull → install → **build** → **migrate deploy** → pm2 restart');
@@ -76,5 +95,6 @@ if (newRoutesPresent === probes.length) {
 } else {
   console.log(`⚠️ 部分上线（${newRoutesPresent}/${probes.length}），请确认是否分批发版或有路由缺失`);
 }
+console.log('\n提示：媒体上传另需检查 .env 的 MEDIA_PUBLIC_BASE_URL / MEDIA_UPLOAD_SECRET 与 nginx 的 /media-files/ 两段。');
 
 process.exit(failed === 0 ? 0 : 1);

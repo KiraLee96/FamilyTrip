@@ -47,5 +47,10 @@ pnpm-debug.log*
 # 测试缓存（vitest 临时目录）
 .vitest-tmp/
 
+# 媒体落盘目录（本地磁盘存储驱动，D-2026-10-26-04）
+# 生产是独立挂载点（OBJECT_STORAGE_ROOT），绝不进仓库
+.media/
+.dev-uploads/
+
 # husky 内部引导文件（由 pnpm install 的 prepare 重新生成，无需提交）
 .husky/_/
