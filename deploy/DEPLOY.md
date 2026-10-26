@@ -179,6 +179,10 @@ sudo systemctl stop mysql                        # 仅当 MySQL 本身出问题
 
 日常运维命令（都以 ubuntu 身份）：
 
+> 📌 2026-10-26 起的改动请对照 `deploy/上线清单一页版-2026-10-26.md`（含三个坑：
+> 只 restart 不 build 无效、build 了不 `migrate deploy` 仍 500、版本自检命令）。
+> 一句话判据：`node apps/server/.verify/prod-selfcheck.mjs` —— 新版路由应回 4010，回 4040 就是没换上。
+
 ```bash
 # 更新代码（已配 GitHub 部署密钥）
 # 注意：build 脚本内置 prisma generate —— schema 改了必须重新生成 client，

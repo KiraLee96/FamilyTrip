@@ -78,10 +78,11 @@ export class MediaService {
   }> {
     this.assertMimeAllowed(input.mimeType);
     await this.assertFamilyMember(this.o.ctx, input.familyId, userId);
-    // 🔴 有 tripId 就提前拦：已结束行程的成员不该拿到上传位。
-    //    confirm 才是必守点（那时 tripId 一定已知），此处是「早失败」优化。
+    // D-2026-10-26-02 P0-2：带 tripId 时**只校验行程归属**（成员/创建者），
+    // 不校验 access_level —— 已归档行程仍要能补回忆照片。
+    // 这里是「早失败」优化；真正的口径由 confirm 承担（那时 tripId 一定已知）。
     if (input.tripId !== undefined) {
-      await this.assertTripActiveWritable(this.o.ctx, input.tripId, userId);
+      await this.assertTripMediaWritable(this.o.ctx, input.tripId, userId);
     }
 
     const size = BigInt(input.byteSize);
@@ -141,11 +142,16 @@ export class MediaService {
 
     return this.o.ctx.tx(async (tx) => {
       await this.assertFamilyMember(tx, input.familyId, userId);
-      // 🔴 D-2026-10-22-01 §2.3 必守点：已结束行程（成员 access_level 已转
-      //    HISTORICAL_READONLY）不得再登记新照片，否则 B6「历史只读保留」
-      //    只是前端收起入口，改包/直连接口即可绕过。
+
+      // D-2026-10-26-02 P0-2（口径变更，覆盖 D-2026-10-22-01 §2.3）：
+      // 用户原话「已完成的行程不能编辑信息**只能添加或删除回忆照片**」——
+      // 故归档行程的照片登记**放行**，只校验行程归属；`archived` 为真时补一条
+      // INFO 审计（归档后仍写入，需要留痕以便对账）。
+      // 🔴 只有 media 域放宽：itinerary / checklist / expense / booking 一律维持 403。
+      let archived = false;
       if (input.tripId !== undefined) {
-        await this.assertTripActiveWritable(tx, input.tripId, userId);
+        const gate = await this.assertTripMediaWritable(tx, input.tripId, userId);
+        archived = gate.archived;
       }
 
       // filePending 必须存在且属于我（防「登记别人上传的文件」）
@@ -185,6 +191,19 @@ export class MediaService {
       );
 
       await this.change(tx, 'media_asset', id, input.familyId, input.tripId ?? null, 'INSERT', now);
+
+      // 归档行程补照片：放行但留痕（INFO 级，不进告警通道）
+      if (archived) {
+        await this.audit(tx, {
+          actorId: userId,
+          action: 'media.upload_archived_trip',
+          reason: 'ARCHIVED_TRIP_MEDIA_WRITE',
+          severity: 'INFO',
+          targetId: id,
+          detail: { tripId: (input.tripId ?? 0n).toString(), fileKey: input.fileKey },
+          at: now,
+        });
+      }
 
       // GPS 未剥离 → 审计 ALERT（M6）
       if (input.hadGps && !input.exifStripped) {
@@ -312,13 +331,13 @@ export class MediaService {
       const r = await tx.db.findUnique('mediaAsset', { id: assetId, deletedAt: null });
       if (!r) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
 
-      // D-2026-10-22-01 §2.3：资产带 tripId 时先过行程写入门（B6）。
-      // 用 `assertTripNotArchived`（非 Active）而非 `assertTripActiveWritable`：
-      // 行程被软删后照片仍是家庭资产、仍须允许上传者/户主清理 —— 派发单
-      // §2.4 第 4 条「家庭照片（tripId 为空）删除行为不变」的延伸口径。
+      // D-2026-10-26-02 P0-2：资产带 tripId 时先过行程归属门。
+      // 用「行程已软删 → 放行」的宽松版：行程删了照片仍是家庭资产、仍须允许
+      // 上传者/户主清理（D-2026-10-22-01 §2.4 第 4 条「家庭照片删除行为不变」的延伸）。
+      // 归档（FINISHED）**不再拦截** —— 用户明确要求归档行程可删回忆照片。
       const tripId = (r['tripId'] ?? null) as bigint | null;
       if (tripId !== null) {
-        await this.assertTripNotArchived(tx, tripId, userId);
+        await this.assertTripMediaWritableOrGone(tx, tripId, userId);
       }
 
       // 仅上传者可删（避免他人删你照片）
@@ -375,41 +394,66 @@ export class MediaService {
   }
 
   /**
-   * 行程写入门（B6 · D-2026-10-22-01 §2.3）：行程必须存在，且当前用户可写。
+   * 行程媒体写入门（D-2026-10-26-02 P0-2）。
    *
-   * 判定口径与 itinerary / expense / checklist / booking 四域**逐字对齐**
-   * （`assertTripWritable`）：成员 access_level !== ACTIVE → 403；
-   * 创建者兜底放行；其余 → 404（与「不存在」同形，防 ID 枚举）。
+   * 🔴 **只校验归属，不校验 access_level** —— 这是与
+   *    itinerary / expense / checklist / booking 四域**有意**的分叉：
+   *    产品口径是「已完成的行程不能编辑信息，**只能**添加或删除回忆照片」。
+   *    故本方法不做 `HISTORICAL_READONLY → 403` 判定，而是把「是否归档」
+   *    作为返回值交给调用方补审计。
    *
-   * 为什么不复用 media 既有的 `assertFamilyMember`：那道门只到**家庭**粒度，
-   * 行程结束后家庭成员身份不变，挡不住「历史行程仍可写照片」。
+   * ⚠️ 不要在 `common/auth/access-policy` 里改四域共用的只读门来「顺手统一」——
+   *    那条是四域同源的单点，动它会连坐「信息锁定」。
+   *
+   * 判定：行程必须存在（含 `deletedAt: null`）→ 是行程成员（含代管人）或创建者；
+   * 否则 404（与「不存在」同形，防 ID 枚举）。
+   *
+   * @returns `archived` = 该成员在归档行程里（access_level = HISTORICAL_READONLY）
    */
-  private async assertTripActiveWritable(
+  private async assertTripMediaWritable(
     src: TxHandle | DomainContext,
     tripId: bigint,
     userId: bigint,
-  ): Promise<void> {
+  ): Promise<{ archived: boolean }> {
     const db = 'db' in src ? src.db : src.read;
     const t = await db.findUnique('trip', { id: tripId, deletedAt: null });
     if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
-    this.assertTripMemberWritable(t, await this.tripMemberRow(db, tripId, userId), userId);
+    return this.assertTripMediaMember(t, await this.tripMemberRow(db, tripId, userId), userId);
   }
 
   /**
-   * 同上的「宽松版」：行程不存在（已软删）时**放行**。
+   * 同上的「宽松版」：行程不存在（已软删）时**放行**（`archived: false`）。
    *
    * 用于 `remove` —— 行程删除不级联软删照片（照片是家庭资产，「我的照片」
    * 仍应可见可清理），若在这里因行程已删而 404，用户就再也删不掉自己的图。
    */
-  private async assertTripNotArchived(
+  private async assertTripMediaWritableOrGone(
     src: TxHandle | DomainContext,
     tripId: bigint,
     userId: bigint,
-  ): Promise<void> {
+  ): Promise<{ archived: boolean }> {
     const db = 'db' in src ? src.db : src.read;
     const t = await db.findUnique('trip', { id: tripId, deletedAt: null });
-    if (!t) return;
-    this.assertTripMemberWritable(t, await this.tripMemberRow(db, tripId, userId), userId);
+    if (!t) return { archived: false };
+    return this.assertTripMediaMember(t, await this.tripMemberRow(db, tripId, userId), userId);
+  }
+
+  /**
+   * 归属判定本体：成员 ∨ 创建者。
+   *
+   * 🔴 这里**不出现** `accessLevel` 分支 —— 一旦有人在这里补上只读判定，
+   *    P0-2 会静默回退成「归档后传不了照片」。
+   */
+  private assertTripMediaMember(
+    t: Record<string, unknown>,
+    member: Record<string, unknown> | null,
+    userId: bigint,
+  ): { archived: boolean } {
+    if (member) {
+      return { archived: member['accessLevel'] === 'HISTORICAL_READONLY' };
+    }
+    if (t['createdBy'] === userId) return { archived: false };
+    throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
   }
 
   /** 成员的 access_level 读取（含代管人：虚拟成员的代管行为等同本人） */
@@ -424,22 +468,6 @@ export class MediaService {
       where: { tripId, managedBy: userId, deletedAt: null },
     });
     return managed[0] ?? null;
-  }
-
-  /** 门禁判定本体 —— 四域同源的唯一实现，勿在此处另加分支 */
-  private assertTripMemberWritable(
-    t: Record<string, unknown>,
-    member: Record<string, unknown> | null,
-    userId: bigint,
-  ): void {
-    if (member) {
-      if (member['accessLevel'] === 'HISTORICAL_READONLY') {
-        throw new AppError(ErrorCode.FORBIDDEN, '该出行已归档，仅可查看');
-      }
-      return;
-    }
-    if (t['createdBy'] === userId) return;
-    throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
   }
 
   private async visibleFamilyIds(userId: bigint): Promise<Set<bigint>> {

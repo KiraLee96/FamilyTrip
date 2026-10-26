@@ -5,6 +5,7 @@
 import type { RouteSpec } from '../../common/middleware/dispatcher.js';
 import type { DomainContext } from '../domain-context.js';
 import { TripService } from './trip.service.js';
+import type { TripServiceOptions } from './trip.service.js';
 import {
   addTripMemberSchema,
   createTripSchema,
@@ -25,6 +26,8 @@ import {
 
 export interface TripDomainOptions {
   ctx: DomainContext;
+  /** D-2026-10-26-02 P0-1：自动完结开关（组合根从环境变量解析后注入） */
+  autoFinish?: TripServiceOptions['autoFinish'];
 }
 
 export interface TripDomain {
@@ -33,7 +36,10 @@ export interface TripDomain {
 }
 
 export function createTripDomain(o: TripDomainOptions): TripDomain {
-  const service = new TripService({ ctx: o.ctx });
+  const service = new TripService({
+    ctx: o.ctx,
+    ...(o.autoFinish !== undefined ? { autoFinish: o.autoFinish } : {}),
+  });
 
   const tripRef = (id: bigint): { type: 'trip'; id: bigint; familyId: null; tripId: bigint } => ({
     type: 'trip',
@@ -118,10 +124,27 @@ export function createTripDomain(o: TripDomainOptions): TripDomain {
     },
 
     // ── 结束（B6 归档）─────────────────────────────────────
+    //
+    // 🔴 D-2026-10-26-02 P2-1：网关模式声明为 **READ**，而不是 WRITE。
+    //
+    //    原因：归档后成员 `access_level` 已转 HISTORICAL_READONLY，网关
+    //    （`checkShared`）对「历史只读 + WRITE」直接 Deny → 转 404 同形拒，
+    //    请求根本到不了 service 的幂等出口 —— 表现就是「已完成的行程再点一次
+    //    标记完成 → 404」，而派发单要的是「已经完成了，正常返回」。
+    //
+    //    这样做**没有降低鉴权强度**，因为真正的写权限判定在 service 里：
+    //      · `assertLeaderOrCreator` —— 仅主导者/创建者，其余 403；
+    //      · CAS —— 版本不符 409；
+    //      · 网关仍拦「非行程成员」（trip 维度不放行 → 404）。
+    //    放宽的只是「已是成员的归档行程成员能否到达这个幂等确认」这一步，
+    //    而他们对这趟行程本来就有读权限，不构成信息增量。
+    //
+    //    ⛔ 若将来把这个路由改回 WRITE，必须同时想清楚 P2-1 怎么满足
+    //       （否则前端「已完成后点一下」会退回 404）。
     {
       method: 'POST',
       path: '/trips/:id/finish',
-      auth: { public: false, resourceType: 'trip', mode: 'WRITE', ref: tripRef },
+      auth: { public: false, resourceType: 'trip', mode: 'READ', ref: tripRef },
       schema: finishTripSchema as never,
       handler: async (ctx, input) => {
         const b = input as FinishTripInput;

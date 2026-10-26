@@ -57,8 +57,10 @@ import { createMediaDomain } from './domains/media/media.controller.js';
 import { createFxDomain } from './domains/fx/fx.controller.js';
 import { createMemoryDomain } from './domains/memory/memory.controller.js';
 import { createHash } from 'node:crypto';
+import { InMemoryIdempotencyStore } from './common/idempotency/idempotency.js';
 import { FieldCryptoService } from './common/crypto/field-crypto-service.js';
 import { KeyState, type DekMaterial, type KmsClient } from './common/crypto/dek-store.js';
+import { readAutoFinishConfig, type AutoFinishConfig } from './common/scheduler/auto-finish.js';
 
 /**
  * 微信 code 换 openid 的适配接口 —— **单一事实源在 auth 域**
@@ -98,6 +100,12 @@ export interface BuildAppOptions {
   defaultTimezone?: string;
   auditRetentionDays?: number;
   now?: () => Date;
+  /**
+   * D-2026-10-26-02 P0-1：过期行程自动完结。
+   * 缺省从环境变量解析（`readAutoFinishConfig`）；测试可局部覆盖，
+   * 例如 `buildApp({ autoFinish: { lazyOnRead: false } })` 验「开关关闭后读路径不改状态」。
+   */
+  autoFinish?: Partial<AutoFinishConfig>;
 }
 
 export interface BuiltApp {
@@ -230,6 +238,14 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
   const mediaPublicBaseUrl =
     options.mediaPublicBaseUrl ?? process.env['MEDIA_PUBLIC_BASE_URL'] ?? 'https://media.local';
 
+  // D-2026-10-26-02 P0-1：自动完结配置 —— 环境变量为唯一来源，测试可局部覆盖。
+  // 定时器本体不在 buildApp 里启动（本函数是纯同步装配，不碰 I/O、不留句柄），
+  // 由 main.ts 取到 trip service 后再挂（见 startAutoFinishScheduler）。
+  const autoFinish: AutoFinishConfig = {
+    ...readAutoFinishConfig(process.env),
+    ...(options.autoFinish ?? {}),
+  };
+
   // ④ 8 段链依赖
   const identityDeps: IdentityDeps = {
     driver,
@@ -268,7 +284,16 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
 
   const familyDomain = createFamilyDomain(common);
   const wishDomain = createWishDomain(common);
-  const tripDomain = createTripDomain(common);
+  const tripDomain = createTripDomain({
+    ...common,
+    autoFinish: {
+      // 🔴 总开关管住全部入口：`AUTO_FINISH_ENABLED=false` 必须是「一处关掉、
+      //    三条入口（定时器 / 读路径惰性流转 / 手工 finish）全停」——
+      //    否则回滚时读路径还在偷偷改状态，回滚等于没做。
+      lazyOnRead: autoFinish.enabled && autoFinish.lazyOnRead,
+      batchLimit: autoFinish.batchLimit,
+    },
+  });
   const holidayDomain = createHolidayDomain(common);
   const itemSyncDomain = createItemSyncDomain(common);
   const expenseDomain = createExpenseDomain({
@@ -282,6 +307,10 @@ export function buildApp(options: BuildAppOptions = {}): BuiltApp {
         return null; // 汇率缺失 → 待补（amount_base = null），绝不 1:1 兜底
       }
     },
+    // 批量导入幂等：进程内实现（pm2 fork 单实例下正确；多实例/重启即失效）
+    idempotencyStore: new InMemoryIdempotencyStore(),
+    // 限流时钟与全局 `now` 同源，保证单测能推进时间验「1 次/秒」
+    ...(options.now !== undefined ? { clockMs: () => options.now!().getTime() } : {}),
   });
   const checklistDomain = createChecklistDomain(common);
   const itineraryDomain = createItineraryDomain({ ...common, mediaPublicBaseUrl });

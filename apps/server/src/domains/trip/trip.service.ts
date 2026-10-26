@@ -23,7 +23,7 @@
  *   注意：**不**软删成员行 —— 历史要保留「谁参加过」。
  */
 
-import { AppError, ErrorCode } from '../../common/errors/error-code.js';
+import { AppError, ErrorCode, inviteCodeInvalid } from '../../common/errors/error-code.js';
 import type { Row } from '../../common/db/table-client.js';
 import type { DomainContext, TxHandle } from '../domain-context.js';
 import { serializeRow } from '../domain-context.js';
@@ -43,13 +43,49 @@ import { randomInviteCode } from '../../common/invite-code.js';
 export interface TripServiceOptions {
   ctx: DomainContext;
   auditRetentionDays?: number;
+  /** D-2026-10-26-02 P0-1：过期行程自动完结（缺省开启；灰度/回滚只改这里） */
+  autoFinish?: AutoFinishOptions;
 }
+
+/** 自动完结的两个作用域开关 */
+export interface AutoFinishOptions {
+  /** 读路径惰性流转（GET /trips、GET /trips/:id）—— 定时器没跑时的兜底（方案 B） */
+  lazyOnRead: boolean;
+  /** 单轮扫描上限，防止一次全表归档把启动期/主线程拖住 */
+  batchLimit: number;
+}
+
+/** 一轮自动完结的统计（供定时任务日志与测试断言） */
+export interface AutoFinishStats {
+  /** 命中候选（已过期且状态可流转）的行程数 */
+  scanned: number;
+  /** 本次真正完成归档的行程数 */
+  finished: number;
+  /** 并发下已被其它路径归档（已是 FINISHED / CAS 落空）的行程数 */
+  skipped: number;
+  /** 单条失败数（不影响其余行程） */
+  failed: number;
+}
+
+/** 单条自动完结的处置结果 */
+type AutoFinishOutcome = { kind: 'finished'; row: Row } | { kind: 'skipped' } | { kind: 'failed' };
 
 const TRIP_BIGINT_FIELDS = ['id', 'familyId', 'createdBy', 'leaderId'];
 const MEMBER_BIGINT_FIELDS = ['id', 'tripId', 'userId', 'managedBy'];
 
 /** 不可再接受新成员的状态（GRP-08：结束后禁止加入） */
 const JOIN_BLOCKED_STATUS = new Set(['FINISHED', 'CANCELLED']);
+
+/**
+ * 自动完结的状态白名单（D-2026-10-26-02 P0-1）。
+ *
+ * 🔴 **DRAFT 与 CANCELLED 一律不参与**：
+ *   · DRAFT 是「还没进策划」的草稿（`POST /wishes/to-trip-draft` 建出来的就是 DRAFT），
+ *     日期过期也不该被静默归档 —— 用户可能只是还没挑日期就去忙别的了；
+ *   · CANCELLED 是用户主动取消，再翻成 FINISHED 会篡改事实。
+ *   派发单原文即 `status IN ('PLANNED','ONGOING')`，此处逐字对齐。
+ */
+const AUTO_FINISH_STATUS = ['PLANNED', 'ONGOING'] as const;
 
 /**
  * D-2026-10-15-01：行程删除时级联软删的子域表（ Prisma 模型名 = 委托名）。
@@ -65,9 +101,11 @@ const CASCADE_CHILD_TABLES = [
 
 export class TripService {
   private readonly retentionDays: number;
+  private readonly autoFinish: AutoFinishOptions;
 
   constructor(private readonly o: TripServiceOptions) {
     this.retentionDays = o.auditRetentionDays ?? 365;
+    this.autoFinish = o.autoFinish ?? { lazyOnRead: true, batchLimit: 200 };
   }
 
   /** 建出行 —— 创建者自动成为 LEADER + ACTIVE 成员 */
@@ -169,15 +207,40 @@ export class TripService {
     rows = [...rows].sort((a, b) => timeOf(b['createdAt']) - timeOf(a['createdAt']));
     const slice = rows.slice(page.skip, page.skip + page.take);
 
-    const items = slice.map((t) => ({
-      ...serializeRow(t, TRIP_BIGINT_FIELDS),
-      memberCount: members.filter((m) => m['tripId'] === t['id']).length,
-      myRole:
-        members.find((m) => m['tripId'] === t['id'] && m['userId'] === userId)?.['role'] ?? null,
-      myAccessLevel:
-        members.find((m) => m['tripId'] === t['id'] && m['userId'] === userId)?.['accessLevel'] ??
-        null,
-    }));
+    // ── P0-1 方案 B：读时惰性流转 ─────────────────────────────
+    // 只对「本次要返回的这一页」做过期归档（最多 pageSize 条），读路径的写放大可控；
+    // 定时器刚重启 / 任务挂掉时，用户看到的也仍然是正确状态。
+    const refreshed = await this.autoFinishOnRead(slice);
+
+    const membersByTrip = new Map<bigint, Row[]>();
+    for (const m of members) {
+      const key = m['tripId'] as bigint;
+      const arr = membersByTrip.get(key);
+      if (arr) arr.push(m);
+      else membersByTrip.set(key, [m]);
+    }
+    // 刚被归档的行程，其成员 accessLevel 已转 HISTORICAL_READONLY —— 必须重取，
+    // 否则列表会拿归档前的旧值（前端据此判断只读，会漏锁）。
+    for (const id of refreshed.keys()) {
+      membersByTrip.set(
+        id,
+        await this.o.ctx.read.findMany('tripMember', { where: { tripId: id, deletedAt: null } }),
+      );
+    }
+
+    const items = slice.map((t) => {
+      const row = refreshed.get(t['id'] as bigint) ?? t;
+      const tripMembers = membersByTrip.get(row['id'] as bigint) ?? [];
+      const mine = tripMembers.find((m) => m['userId'] === userId);
+      return {
+        ...serializeRow(row, TRIP_BIGINT_FIELDS),
+        // P1-1（D-2026-10-26-02）：同行人数 = trip_member 存活行数。
+        // 曾经的「家庭人数」口径是错的（家庭 4 人、本趟只去 3 人时数字不对）。
+        memberCount: tripMembers.length,
+        myRole: mine?.['role'] ?? null,
+        myAccessLevel: mine?.['accessLevel'] ?? null,
+      };
+    });
 
     return { items, meta: buildPageMeta(page, rows.length) as unknown as Record<string, unknown> };
   }
@@ -189,6 +252,8 @@ export class TripService {
   ): Promise<{
     trip: Record<string, unknown>;
     members: Record<string, unknown>[];
+    /** 同行人数（D-2026-10-26-01 P2-2）—— 列表页显示「N 人同行」，不必再进详情数 */
+    memberCount: number;
     myRole: unknown;
     myAccessLevel: unknown;
   }> {
@@ -196,13 +261,20 @@ export class TripService {
     if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
     await this.assertTripVisible(this.o.ctx, t, userId);
 
+    // P0-1 方案 B：读之前先把「已过期但还挂着 PLANNED/ONGOING」的行程归档。
+    // 失败降级为「只读不改」—— 绝不因为流转失败让详情 500（见 autoFinishOnRead）。
+    const row = (await this.autoFinishOnRead([t])).get(tripId) ?? t;
+
+    // 成员必须在流转**之后**读：归档会把 accessLevel 改成 HISTORICAL_READONLY，
+    // 先读会让 myAccessLevel 返回归档前的 ACTIVE（前端据此解锁编辑）。
     const members = await this.o.ctx.read.findMany('tripMember', {
       where: { tripId, deletedAt: null },
     });
 
     return {
-      trip: serializeRow(t, TRIP_BIGINT_FIELDS),
+      trip: serializeRow(row, TRIP_BIGINT_FIELDS),
       members: members.map((m) => serializeRow(m, MEMBER_BIGINT_FIELDS)),
+      memberCount: members.length,
       myRole: members.find((m) => m['userId'] === userId)?.['role'] ?? null,
       myAccessLevel: members.find((m) => m['userId'] === userId)?.['accessLevel'] ?? null,
     };
@@ -376,7 +448,9 @@ export class TripService {
    * 凭邀请码加入（外部同行者，GRP-02）。幂等。
    *
    * 判定顺序即优先级（勿调换）：
-   *   1. 码所指向的行程（含 `deletedAt: null`）不存在 → 404 `邀请码无效`
+   *   1. 码所指向的行程（含 `deletedAt: null`）不存在 → 404 **4041 邀请码无效**
+   *      （D-2026-10-26-01 P2-1：与 4040「资源不存在」区分，客户端据此提示
+   *       「让家人重新发一次」而不是无法行动的「资源不存在」）
    *   2. 已是成员 → 原样返回 `alreadyMember: true`（**不插行、不写 changeLog**）
    *   3. 行程已结束/取消 → 403 `行程已结束，无法加入`（GRP-08：
    *      不能只靠前端隐藏入口 —— 改包/直连接口都能绕过）
@@ -399,7 +473,7 @@ export class TripService {
         inviteCode: input.inviteCode,
         deletedAt: null,
       });
-      if (!t) throw new AppError(ErrorCode.NOT_FOUND, '邀请码无效');
+      if (!t) throw inviteCodeInvalid();
       const tripId = t['id'] as bigint;
 
       // 幂等前置：已是成员直接返回，不重复插行
@@ -831,64 +905,237 @@ export class TripService {
   }
 
   /**
-   * 结束出行（B6 历史只读保留）。
+   * 结束出行（B6 历史只读保留）—— 手工路径。
    *
-   * 同事务三件事：
-   *   1. trip.status = FINISHED（CAS 保护）
-   *   2. trip.actual_json = 回顾快照
-   *   3. **所有**成员 access_level → HISTORICAL_READONLY（不软删！）
+   * 归档逻辑本体在 `finishInternal`（HTTP 与定时器/惰性流转**共用同一份**，
+   * 禁止出现第二份归档实现）。
+   *
+   * 🔴 P2-1（D-2026-10-26-02）：**幂等**。已是 FINISHED 时直接返回当前 trip
+   *    （`alreadyFinished: true`），不再 CAS → 不再 409。
+   *    权限判定仍在幂等出口**之前** —— 否则非主导者能凭「已经完成了」拿到行程内容。
    */
   async finish(
     userId: bigint,
     tripId: bigint,
     input: { version: number; actual?: Record<string, unknown> },
-  ): Promise<{ trip: Record<string, unknown>; updatedAt: string }> {
+  ): Promise<{ trip: Record<string, unknown>; updatedAt: string; alreadyFinished: boolean }> {
     return this.o.ctx.tx(async (tx) => {
       const t = await tx.db.findUnique('trip', { id: tripId, deletedAt: null });
       if (!t) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
       await this.assertLeaderOrCreator(tx, t, userId);
 
-      const expectedVersion = requireVersion(input.version);
-      const now = await tx.db.dbNow();
-
-      const affected = await tx.db.update(
-        'trip',
-        buildCasWhere({ id: tripId, expectedVersion, patch: {} }),
-        {
-          status: 'FINISHED',
-          actualJson: input.actual ? JSON.stringify(input.actual) : (t['actualJson'] ?? null),
-          updatedAt: now,
-          version: expectedVersion + 1,
-        },
-      );
-      assertCasSucceeded(affected, 'trip', expectedVersion);
-
-      // 成员全部转历史只读 —— 保留行，不删
-      const members = await tx.db.findMany('tripMember', { where: { tripId, deletedAt: null } });
-      for (const m of members) {
-        await tx.db.update(
-          'tripMember',
-          { id: m['id'] },
-          { accessLevel: 'HISTORICAL_READONLY', updatedAt: now },
-        );
-      }
-
-      await this.change(tx, 'trip', tripId, t['familyId'] as bigint, tripId, 'UPDATE', now);
-
-      await this.audit(tx, {
+      const r = await this.finishInternal(tx, t, {
         actorId: userId,
-        action: 'trip.finish',
         reason: 'TRIP_FINISHED',
-        severity: 'INFO',
-        targetType: 'trip',
-        targetId: tripId,
-        detail: { memberCount: members.length },
-        at: now,
+        action: 'trip.finish',
+        expectedVersion: requireVersion(input.version),
+        ...(input.actual !== undefined ? { actual: input.actual } : {}),
+        onCasMiss: 'conflict',
       });
 
-      const row = await tx.db.findUnique('trip', { id: tripId });
-      return { trip: serializeRow(row ?? {}, TRIP_BIGINT_FIELDS), updatedAt: now.toISOString() };
+      return {
+        trip: serializeRow(r.row, TRIP_BIGINT_FIELDS),
+        updatedAt: timeOfIso(r.row['updatedAt']),
+        alreadyFinished: r.alreadyFinished,
+      };
     });
+  }
+
+  /**
+   * 扫描并归档「已过期」的行程（D-2026-10-26-02 P0-1 方案 A）。
+   *
+   * 由进程内定时器（`common/scheduler/auto-finish.ts`）周期调用，也供单测直接驱动。
+   * 每条行程**独立事务**：单条失败不影响其余，失败只记账不抛出。
+   */
+  async autoFinishExpired(opts: { batchLimit?: number } = {}): Promise<AutoFinishStats> {
+    const limit = Math.max(1, opts.batchLimit ?? this.autoFinish.batchLimit);
+    const stats: AutoFinishStats = { scanned: 0, finished: 0, skipped: 0, failed: 0 };
+
+    const now = await this.o.ctx.read.dbNow();
+
+    // 粗筛上界：任何时区的「今天 00:00」都不会晚于「UTC 当日 +1 天」，
+    // 故用它做驱动层上界（走索引），再按每行自己的 timezone 精确判定。
+    const coarseUpper = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1),
+    );
+    const candidates = await this.o.ctx.read.findMany('trip', {
+      where: {
+        deletedAt: null,
+        status: { in: [...AUTO_FINISH_STATUS] },
+        // `not: null` 不能省：内存驱动把 null 当 -1 参与 lt 比较（恒真），
+        // 而 SQL 的 `NULL < x` 恒假 —— 显式写出来才对得上口径。
+        endDate: { not: null, lt: coarseUpper },
+      },
+    });
+
+    const expired = candidates.filter((t) => isExpiredOn(t['endDate'], now, t['timezone']));
+    stats.scanned = expired.length;
+
+    for (const t of expired.slice(0, limit)) {
+      const outcome = await this.tryAutoFinish(t['id'] as bigint);
+      if (outcome.kind === 'finished') stats.finished += 1;
+      else if (outcome.kind === 'failed') stats.failed += 1;
+      else stats.skipped += 1;
+    }
+
+    return stats;
+  }
+
+  /**
+   * 读路径惰性流转（方案 B）：只处理「本次即将返回的这几行」。
+   *
+   * 🔴 读路径写库的全部纪律都在这里：
+   *    · 只碰候选行（已过期 + 状态可流转），不扩大范围；
+   *    · 任何异常一律吞掉并返回空 Map —— 读接口的成功率优先级高于状态正确性
+   *      （定时器会对同一个行程再补一次）；
+   *    · 返回「归档后的新行」，调用方用它渲染，避免返回归档前的旧状态。
+   */
+  private async autoFinishOnRead(rows: readonly Row[]): Promise<Map<bigint, Row>> {
+    const out = new Map<bigint, Row>();
+    if (!this.autoFinish.lazyOnRead) return out;
+    if (!rows.some((r) => isAutoFinishCandidate(r))) return out;
+
+    try {
+      const now = await this.o.ctx.read.dbNow();
+      for (const row of rows) {
+        if (!isAutoFinishCandidate(row)) continue;
+        if (!isExpiredOn(row['endDate'], now, row['timezone'])) continue;
+        const outcome = await this.tryAutoFinish(row['id'] as bigint);
+        if (outcome.kind === 'finished') out.set(outcome.row['id'] as bigint, outcome.row);
+      }
+    } catch {
+      // 降级：本页按「只读不改」返回，下一秒的定时器会补上
+      return out;
+    }
+    return out;
+  }
+
+  /**
+   * 归档单个过期行程（独立事务 + 幂等）。
+   *
+   * 事务内重读行程而非沿用入参行：候选集是读路径取的，期间可能已被手工 finish
+   * 或被另一个实例归档 —— 以事务内读到的 `version/status` 为准。
+   */
+  private async tryAutoFinish(tripId: bigint): Promise<AutoFinishOutcome> {
+    try {
+      return await this.o.ctx.tx(async (tx) => {
+        const t = await tx.db.findUnique('trip', { id: tripId, deletedAt: null });
+        if (!t) return { kind: 'skipped' };
+        if (!isAutoFinishCandidate(t)) return { kind: 'skipped' };
+
+        const now = await tx.db.dbNow();
+        if (!isExpiredOn(t['endDate'], now, t['timezone'])) return { kind: 'skipped' };
+
+        const r = await this.finishInternal(tx, t, {
+          // 无自然人操作 → 归到创建者名下，保证 audit 有归属（派发单 §P0-1 口径）
+          actorId: t['createdBy'] as bigint,
+          reason: 'TRIP_AUTO_FINISHED',
+          action: 'trip.auto_finish',
+          onCasMiss: 'treat-as-finished',
+        });
+        return r.alreadyFinished ? { kind: 'skipped' } : { kind: 'finished', row: r.row };
+      });
+    } catch (e) {
+      // 单条失败不影响其余候选；进程内没有告警通道，落一条 warn 供运维侧捞
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[family-trip] 行程自动完结失败 trip=${tripId.toString()}：${msg}`);
+      return { kind: 'failed' };
+    }
+  }
+
+  /**
+   * 归档实现本体 —— **唯一**一份（手工 / 定时 / 惰性三条入口共用）。
+   *
+   * 同事务四件事：
+   *   1. trip.status = FINISHED（CAS 保护，`expectedVersion` 缺省取事务内读到的版本）
+   *   2. trip.actual_json = 回顾快照（仅手工路径会带）
+   *   3. **所有**成员 access_level → HISTORICAL_READONLY（不软删！历史要留人）
+   *   4. change_log（UPDATE）+ audit_log（reason 区分手工/自动，便于对账）
+   */
+  private async finishInternal(
+    tx: TxHandle,
+    t: Row,
+    opts: {
+      actorId: bigint;
+      reason: 'TRIP_FINISHED' | 'TRIP_AUTO_FINISHED';
+      action: 'trip.finish' | 'trip.auto_finish';
+      expectedVersion?: number;
+      actual?: Record<string, unknown>;
+      /** CAS 落空怎么处置：手工 → 409；自动 → 视为已完成（幂等，不报错） */
+      onCasMiss: 'conflict' | 'treat-as-finished';
+    },
+  ): Promise<{ row: Row; alreadyFinished: boolean }> {
+    const tripId = t['id'] as bigint;
+
+    // 幂等出口：已归档 → 原样返回，不写 change_log / audit_log，不动 version
+    if (t['status'] === 'FINISHED') return { row: t, alreadyFinished: true };
+
+    const expectedVersion = opts.expectedVersion ?? requireVersion(t['version']);
+    const now = await tx.db.dbNow();
+
+    const affected = await tx.db.update(
+      'trip',
+      buildCasWhere({ id: tripId, expectedVersion, patch: {} }),
+      {
+        status: 'FINISHED',
+        // 只在真的传了 actual 时才写这一列。
+        // 早先是 `actualJson: opts.actual ? ... : (t['actualJson'] ?? null)`：
+        // ① 没传 actual 时把一个**读出来的旧快照**原样写回，属于无谓列写；
+        // ② 并发下 `t` 可能是旧快照，会把别人刚写进 actual_json 的内容覆盖回 null。
+        // 不传该字段 = 保持库内原值，语义一致且没有回写风险。
+        //
+        // 🔴 直接传对象，**不要** `JSON.stringify`：`actual_json` 是 MySQL JSON 列，
+        //    传字符串会被存成「JSON 字符串标量」（`"{\"a\":1}"`），读回来是 string
+        //    而不是对象；再写一次就成了双重转义。
+        //
+        // 排查记录（D-2026-10-26-03）：线上 finish 500 的根因**不是**这里 ——
+        //    `trip.service.create` 一直在写 `actualJson: null` 且建行程正常，
+        //    说明 Prisma 的 `Json?` 列接受裸 null。真因是
+        //    `trip_member.access_level` 列宽 16 < 'HISTORICAL_READONLY'(19)，
+        //    见迁移 `20261026160000_enum_column_widths`。
+        ...(opts.actual !== undefined ? { actualJson: opts.actual } : {}),
+        updatedAt: now,
+        version: expectedVersion + 1,
+      },
+    );
+
+    if (affected === 0) {
+      if (opts.onCasMiss === 'treat-as-finished') {
+        // 并发下另一条路径已归档 → 视为成功，不重复写日志
+        const row = await tx.db.findUnique('trip', { id: tripId });
+        return { row: row ?? t, alreadyFinished: true };
+      }
+      assertCasSucceeded(affected, 'trip', expectedVersion);
+    }
+
+    // 成员全部转历史只读 —— 保留行，不删
+    const members = await tx.db.findMany('tripMember', { where: { tripId, deletedAt: null } });
+    for (const m of members) {
+      await tx.db.update(
+        'tripMember',
+        { id: m['id'] },
+        { accessLevel: 'HISTORICAL_READONLY', updatedAt: now },
+      );
+    }
+
+    await this.change(tx, 'trip', tripId, t['familyId'] as bigint, tripId, 'UPDATE', now);
+
+    await this.audit(tx, {
+      actorId: opts.actorId,
+      action: opts.action,
+      reason: opts.reason,
+      severity: 'INFO',
+      targetType: 'trip',
+      targetId: tripId,
+      detail:
+        opts.reason === 'TRIP_AUTO_FINISHED'
+          ? { memberCount: members.length, trigger: 'AUTO_DATE_EXPIRED' }
+          : { memberCount: members.length },
+      at: now,
+    });
+
+    const row = await tx.db.findUnique('trip', { id: tripId });
+    return { row: row ?? t, alreadyFinished: false };
   }
 
   // ── 内部 ────────────────────────────────────────────────
@@ -1065,6 +1312,64 @@ export class TripService {
 
 function toDate(ymd: string): Date {
   return new Date(`${ymd}T00:00:00.000Z`);
+}
+
+/**
+ * 是否属于「自动完结」的候选行：未软删 + 状态可流转 + 有结束日期。
+ *
+ * 三个条件缺一不可 —— 无 `endDate` 的行程没有「到期」这件事，
+ * 只能靠手工 `POST /trips/:id/finish`。
+ */
+function isAutoFinishCandidate(row: Row): boolean {
+  if ((row['deletedAt'] ?? null) !== null) return false;
+  const status = row['status'];
+  if (typeof status !== 'string') return false;
+  if (!(AUTO_FINISH_STATUS as readonly string[]).includes(status)) return false;
+  return row['endDate'] instanceof Date;
+}
+
+/**
+ * 行程是否「已经过完最后一天」。
+ *
+ * 🔴 口径是**行程当地时间**，不是服务器日期：
+ *    `end_date` 存的是当地日期（UTC 零点的 Date，见 C13/T-5 的时区解耦约定），
+ *    一趟 Asia/Tokyo 的行程在服务器（Asia/Shanghai）眼里会早 1 小时「到期」，
+ *    反之 UTC-x 的目的地会晚 —— 所以必须按行上的 `timezone` 算「今天」。
+ *
+ * 判定：`end_date < 当地今天 00:00` —— 结束日当天仍算「进行中」，
+ * 出行回来的当天晚上正是补照片的窗口，不能早上就把行程锁了。
+ */
+function isExpiredOn(endDate: unknown, now: Date, timezone: unknown): boolean {
+  if (!(endDate instanceof Date)) return false;
+  const tz = typeof timezone === 'string' && timezone.length > 0 ? timezone : 'Asia/Shanghai';
+  return endDate.getTime() < startOfTodayUtc(now, tz);
+}
+
+/** 指定时区的「今天 00:00」换算成 UTC 毫秒（用于与 `@db.Date` 列比较） */
+function startOfTodayUtc(now: Date, timeZone: string): number {
+  const [y, m, d] = ymdInZone(now, timeZone);
+  return Date.UTC(y, m - 1, d);
+}
+
+/** 取某时刻在指定时区的年月日；非法时区回落 UTC（宁可早归档一天，不可崩读接口） */
+function ymdInZone(at: Date, timeZone: string): [number, number, number] {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(at);
+    const pick = (type: string): number =>
+      Number(parts.find((p) => p['type'] === type)?.value ?? NaN);
+    const y = pick('year');
+    const m = pick('month');
+    const d = pick('day');
+    if (Number.isFinite(y) && Number.isFinite(m) && Number.isFinite(d)) return [y, m, d];
+  } catch {
+    // 非法 timeZone → RangeError，落到下面的 UTC 回落分支
+  }
+  return [at.getUTCFullYear(), at.getUTCMonth() + 1, at.getUTCDate()];
 }
 
 function timeOf(v: unknown): number {

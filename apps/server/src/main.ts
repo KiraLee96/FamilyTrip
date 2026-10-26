@@ -16,6 +16,10 @@ import { resolveAppDriver } from './common/db/resolve-driver.js';
 import { resolveWechatExchanger } from './domains/auth/wechat-jscode2session.js';
 import { bigintSafeReplacer } from './common/envelope/envelope.js';
 import type { AppDriver } from './common/db/resolve-driver.js';
+import { APP_TOKEN } from './http/app-token.js';
+import type { BuiltApp } from './composition-root.js';
+import type { TripService } from './domains/trip/trip.service.js';
+import { readAutoFinishConfig, startAutoFinishScheduler } from './common/scheduler/auto-finish.js';
 
 /**
  * 启动期 M3 fail-fast：生产环境未配置合规授权汇率源则拒绝启动。
@@ -170,6 +174,34 @@ async function bootstrap(): Promise<void> {
   const port = Number(process.env.PORT ?? 3000);
   await app.listen(port);
   console.log(`family-trip server listening on :${port}`);
+
+  // ── D-2026-10-26-02 P0-1：过期行程自动完结 ────────────────────────────
+  // 必须在 `app.get(APP_TOKEN)` 之后取 service：`buildApp()` 由容器工厂惰性调用，
+  // 此处拿到的就是**正在服务这 14 个域的那一个实例**（不是另建一份对象图）。
+  const built = app.get<BuiltApp>(APP_TOKEN);
+  const autoFinishConfig = readAutoFinishConfig(process.env);
+  const scheduler = startAutoFinishScheduler({
+    config: autoFinishConfig,
+    sweep: async () => {
+      const trip = built.services['trip'] as TripService;
+      const stats = await trip.autoFinishExpired({ batchLimit: autoFinishConfig.batchLimit });
+      return { finished: stats.finished, failed: stats.failed };
+    },
+  });
+
+  if (scheduler === null) {
+    console.log(
+      '[family-trip] 过期行程自动完结：已关闭（AUTO_FINISH_ENABLED=false，读路径惰性流转同时停用）',
+    );
+  } else {
+    console.log(
+      `[family-trip] 过期行程自动完结：每 ${String(autoFinishConfig.intervalMs)}ms 扫描一次，` +
+        `单轮上限 ${String(autoFinishConfig.batchLimit)} 个（AUTO_FINISH_ENABLED=false 可一键回滚）`,
+    );
+    const stopScheduler = (): void => scheduler.stop();
+    process.once('SIGINT', stopScheduler);
+    process.once('SIGTERM', stopScheduler);
+  }
 }
 
 bootstrap().catch((err: unknown) => {
