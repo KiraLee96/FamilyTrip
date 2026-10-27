@@ -323,12 +323,20 @@ function AnnualMemo({ year }: { year: number }) {
 function WishPoolInline({ filter, wishes }: { filter: WishFilter; wishes: Wish[] }) {
   const [local, setLocal] = useState<Record<string, Wish>>({});
 
-  const onVote = async (id: string) => {
+  /**
+   * 投票（2026-10-27 修复）：服务端只回 `{ voteCount, votedByMe }`，不是整条 wish。
+   * 这处与首页、心愿池页是**三份重复实现**，同一个信封误读一起错了三遍 ——
+   * 正因为它只影响"点了没反应"，三处都没被注意到。
+   */
+  const onVote = async (wish: Wish) => {
     try {
-      const next = await api.voteWish(id);
-      setLocal((m) => ({ ...m, [id]: next }));
-    } catch {
-      /* 失败保持服务端状态 */
+      const r = await api.voteWish(wish.id);
+      setLocal((m) => {
+        const base = m[wish.id] ?? wish;
+        return { ...m, [wish.id]: { ...base, votes: r.votes, votedByMe: r.votedByMe } };
+      });
+    } catch (e: unknown) {
+      void Taro.showToast({ title: e instanceof Error ? e.message : '投票失败', icon: 'none' });
     }
   };
 
@@ -373,10 +381,7 @@ function WishPoolInline({ filter, wishes }: { filter: WishFilter; wishes: Wish[]
               </View>
             )}
           </View>
-          <View
-            className={w.votedByMe ? 'vote vote--on' : 'vote'}
-            onClick={() => void onVote(w.id)}
-          >
+          <View className={w.votedByMe ? 'vote vote--on' : 'vote'} onClick={() => void onVote(w)}>
             <Icon name="heart" size={14} />
             <Text className="vote__n">{w.votes}</Text>
             <Text className="vote__cap">{w.votedByMe ? '已投' : '想去'}</Text>

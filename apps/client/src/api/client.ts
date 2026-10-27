@@ -54,6 +54,7 @@ import type {
   UploadPurpose,
   User,
   Wish,
+  WishVoteResult,
 } from './types';
 
 /** 业务错误（携带后端错误码，供界面分支处理） */
@@ -228,8 +229,11 @@ export interface ApiClient {
     /** 优先级，0-100，越大越靠前 */
     priority?: number;
   }): Promise<Wish>;
-  /** POST /wishes/:id/vote */
-  voteWish(id: string): Promise<Wish>;
+  /**
+   * POST /wishes/:id/vote
+   * 服务端返回 `{ wishId, voteCount, votedByMe }` —— 只回计票结果，不回整个 wish。
+   */
+  voteWish(id: string): Promise<WishVoteResult>;
 
   // ---- itinerary ----
   /** GET /itineraries */

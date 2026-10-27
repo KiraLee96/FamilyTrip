@@ -1214,7 +1214,8 @@ export function createMockClient(): ApiClient {
       if (!w) throw new ApiError(404, '心愿不存在');
       w.votedByMe = !w.votedByMe;
       w.votes += w.votedByMe ? 1 : -1;
-      return respond(w);
+      // 与真后端同契约：只回计票结果（http 适配层把 voteCount 映射成 votes）
+      return respond({ votes: w.votes, votedByMe: w.votedByMe });
     },
     // ---- itinerary ----
     async listItineraries(tripId) {

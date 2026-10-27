@@ -20,6 +20,7 @@
 
 import { useCallback, useMemo, useState } from 'react';
 import { ScrollView, Text, View } from '@tarojs/components';
+import Taro from '@tarojs/taro';
 import { Link } from '../nav/Link';
 import { navigate } from '../nav';
 
@@ -334,13 +335,22 @@ function WishSlips() {
     .sort((a, b) => b.votes - a.votes)
     .slice(0, 4);
 
-  const vote = async (id: string) => {
-    setBusyId(id);
+  /**
+   * 投票（2026-10-27 修复）：服务端只回 `{ voteCount, votedByMe }`，
+   * 不是整条 wish —— 以前把返回值当 wish 写进本地，界面纹丝不动。
+   * 基准取「本地覆盖过的」优先，否则用列表里那条（首次投票没有本地缓存）。
+   */
+  const vote = async (wish: Wish) => {
+    setBusyId(wish.id);
     try {
-      const next = await api.voteWish(id);
-      setLocal((m) => ({ ...m, [id]: next }));
-    } catch {
-      /* 忽略：保持服务端状态 */
+      const r = await api.voteWish(wish.id);
+      setLocal((m) => {
+        const base = m[wish.id] ?? wish;
+        return { ...m, [wish.id]: { ...base, votes: r.votes, votedByMe: r.votedByMe } };
+      });
+    } catch (e: unknown) {
+      // 以前是空 catch —— 失败毫无反馈，用户只会说"投不了"
+      void Taro.showToast({ title: e instanceof Error ? e.message : '投票失败', icon: 'none' });
     } finally {
       setBusyId('');
     }
@@ -368,7 +378,7 @@ function WishSlips() {
             <View
               className="note-slip"
               key={w.id}
-              onClick={busyId === w.id ? undefined : () => void vote(w.id)}
+              onClick={busyId === w.id ? undefined : () => void vote(w)}
             >
               <Text className="note-slip__title">{w.title}</Text>
               <View className="note-slip__row">

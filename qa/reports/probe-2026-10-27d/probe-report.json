@@ -1,0 +1,29 @@
+{
+  "ranAt": "2026-10-27T11:21:47.517Z",
+  "base": "http://127.0.0.1:5321",
+  "results": [
+    {
+      "name": "V1 心愿池有投票按钮",
+      "ok": true,
+      "detail": "{\"n\":\"5\",\"cap\":\"已投\",\"on\":true}"
+    },
+    {
+      "name": "V2 点一下：已投状态翻转，且票数同步 ±1（方向与状态一致）",
+      "ok": true,
+      "detail": "5/已投 → 4/投票"
+    },
+    {
+      "name": "V3 再点一下：切回原状态（投票/取消双向都通）",
+      "ok": true,
+      "detail": "4/投票 → 5/已投"
+    },
+    {
+      "name": "V4 全程无 console error",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "consoleErrors": [],
+  "passed": 4,
+  "failed": 0
+}

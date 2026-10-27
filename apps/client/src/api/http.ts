@@ -920,10 +920,16 @@ export function createHttpClient(): ApiClient {
     },
     voteWish: async (id) => {
       // 服务端 vote 幂等（同一用户重复投票只计一次），显式 vote:true
-      const r = await request<{ wish: Record<string, unknown> }>('POST', `/wishes/${id}/vote`, {
-        vote: true,
-      });
-      return toWish(r.wish);
+      //
+      // 🔴 信封是 `{ wishId, voteCount, votedByMe }`，**不是** `{ wish }`。
+      //    此前按 `{ wish }` 读 → undefined → toWish(undefined) 抛 TypeError →
+      //    页面空 catch 吞掉 → 点了完全没反应（2026-10-27 反馈「心愿池无法投票」）。
+      const r = await request<{ voteCount?: unknown; votedByMe?: unknown }>(
+        'POST',
+        `/wishes/${id}/vote`,
+        { vote: true },
+      );
+      return { votes: asNumber(r.voteCount), votedByMe: asBoolean(r.votedByMe) };
     },
     listItineraries: async (tripId) => {
       const rows = await requestList<Record<string, unknown>>(

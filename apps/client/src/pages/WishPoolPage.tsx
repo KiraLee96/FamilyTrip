@@ -12,6 +12,7 @@
 
 import { useCallback, useState } from 'react';
 import { Input, Text, Textarea, View } from '@tarojs/components';
+import Taro from '@tarojs/taro';
 
 import { api } from '../api/index';
 import type { Wish } from '../api/types';
@@ -42,13 +43,25 @@ export function WishPoolPage() {
   const [wishBusy, setWishBusy] = useState(false);
   const [wishErr, setWishErr] = useState('');
 
-  const onVote = useCallback(async (id: string) => {
-    // 乐观更新：先改本地，再对齐服务端返回值
+  /**
+   * 投票。
+   * ==========================================================================
+   * 🔴 两处修复（2026-10-27「心愿池无法投票」）：
+   *   1. 服务端只回 `{ wishId, voteCount, votedByMe }`，以前当成整个 wish 用
+   *      → 本地状态被写成 undefined，界面纹丝不动；
+   *   2. 以前 catch 是空的 → 失败时**一点反馈都没有**，用户只能得出"投不了"。
+   *      现在失败要弹出来，哪怕只是"投票失败"。
+   * 基准对象取「本地覆盖过的」优先，否则用列表里那条 —— 首次投票没有本地缓存。
+   */
+  const onVote = useCallback(async (wish: Wish) => {
     try {
-      const next = await api.voteWish(id);
-      setLocal((m) => ({ ...m, [id]: next }));
-    } catch {
-      /* 失败时不改本地状态，保持与服务端一致 */
+      const r = await api.voteWish(wish.id);
+      setLocal((m) => {
+        const base = m[wish.id] ?? wish;
+        return { ...m, [wish.id]: { ...base, votes: r.votes, votedByMe: r.votedByMe } };
+      });
+    } catch (e: unknown) {
+      void Taro.showToast({ title: e instanceof Error ? e.message : '投票失败', icon: 'none' });
     }
   }, []);
 
@@ -124,7 +137,7 @@ export function WishPoolPage() {
           <SectionTitle icon="check">已成行</SectionTitle>
           <View className="card card--flush">
             {adopted.map((w) => (
-              <WishRow key={w.id} wish={w} onVote={(id) => void onVote(id)} />
+              <WishRow key={w.id} wish={w} onVote={(x) => void onVote(x)} />
             ))}
           </View>
         </>
@@ -136,7 +149,7 @@ export function WishPoolPage() {
       ) : (
         <View className="card card--flush">
           {open.map((w) => (
-            <WishRow key={w.id} wish={w} onVote={(id) => void onVote(id)} />
+            <WishRow key={w.id} wish={w} onVote={(x) => void onVote(x)} />
           ))}
         </View>
       )}
@@ -198,7 +211,7 @@ export function WishPoolPage() {
   );
 }
 
-function WishRow({ wish, onVote }: { wish: Wish; onVote: (id: string) => void }) {
+function WishRow({ wish, onVote }: { wish: Wish; onVote: (wish: Wish) => void }) {
   return (
     <View className="wish">
       <View className="wish__body">
@@ -221,7 +234,7 @@ function WishRow({ wish, onVote }: { wish: Wish; onVote: (id: string) => void })
           </View>
         )}
       </View>
-      <View className={wish.votedByMe ? 'vote vote--on' : 'vote'} onClick={() => onVote(wish.id)}>
+      <View className={wish.votedByMe ? 'vote vote--on' : 'vote'} onClick={() => onVote(wish)}>
         <Icon name="heart" size={17} />
         <Text className="vote__n">{wish.votes}</Text>
         <Text className="vote__cap">{wish.votedByMe ? '已投' : '投票'}</Text>

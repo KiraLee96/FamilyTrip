@@ -163,6 +163,21 @@ export interface Trip {
   budgetMinor?: string | null;
 }
 
+/**
+ * 投票结果（2026-10-27 反馈「心愿池无法投票」的修复）
+ * ============================================================================
+ * 🔴 服务端 `POST /wishes/:id/vote` 的真实信封是 `{ wishId, voteCount, votedByMe }`
+ *    —— **不是**整个 wish。此前客户端按 `{ wish }` 读，拿到 undefined，
+ *    `toWish(undefined)` 抛 TypeError，而页面的 catch 是空的 →
+ *    界面毫无反应，用户只能得出"无法投票"。
+ *
+ * `votes` 以服务端重新计票的明细为准（不是本地 +1），并发投票不会漂。
+ */
+export interface WishVoteResult {
+  votes: number;
+  votedByMe: boolean;
+}
+
 /** 心愿（愿望池条目） */
 export interface Wish {
   id: string;
