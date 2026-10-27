@@ -21,6 +21,7 @@ import type {
   ChecklistItem,
   ChecklistTemplate,
   ChecklistTemplateItem,
+  TemplateSyncResult,
   ConfirmMediaAssetInput,
   Destination,
   Expense,
@@ -38,6 +39,7 @@ import type {
   MemoryArchive,
   MemorySnapshot,
   MemoryType,
+  PhotoMemoryGroup,
   PresignUploadResult,
   RateTier,
   TransportMode,
@@ -130,6 +132,8 @@ export interface ApiClient {
      *    对应反馈「允许用户选择地区」。
      */
     destinations?: Destination[];
+    /** 出行预算（最小货币单位整数字符串，如「分」）；不传 = 不设预算 */
+    budgetMinor?: string;
   }): Promise<Trip>;
   /**
    * PATCH /trips/:id —— 改行程本身（标题 / 起止日期 / 目的地）。
@@ -280,6 +284,8 @@ export interface ApiClient {
     name: string;
     quantity?: number;
     scope?: 'SHARED' | 'PERSONAL';
+    /** 清单分类：TODO = 要做的事 / PACK = 要带的东西（2026-10-27） */
+    kind?: 'TODO' | 'PACK';
   }): Promise<ChecklistItem>;
   /**
    * POST /checklists/items/:id/toggle（E7 CAS）
@@ -321,10 +327,18 @@ export interface ApiClient {
    * 🆕 契约新增；**后端尚未提供该路由**（派发单 P0-1），
    *    未上线前调用会拿到 404 同形错误，界面按「暂不可改」降级提示。
    */
+  /**
+   * PATCH /checklists/templates/:id
+   * ============================================================================
+   * 改条目时服务端会把变更**同步到引用了它、且尚未成行的行程**
+   * （用户口径：未成行的要同步，已完成的不用改）。返回里的 `synced`
+   * 就是这次同步的影响面，界面据此给一句人话提示；`synced` 缺省表示
+   * 本次只改了名字、没有动条目。
+   */
   updateChecklistTemplate(
     id: string,
     input: { version: number; name?: string; items?: ChecklistTemplateItem[] },
-  ): Promise<ChecklistTemplate>;
+  ): Promise<{ template: ChecklistTemplate; synced?: TemplateSyncResult }>;
   /**
    * DELETE /checklists/templates/:id —— 删整套长期清单。
    * 🆕 契约新增；**后端尚未提供该路由**（派发单 P0-2）。
@@ -460,6 +474,20 @@ export interface ApiClient {
   }): Promise<MediaAsset[]>;
   /** DELETE /media/:id */
   deleteMediaAsset(id: string): Promise<void>;
+  /**
+   * GET /media/memories —— 照片回忆聚合（2026-10-27）。
+   * ==========================================================================
+   * 服务端现算：有 tripId 的按行程成组、无 tripId 的按月份成组，按组内最新
+   * 照片时间倒序。**照片一上传就自动出现**，不需要「生成回忆」动作；
+   * 头像池（`a/` 前缀）已在服务端排除，不会混进旅行照片。
+   */
+  listPhotoMemories(query?: {
+    familyId?: string;
+    /** 最多几组（默认 12） */
+    limit?: number;
+    /** 每组带几张预览（默认 9） */
+    previewSize?: number;
+  }): Promise<PhotoMemoryGroup[]>;
 
   // ---- memory（回忆快照，只读 + 生成） ----
   /** GET /memories（列表项只含摘要） */

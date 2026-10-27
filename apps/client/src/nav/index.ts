@@ -10,7 +10,6 @@
  *   /            → pages/HomePage      （tab：总览）
  *   /plan        → pages/PlanPage      （tab：规划）
  *   /trips       → pages/TripsPage     （tab：行程）
- *   /items       → pages/ItemsPage     （tab：物品）
  *   /profile     → pages/ProfilePage   （tab：我的，2026-10-14 账号管理回归）
  *   /memory      → pages/MemoryPage    （非 tab：回忆墙，从总览页「最近回忆」进入）
  *   /wishes      → pages/WishPoolPage  （非 tab，从首页/规划页心愿区块进入）
@@ -32,7 +31,6 @@ const TAB_PAGE: Record<string, string> = {
   '/': 'pages/HomePage',
   '/plan': 'pages/PlanPage',
   '/trips': 'pages/TripsPage',
-  '/items': 'pages/ItemsPage',
   '/profile': 'pages/ProfilePage',
 };
 
@@ -108,6 +106,30 @@ export function navigate(to: string): void {
 /** 返回上一页 */
 export function back(): void {
   void Taro.navigateBack().catch(() => {});
+}
+
+/**
+ * 「返回」语义的跳转 —— 有上一页就**退栈**，没有才重定向。
+ * ============================================================================
+ * 🔴 2026-10-26 修复「routeDone with a webviewId N is not found」：
+ *    页面之间来回跳时，如果用 `Link`（= navigateTo）表达「返回」，每往返一次
+ *    就往页面栈里压一层**新页面实例**（详情 → 管理 → 详情' → 管理' …）。
+ *    微信小程序栈上限 10 层，撞上限后路由层引用的 webview 已被销毁，于是报
+ *    `[Page route 错误(system error)] routeDone with a webviewId N is not found`。
+ *
+ *    规则：**表达「回退」只能用 back / backOr，永远不要用 Link 指回上一页**。
+ *    用 `getCurrentPages().length > 1` 判断是否有上一页 —— 直接深链进入本页
+ *    （扫码 / 分享卡片 / 开发者工具启动页）时栈里只有自己，此时退栈会失败，
+ *    改为 redirectTo 覆盖当前页，保证用户不会卡在一个没有出口的页面。
+ */
+export function backOr(fallbackTo: string): void {
+  const depth = Taro.getCurrentPages().length;
+  if (depth > 1) {
+    void Taro.navigateBack().catch(() => {});
+    return;
+  }
+  const { url } = toTaroUrl(fallbackTo);
+  void Taro.redirectTo({ url }).catch(() => {});
 }
 
 /** 读取当前页面路由参数（替代 react-router 的 useParams） */

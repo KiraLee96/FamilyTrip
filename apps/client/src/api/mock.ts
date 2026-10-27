@@ -16,6 +16,7 @@ import type {
   BatchExpenseResult,
   ChecklistItem,
   ChecklistTemplate,
+  TemplateSyncResult,
   Expense,
   ExpenseSummary,
   Family,
@@ -30,6 +31,7 @@ import type {
   MediaAsset,
   MemoryArchive,
   MemorySnapshot,
+  PhotoMemoryGroup,
   PresignUploadResult,
   Trip,
   TripDetail,
@@ -113,6 +115,9 @@ const TRIPS: Trip[] = [
       { name: '青岛', note: '栈桥 / 八大关' },
       { name: '崂山', note: '一日游' },
     ],
+    // 2026-10-27：预算 ¥5000（最小单位「分」）。102/103 故意不设预算，
+    // 用来看「未设预算」与「已设预算」两种形态。
+    budgetMinor: '500000',
     version: 3,
   },
   {
@@ -348,8 +353,14 @@ const ITINERARY: ItineraryItem[] = [
 ];
 
 /** 清单种子（归属行程 101 —— 修复「清单默认是之前一个」的跨行程串数据问题） */
+/**
+ * 行程清单种子 —— 2026-10-27 起按 kind 分两类（需求③）：
+ *   TODO = 要做的事（订票 / 订房 / 预约）
+ *   PACK = 要带的东西（药 / 充电宝）
+ * 演示数据两类都有，才能看出"两个进度条各算各的"。
+ */
 const CHECKLIST: ChecklistItem[] = [
-  { id: '401', tripId: '101', scope: 'SHARED', title: '预订往返高铁票', done: true },
+  { id: '401', tripId: '101', scope: 'SHARED', title: '预订往返高铁票', done: true, kind: 'TODO' },
   {
     id: '402',
     tripId: '101',
@@ -357,6 +368,7 @@ const CHECKLIST: ChecklistItem[] = [
     title: '订海景民宿（3 晚）',
     done: false,
     assigneeName: '爸爸',
+    kind: 'TODO',
   },
   {
     id: '403',
@@ -365,9 +377,24 @@ const CHECKLIST: ChecklistItem[] = [
     title: '查潮汐表（赶海用）',
     done: false,
     assigneeName: '妈妈',
+    kind: 'TODO',
   },
-  { id: '404', tripId: '101', scope: 'PERSONAL', title: '给孩子准备晕车药', done: false },
-  { id: '405', tripId: '101', scope: 'PERSONAL', title: '充电宝 + 数据线', done: true },
+  {
+    id: '404',
+    tripId: '101',
+    scope: 'PERSONAL',
+    title: '给孩子准备晕车药',
+    done: false,
+    kind: 'PACK',
+  },
+  {
+    id: '405',
+    tripId: '101',
+    scope: 'PERSONAL',
+    title: '充电宝 + 数据线',
+    done: true,
+    kind: 'PACK',
+  },
   {
     id: '406',
     tripId: '101',
@@ -375,6 +402,7 @@ const CHECKLIST: ChecklistItem[] = [
     title: '崂山门票预约',
     done: false,
     assigneeName: '爸爸',
+    kind: 'TODO',
   },
 ];
 
@@ -981,6 +1009,8 @@ export function createMockClient(): ApiClient {
         startDate: input.startDate ?? null,
         endDate: input.endDate ?? null,
         destinations: input.destinations ?? [],
+        // 2026-10-27 需求③：预算随创建一起写；不传 = 未设预算（null），不是 0
+        ...(input.budgetMinor !== undefined ? { budgetMinor: input.budgetMinor } : {}),
         version: 1,
       };
       state.trips.push(t);
@@ -1018,6 +1048,8 @@ export function createMockClient(): ApiClient {
       if (input.startDate !== undefined) t.startDate = input.startDate;
       if (input.endDate !== undefined) t.endDate = input.endDate;
       if (input.destinations !== undefined) t.destinations = input.destinations;
+      // 预算：null = 取消预算；undefined = 不改（与后端 patch 同口径）
+      if (input.budgetMinor !== undefined) t.budgetMinor = input.budgetMinor;
       t.version += 1;
       await delay();
       return respond({ ...t });
@@ -1265,6 +1297,8 @@ export function createMockClient(): ApiClient {
         scope: input.scope ?? 'SHARED',
         title: input.name,
         done: false,
+        // 2026-10-27 需求③：待办 / 打包分两类，缺省 PACK（与后端 schema 默认值一致）
+        kind: input.kind ?? 'PACK',
       };
       state.checklist.push(item);
       return respond(item);
@@ -1326,15 +1360,84 @@ export function createMockClient(): ApiClient {
         throw new ApiError(409, '该清单已被他人修改，请刷新后重试');
       }
       if (input.name !== undefined) tpl.name = input.name;
+
+      /**
+       * 条目同步（对齐后端 syncTemplateToOpenTrips 的口径）：
+       * 改条目时把变更同步到「引用过它、且尚未成行」的行程清单项。
+       * 已归档（FINISHED/CANCELLED）的行程不动 —— 历史快照。
+       * Mock 也照这套走，否则界面在 Mock 下看不到同步提示，等于验收漏一半。
+       *
+       * ⚠️ Mock 只模拟「增/删」两个动作，不模拟「数量变更」：
+       *    `ChecklistItem` 契约里没有 quantity（行程清单项不带数量），
+       *    数量同步只存在于模板条目与后端的 trip_checklist_item 之间。
+       */
+      let synced: TemplateSyncResult | undefined;
       if (input.items !== undefined) {
-        tpl.items = input.items.map((it) => ({
+        const next = input.items.map((it) => ({
           name: it.name,
           quantity: Math.max(1, it.quantity ?? 1),
         }));
+        const result: TemplateSyncResult = {
+          trips: 0,
+          created: 0,
+          updated: 0,
+          removed: 0,
+          keptChecked: 0,
+        };
+        const tplByName = new Map(next.map((it) => [it.name, it]));
+
+        const openTripIds = [
+          ...new Set(
+            state.checklist
+              .filter((c) => c.templateId === id)
+              .map((c) => c.tripId)
+              .filter((v): v is string => typeof v === 'string'),
+          ),
+        ];
+
+        for (const tripId of openTripIds) {
+          const trip = state.trips.find((t) => t.id === tripId);
+          if (!trip) continue;
+          if (trip.status === 'FINISHED' || trip.status === 'CANCELLED') continue;
+          result.trips += 1;
+
+          const live = state.checklist.filter((c) => c.tripId === tripId && c.templateId === id);
+          const liveByName = new Map(live.map((c) => [c.title, c]));
+
+          // ① 模板里没有的：未勾选删掉，已勾选保留
+          for (const c of live) {
+            if (tplByName.has(c.title)) continue;
+            if (c.done) {
+              result.keptChecked += 1;
+              continue;
+            }
+            state.checklist = state.checklist.filter((x) => x.id !== c.id);
+            result.removed += 1;
+          }
+
+          // ② 模板里有的：缺的补上
+          for (const it of next) {
+            if (liveByName.has(it.name)) continue;
+            state.checklist.push({
+              id: nextId('checklist'),
+              tripId,
+              scope: tpl.scope,
+              title: it.name,
+              done: false,
+              version: 0,
+              templateId: id,
+            });
+            result.created += 1;
+          }
+        }
+
+        tpl.items = next;
+        synced = result;
       }
+
       tpl.version += 1;
       tpl.updatedAt = new Date().toISOString();
-      return respond(tpl);
+      return respond({ template: tpl, ...(synced !== undefined ? { synced } : {}) });
     },
     async deleteChecklistTemplate(id) {
       const i = state.templates.findIndex((x) => x.id === id);
@@ -1590,6 +1693,94 @@ export function createMockClient(): ApiClient {
       if (i < 0) throw new ApiError(404, '资产不存在');
       state.media.splice(i, 1);
       await delay();
+    },
+    /**
+     * 照片回忆聚合（对齐后端 /media/memories 口径）：
+     * 有 tripId 的按行程成组、无 tripId 的按月份成组，按组内最新照片时间倒序。
+     * **排除头像池**（fileKey 以 `a/` 开头），否则换过的头像会混进旅行回忆。
+     */
+    async listPhotoMemories(query) {
+      const limit = query?.limit ?? 12;
+      const previewSize = Math.min(9, query?.previewSize ?? 9);
+
+      const images = state.media.filter(
+        (m) => m.mimeType.startsWith('image/') && !m.fileKey.startsWith('a/'),
+      );
+
+      type Group = {
+        kind: 'TRIP' | 'MONTH';
+        tripId: string | null;
+        month: string | null;
+        rows: typeof images;
+      };
+      const groups = new Map<string, Group>();
+
+      for (const m of images) {
+        if (m.tripId !== null && m.tripId !== undefined) {
+          const key = `T:${m.tripId}`;
+          const g = groups.get(key) ?? {
+            kind: 'TRIP' as const,
+            tripId: m.tripId,
+            month: null,
+            rows: [],
+          };
+          g.rows.push(m);
+          groups.set(key, g);
+          continue;
+        }
+        const month = m.createdAt.slice(0, 7);
+        const key = `M:${month}`;
+        const g = groups.get(key) ?? { kind: 'MONTH' as const, tripId: null, month, rows: [] };
+        g.rows.push(m);
+        groups.set(key, g);
+      }
+
+      const out: PhotoMemoryGroup[] = [];
+      for (const g of groups.values()) {
+        const sorted = [...g.rows].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        const photos = sorted.slice(0, previewSize).map((m) => m.url);
+        const lastAt = sorted[0]?.createdAt ?? '';
+
+        if (g.kind === 'TRIP' && g.tripId !== null) {
+          const trip = state.trips.find((t) => t.id === g.tripId);
+          if (trip === undefined) continue;
+          const range =
+            trip.startDate !== undefined && trip.endDate !== undefined
+              ? `${trip.startDate} ~ ${trip.endDate}`
+              : `${sorted.length} 张照片`;
+          out.push({
+            kind: 'TRIP',
+            tripId: g.tripId,
+            month: null,
+            title: trip.title,
+            subtitle: range,
+            cover: photos[0] ?? '',
+            photoCount: sorted.length,
+            photos,
+            lastAt,
+          });
+          continue;
+        }
+
+        const month = g.month ?? '';
+        const mm = /^(\d{4})-(\d{2})$/.exec(month);
+        out.push({
+          kind: 'MONTH',
+          tripId: null,
+          month,
+          title: mm !== null ? `${mm[1]} 年 ${Number(mm[2])} 月` : '未分类照片',
+          // 与后端同口径：张数由前端统一拼，这里留空避免「N 张照片 · N 张」
+          subtitle: '',
+          cover: photos[0] ?? '',
+          photoCount: sorted.length,
+          photos,
+          lastAt,
+        });
+      }
+
+      out.sort((a, b) => b.lastAt.localeCompare(a.lastAt));
+      await delay();
+      return out.slice(0, limit);
     },
     // ---- memory ----
     async listMemories(query) {

@@ -155,6 +155,12 @@ export interface Trip {
    *    列表曾误用家庭人数显示「4 人同行」。缺省表示老后端没给，界面不显示（不编数据）。
    */
   memberCount?: number;
+  /**
+   * 出行预算（最小货币单位整数字符串，如 CNY 的「分」）。
+   * 2026-10-27 需求③：花销页要能记录预算。
+   * `null` / `undefined` 一律视为「未设预算」—— 不显示进度条，也不编造 0。
+   */
+  budgetMinor?: string | null;
 }
 
 /** 心愿（愿望池条目） */
@@ -232,6 +238,8 @@ export interface TripUpdateInput {
   endDate?: string | null;
   /** 整体替换目的地列表（非增量合并） */
   destinations?: Destination[];
+  /** 出行预算（最小货币单位整数字符串）；传 null = 取消预算，不传 = 不改 */
+  budgetMinor?: string | null;
 }
 
 /** 行程条目 */
@@ -275,6 +283,14 @@ export interface ChecklistItem {
   quantity?: number;
   /** 由哪套长期清单引用而来（templateId；手工加的个性化物品为空） */
   templateId?: string;
+  /**
+   * 清单分类（2026-10-27 需求③）：
+   *   TODO = 要做的事（订门票、办签证、给猫找寄养）
+   *   PACK = 要带的东西（身份证、充电宝 x2）
+   * 两者在清单 tab 里是两个独立分区，勾选进度各自算。
+   * 老后端 / 历史数据没有这个字段 → 按 PACK 处理（历史清单装的就是打包物品）。
+   */
+  kind?: 'TODO' | 'PACK';
 }
 
 /**
@@ -307,11 +323,57 @@ export interface ChecklistTemplate {
   updatedAt?: string;
 }
 
+/**
+ * 照片回忆组（2026-10-27 需求：像 iPhone 相册的回忆）
+ * ============================================================================
+ * 由服务端**现算**：有 tripId 的照片按行程成组，没 tripId 的按月份成组。
+ * 照片一上传就自动出现在这里，不需要任何「生成回忆」的动作。
+ *
+ * 🔴 服务端已排除头像池（`fileKey` 以 `a/` 开头），
+ *    否则换过的头像会被当成旅行照片混进回忆墙。
+ */
+export interface PhotoMemoryGroup {
+  /** TRIP = 某次旅行；MONTH = 没挂行程的照片按月归档 */
+  kind: 'TRIP' | 'MONTH';
+  /** TRIP 时有值 */
+  tripId: string | null;
+  /** MONTH 时有值，格式 YYYY-MM */
+  month: string | null;
+  /** 标题：行程名 或「2026 年 10 月」 */
+  title: string;
+  /** 副标题：日期区间 或「N 张照片」 */
+  subtitle: string;
+  /** 封面图 URL（组内最新一张） */
+  cover: string;
+  photoCount: number;
+  /** 前 N 张（默认 9，九宫格预览） */
+  photos: string[];
+  /** 组内最新一张的时间（排序用） */
+  lastAt: string;
+}
+
 /** 把长期清单引用到行程的结果（幂等：同模板同行程重复引用不重复插入） */
 export interface ApplyTemplateResult {
   created: number;
   skipped: number;
   alreadyApplied: boolean;
+}
+
+/**
+ * 模板条目变更 → 同步到「未成行行程」的结果（2026-10-27）。
+ * 已归档（FINISHED / CANCELLED）的行程不在同步范围内，那是历史快照。
+ */
+export interface TemplateSyncResult {
+  /** 实际处理的行程数（只算未归档的） */
+  trips: number;
+  /** 补进行程的新条目数 */
+  created: number;
+  /** 数量被同步的条目数 */
+  updated: number;
+  /** 因模板删掉而同步删除的条目数 */
+  removed: number;
+  /** 模板删了但行程里已勾选、因此保留下来的条目数 */
+  keptChecked: number;
 }
 
 /**

@@ -12,19 +12,22 @@
  */
 
 import { useCallback, useState } from 'react';
-import { Text, View } from '@tarojs/components';
+import { Image, Text, View } from '@tarojs/components';
 import Taro from '@tarojs/taro';
 import { Link } from '../nav/Link';
+import { navigate } from '../nav';
 
 import { api } from '../api/index';
 import type { MediaAsset, MemoryArchive } from '../api/types';
 import { Icon } from '../components/Icon';
 import { ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
+import { PhotoCover } from '../components/PhotoCover';
 import { shortDate } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
-import { photoWriteHint } from '../utils/constants';
-import { pickAndUploadPhotos } from '../utils/upload';
+import { photoWriteHint, backendOutdatedHint, isBackendOutdated } from '../utils/constants';
+import { previewPhotos } from '../utils/preview';
+import { chooseTripForPhotos, pickAndUploadPhotos } from '../utils/upload';
 
 export function MemoryPage() {
   const [busy, setBusy] = useState(false);
@@ -37,16 +40,32 @@ export function MemoryPage() {
     useCallback(() => api.listMedia(), []),
     [],
   );
+  /**
+   * 照片回忆组（2026-10-27）：按行程/月份自动聚合。
+   * 这是本页的主体 —— 用户要的是「像苹果相册的回忆」，
+   * 而不是一份需要手动生成的年度档案。
+   */
+  const groupsQ = useAsync(
+    useCallback(() => api.listPhotoMemories({ limit: 30 }), []),
+    [],
+  );
 
   const reloadAll = useCallback(() => {
     memoriesQ.reload();
     mediaQ.reload();
-  }, [memoriesQ, mediaQ]);
+    groupsQ.reload();
+  }, [memoriesQ, mediaQ, groupsQ]);
 
+  /**
+   * 上传：先问「归到哪次旅行」（见 `chooseTripForPhotos` 的返回语义）。
+   * 取消归属选择 → 整个上传中止，不当成一次失败去弹 toast。
+   */
   const upload = async () => {
+    const tripId = await chooseTripForPhotos();
+    if (tripId === null) return;
     setBusy(true);
     try {
-      await pickAndUploadPhotos();
+      await pickAndUploadPhotos(tripId);
       reloadAll();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : '上传失败，请重试';
@@ -64,6 +83,7 @@ export function MemoryPage() {
 
   const memories = memoriesQ.data ?? [];
   const media = mediaQ.data ?? [];
+  const groups = groupsQ.data ?? [];
   const photoCount = media.length + memories.reduce((n, m) => n + m.summary.mediaCount, 0);
 
   return (
@@ -72,12 +92,30 @@ export function MemoryPage() {
         <Text className="seg__btn seg__btn--on">全部</Text>
       </View>
 
-      {memories.length === 0 && media.length === 0 ? (
+      {/**
+       * 后端缺 `/media/memories` 时**不要装成「回忆墙还空着」**。
+       * 旧后端（10-22 版）没有这个路由，返回 4040；如果不提示，用户会以为
+       * 照片丢了 —— 这正是本轮反馈①的体验。照片网格走的是 `/media`（老接口，
+       * 存在），所以下面那一区照常可见，必须说清楚"哪部分能用、哪部分不能"。
+       */}
+      {isBackendOutdated(groupsQ.error) && (
+        <View className="card card--flush" style={{ marginBottom: 10 }}>
+          <Text style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)' }}>
+            分组回忆暂不可用
+          </Text>
+          <Text className="muted" style={{ fontSize: 11.5, lineHeight: 1.7, marginTop: 4 }}>
+            {backendOutdatedHint('缺少 /media/memories 接口')}。
+            下方的「照片」区仍可正常查看与上传，分组视图要等后端部署后才出现。
+          </Text>
+        </View>
+      )}
+
+      {memories.length === 0 && media.length === 0 && groups.length === 0 ? (
         /* ② 空态：设计稿插画位（emoji 大图 + 圆形浅绿底） */
         <View className="blank">
           <View className="blank__art">🗺️</View>
           <Text className="blank__title">回忆墙还空着</Text>
-          <Text className="blank__cap">旅行结束后，把照片和故事留在这里</Text>
+          <Text className="blank__cap">在行程里传几张照片，这里会自动长出回忆</Text>
           <View
             className={`btn btn--accent ${busy ? 'btn--busy' : ''}`}
             style={{ marginTop: 10, padding: '0 22px', height: 40 }}
@@ -89,12 +127,56 @@ export function MemoryPage() {
         </View>
       ) : (
         <>
-          {/* ③ 回忆档案卡 */}
+          {/*
+            ③ 照片回忆组（主体）—— 每次旅行一张大卡，封面 + 标题 + 张数。
+            点开必须落到**照片** tab：`tab=memory` 是「回忆快照」（memory_archive，
+            要手动生成、且不含任何照片），落错地方就等于"照片没了"。
+          */}
+          {groups.length > 0 ? (
+            <>
+              <View className="section-title">
+                <Text className="section-title__icon">
+                  <Icon name="sparkles" size={15} />
+                </Text>
+                旅行回忆
+                <Text className="section-title__side" style={{ marginLeft: 8 }}>
+                  {groups.length} 组
+                </Text>
+              </View>
+              <View className="memo-list">
+                {groups.map((g) => {
+                  const key = `${g.kind}-${g.tripId ?? g.month ?? ''}`;
+                  const open = (): void => {
+                    if (g.kind === 'TRIP' && g.tripId !== null) {
+                      navigate(`/trips/${g.tripId}?tab=photo&readonly=1`);
+                      return;
+                    }
+                    // 月份组（未绑定行程的照片）没有行程页可跳 → 直接全屏预览这一组
+                    previewPhotos(g.photos, g.cover !== '' ? g.cover : (g.photos[0] ?? ''));
+                  };
+                  return (
+                    <View key={key} className="memo-card memo-card--wide" onClick={open}>
+                      <PhotoCover url={g.cover} />
+                      <View className="memo-card__veil" />
+                      <View className="memo-card__meta">
+                        <Text className="memo-card__title">{g.title}</Text>
+                        <Text className="memo-card__sub">
+                          {[g.subtitle, `${g.photoCount} 张`].filter((s) => s !== '').join(' · ')}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            </>
+          ) : null}
+
+          {/* ④ 年度档案（保留：年度回顾是另一类产物，不等于照片流） */}
           {memories.map((m) => (
             <MemoryArchiveCard key={m.id} archive={m} />
           ))}
 
-          {/* 照片网格 */}
+          {/* ⑤ 全部照片网格 */}
           <View className="section-title">
             照片
             <Text className="section-title__side" style={{ marginLeft: 8 }}>
@@ -110,7 +192,12 @@ export function MemoryPage() {
               <Text className="photo-cell__add-text">上传照片</Text>
             </View>
             {media.map((p) => (
-              <PhotoCell key={p.id} asset={p} onDeleted={reloadAll} />
+              <PhotoCell
+                key={p.id}
+                asset={p}
+                allUrls={media.map((m) => m.url).filter((u) => u !== '')}
+                onDeleted={reloadAll}
+              />
             ))}
           </View>
         </>
@@ -152,14 +239,31 @@ function MemoryArchiveCard({ archive }: { archive: MemoryArchive }) {
 }
 
 /**
- * 照片格 —— 有 URL 显示真图，否则占位卡；删除走二次确认。
+ * 照片格 —— 点开看大图、点 ✕ 删除。
  * ============================================================================
- * 2026-10-26 修复：此前整格 `onClick` 直接调删除接口 —— 用户想看大图、手一滑
- * 就把照片删了（回忆墙是"照片归档"的地方，误删代价最高）。改为点 ✕ 才触发，
- * 且必须过一道确认框；删除失败按错误码翻成人话（归档行程的媒体写后端会 403）。
+ * 2026-10-26：此前整格 `onClick` 直接调删除接口 —— 用户想看大图、手一滑
+ * 就把照片删了（回忆墙是"照片归档"的地方，误删代价最高）。改为点 ✕ 才删除。
+ *
+ * 2026-10-27：上一轮把删除挪走了，却**没补上「看大图」**，格子变成点了没反应 ——
+ * 用户的原话就是「打开看不到」。现在整格点击 = 原生全屏预览（可左右滑），
+ * 删除仍走 ✕。
+ *
+ * 另：改用 `<Image>` + `onError` 而不是 CSS `background-image`。
+ * background-image 加载失败**没有任何回调**，格子就是一块空白，看起来像
+ * "照片不存在"；`<Image>` 能拿到失败事件，至少能告诉用户是"加载失败"。
  */
-function PhotoCell({ asset, onDeleted }: { asset: MediaAsset; onDeleted: () => void }) {
+function PhotoCell({
+  asset,
+  allUrls,
+  onDeleted,
+}: {
+  asset: MediaAsset;
+  /** 同屏所有可预览地址（点开后左右滑） */
+  allUrls: string[];
+  onDeleted: () => void;
+}) {
   const [busy, setBusy] = useState(false);
+  const [broken, setBroken] = useState(false);
 
   const remove = useCallback(async () => {
     const res = await Taro.showModal({
@@ -183,21 +287,25 @@ function PhotoCell({ asset, onDeleted }: { asset: MediaAsset; onDeleted: () => v
     }
   }, [asset.id, onDeleted]);
 
+  const url = asset.url ?? '';
+  const canShow = url !== '' && !broken;
+
   return (
     <View className="photo-cell">
-      {asset.url !== '' ? (
-        <View
+      {canShow ? (
+        <Image
           className="photo-cell__img"
-          style={{
-            backgroundImage: `url(${asset.url})`,
-            backgroundSize: 'cover',
-            backgroundPosition: 'center',
-          }}
+          src={url}
+          mode="aspectFill"
+          onClick={() => previewPhotos(allUrls, url)}
+          onError={() => setBroken(true)}
         />
       ) : (
         <View className="photo-cell__ph">
-          <Text style={{ fontSize: 20 }}>📷</Text>
-          <Text className="photo-cell__ph-date">{asset.createdAt.slice(0, 10)}</Text>
+          <Text style={{ fontSize: 20 }}>{broken ? '⚠️' : '📷'}</Text>
+          <Text className="photo-cell__ph-date">
+            {broken ? '图片加载失败' : asset.createdAt.slice(0, 10)}
+          </Text>
         </View>
       )}
       <View

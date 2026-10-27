@@ -3059,6 +3059,75 @@ p {
   color: var(--text);
 }
 
+/* ---------- 假期 / 调休角标（2026-10-27 需求⑤：选日期时要能看出是不是假期/调休） ---------- */
+
+.cal__day-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cal__tag {
+  position: absolute;
+  top: -3px;
+  right: -10px;
+  font-size: 9px;
+  line-height: 11px;
+  padding: 0 2px;
+  border-radius: 4px;
+  font-weight: 650;
+}
+
+/* 法定假期：红系（与删除/危险色区分：这里用更浅的底 + 深红字） */
+.cal__tag--off {
+  background: #fbe0de;
+  color: #b23a33;
+}
+
+/* 调休上班：暖灰系，刻意不抢眼 —— 它是「提醒」不是「警报」 */
+.cal__tag--work {
+  background: #e7e1d2;
+  color: #7a6b4f;
+}
+
+/* 图例里的角标：不绝对定位，跟着文字排 */
+.cal__tag--inline {
+  position: static;
+  margin-right: 2px;
+}
+
+.cal__cell--holiday .cal__cell-day {
+  color: #b23a33;
+}
+
+.cal__holidays {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 2px 0;
+}
+
+.cal__holidays-item {
+  font-size: 10.5px;
+  line-height: 16px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: #fbe0de;
+  color: #b23a33;
+}
+
+.cal__legend {
+  display: flex;
+  gap: 14px;
+  padding: 8px 2px 0;
+}
+
+.cal__legend-item {
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
 .cal__cell--today .cal__cell-day {
   border: 1px dashed var(--accent);
   color: var(--accent-ink);
@@ -3954,4 +4023,206 @@ p {
 /* 回忆墙照片删除角标的忙碌态（防连点二次删除） */
 .photo-cell__del--busy {
   opacity: 0.4;
+}
+
+/* ============================================================================
+   2026-10-26 增量三：行程长图分享（已结束行程的分享形态）
+   ----------------------------------------------------------------------------
+   已结束 → 不再给邀请码，改为「把安排画成一张长图」。这里只补长图专属的
+   容器样式；弹层骨架直接复用 .sheet-root / .sheet / .sheet__* 那套，
+   避免两套弹层视觉并存。
+   ========================================================================== */
+
+/* 管理页：分享入口卡片 */
+.poster-entry__desc {
+  display: block;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-2);
+  margin-bottom: 12px;
+}
+
+.poster-entry__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+}
+
+/* 弹层内的说明（比 .sheet__hint 更淡，避免和按钮抢注意力） */
+.poster-hint {
+  background: var(--primary-soft);
+  color: var(--primary);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+
+/* 画布可视区：等比缩放后装进弹层，超出裁掉（画布本身仍按 750 逻辑宽绘制） */
+.poster-sheet__canvas-box {
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--card-sunk);
+  border: 1px solid var(--line);
+  margin-bottom: 10px;
+}
+
+/* 生成后的真实图片预览（确认「看到的=要发的」） */
+.poster-done {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--primary);
+  margin-bottom: 8px;
+}
+
+.poster-err {
+  padding: 9px 11px;
+  margin-bottom: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft, #fbe9e9);
+  color: var(--danger, #b43a3a);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 长图弹层底部三个按钮：文字必须单行（375 宽下三个并排，中文容易被挤成竖排） */
+.poster-op {
+  white-space: nowrap;
+  font-size: 12.5px;
+  padding: 0 8px;
+  gap: 4px;
+}
+
+/* ============================================================================
+   2026-10-27 增量四：照片回忆（像相册回忆那样的行程照片聚合）
+   ----------------------------------------------------------------------------
+   · 首页「最近回忆」= 横向滑动卡片（一屏能瞥见下一张，暗示还有更多旅行）
+   · 回忆墙 = 竖向大卡（每次旅行一张）
+   头像池已在服务端按 fileKey 前缀排除，不会混进来。
+   ========================================================================== */
+
+.memo-strip {
+  width: 100%;
+  white-space: nowrap;
+  margin: 0 -14px;
+  padding: 2px 14px 4px;
+  box-sizing: border-box;
+}
+
+.memo-strip__track {
+  display: inline-flex;
+  gap: 10px;
+}
+
+.memo-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.memo-card {
+  position: relative;
+  flex: 0 0 auto;
+  width: 208px;
+  height: 138px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--card-sunk);
+  box-shadow: var(--shadow-card);
+}
+
+/* 回忆墙里的大卡：满宽，比首页那种横向卡更高 */
+.memo-card--wide {
+  width: 100%;
+  height: 168px;
+  margin-bottom: 12px;
+}
+
+/* 月份组不可点（没有对应行程），但保留同样的视觉 */
+.memo-card--static {
+  opacity: 0.96;
+}
+
+.memo-card__cover {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.memo-card__cover--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  color: var(--text-3);
+  background: var(--card-sunk);
+}
+
+/* 底部渐变遮罩：保证标题在任何封面上都读得清 */
+.memo-card__veil {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 64%;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.58) 100%);
+}
+
+.memo-card__meta {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 8px 10px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.memo-card__title {
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memo-card__sub {
+  color: rgba(255, 255, 255, 0.84);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 预算进度条（2026-10-27 需求③：花销里的预算） ---------- */
+
+.budget-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--card-sunk);
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.budget-bar__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary);
+  /* 宽度随占比变化，给一点过渡，避免切换行程时"啪"地跳 */
+  transition: width 0.24s ease;
+}
+
+/* 超支：红系实心。这是"唯一需要立刻被看见"的状态，不跟其他颜色妥协 */
+.budget-bar__fill--over {
+  background: #c0392b;
 }

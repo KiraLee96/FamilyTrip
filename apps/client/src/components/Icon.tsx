@@ -34,6 +34,7 @@ export type IconName =
   | 'map'
   | 'link'
   | 'close'
+  | 'download'
   | 'users'
   | 'walk'
   | 'bike'
@@ -66,6 +67,7 @@ const GLYPH: Record<IconName, string> = {
   map: '🗺️',
   link: '🔗',
   close: '✕',
+  download: '⬇️',
   users: '👨‍👩‍👧',
   walk: '🚶',
   bike: '🚲',

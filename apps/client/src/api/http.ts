@@ -17,6 +17,7 @@
 
 import Taro from '@tarojs/taro';
 import { ApiError, unwrap, type ApiClient } from './client';
+import { backendOutdatedHint } from '../utils/constants';
 import type {
   ApplyTemplateResult,
   AuthSession,
@@ -240,6 +241,10 @@ function toTrip(raw: Record<string, unknown>): Trip {
     ...(raw['memberCount'] !== undefined && raw['memberCount'] !== null
       ? { memberCount: asNumber(raw['memberCount']) }
       : {}),
+    // 出行预算（2026-10-27 需求③）：BigInt 列序列化成字符串，null 表示未设预算
+    ...(raw['budgetMinor'] !== undefined && raw['budgetMinor'] !== null
+      ? { budgetMinor: asString(raw['budgetMinor']) }
+      : {}),
   };
 }
 
@@ -395,6 +400,8 @@ function toChecklistItem(raw: Record<string, unknown>): ChecklistItem {
     ...(optString(raw['templateId']) !== undefined
       ? { templateId: optString(raw['templateId']) }
       : {}),
+    // 清单分类（2026-10-27 需求③）：老后端不带 kind → 按 PACK（历史清单都是打包物品）
+    kind: raw['kind'] === 'TODO' ? 'TODO' : 'PACK',
   };
 }
 
@@ -745,7 +752,25 @@ export function createHttpClient(): ApiClient {
     //    必须拆一层再投影；少拆会得到 id='' 的空行程（页面标题清空且不回显）。
     updateTrip: async (id, input) => {
       const r = await request<{ trip: Record<string, unknown> }>('PATCH', `/trips/${id}`, input);
-      return toTrip(r.trip);
+      const trip = toTrip(r.trip);
+      /**
+       * 🔴 旧后端的 `updateTripSchema` 没有 `budgetMinor` 字段 → Zod 直接 strip
+       *    → **200 OK 但值根本没写进库**。用户看到"保存成功"、退出再进来预算没了，
+       *    只会当成新 bug 反馈回来（2026-10-27 实测生产仍是 10-22 版，正是如此）。
+       *    这里回读校验：要求 `null` 与 `undefined` 归一化后严格相等，不等就报错。
+       *    撤销条件：后端部署后条件永不成立，代码可保留（防下一次版本错位）。
+       */
+      if (input.budgetMinor !== undefined) {
+        const want = input.budgetMinor === null ? null : String(input.budgetMinor);
+        const got = trip.budgetMinor ?? null;
+        if (want !== got) {
+          throw new ApiError(
+            4040,
+            backendOutdatedHint('后端不认识预算字段 budgetMinor，预算没有保存'),
+          );
+        }
+      }
+      return trip;
     },
     // DELETE /trips/:id —— 服务端早已存在；data 为 null，成功即返回。
     deleteTrip: async (id) => {
@@ -904,12 +929,30 @@ export function createHttpClient(): ApiClient {
      * 未上线时后端 dispatcher 回 4040「资源不存在」，界面按不可用降级提示。
      */
     updateChecklistTemplate: async (id, input) => {
-      const r = await request<{ template: Record<string, unknown> }>(
+      const r = await request<{ template: Record<string, unknown>; synced?: unknown }>(
         'PATCH',
         `/checklists/templates/${id}`,
         input,
       );
-      return toChecklistTemplate(r.template);
+      // synced：条目变更同步到「未成行行程」的影响面；只改名字时后端不返回
+      const rawSynced =
+        typeof r.synced === 'object' && r.synced !== null
+          ? (r.synced as Record<string, unknown>)
+          : undefined;
+      return {
+        template: toChecklistTemplate(r.template),
+        ...(rawSynced !== undefined
+          ? {
+              synced: {
+                trips: asNumber(rawSynced['trips']),
+                created: asNumber(rawSynced['created']),
+                updated: asNumber(rawSynced['updated']),
+                removed: asNumber(rawSynced['removed']),
+                keptChecked: asNumber(rawSynced['keptChecked']),
+              },
+            }
+          : {}),
+      };
     },
     /** DELETE /checklists/templates/:id —— 后端尚未实现（派发单 P0-2） */
     deleteChecklistTemplate: async (id) => {
@@ -1074,6 +1117,37 @@ export function createHttpClient(): ApiClient {
     },
     deleteMediaAsset: async (id) => {
       await requestVoid('DELETE', `/media/${id}`);
+    },
+    /**
+     * GET /media/memories —— 照片回忆聚合。
+     * 后端响应形状是 `{ data: { items, meta }, meta }`（**套了一层**，
+     * 与 `/checklists/items` 的裸数组不同 —— 别照搬那边的解析）。
+     */
+    listPhotoMemories: async (query) => {
+      const familyId = query?.familyId ?? (await resolveFamilyId());
+      const parts = [`familyId=${familyId}`];
+      if (query?.limit !== undefined) parts.push(`limit=${query.limit}`);
+      if (query?.previewSize !== undefined) parts.push(`previewSize=${query.previewSize}`);
+      const r = await request<{ items?: Array<Record<string, unknown>> }>(
+        'GET',
+        `/media/memories?${parts.join('&')}`,
+      );
+      const rows = Array.isArray(r.items) ? r.items : [];
+      return rows.map((raw) => {
+        const kind: 'TRIP' | 'MONTH' = raw['kind'] === 'TRIP' ? 'TRIP' : 'MONTH';
+        const photos = Array.isArray(raw['photos']) ? raw['photos'].map((v) => asString(v)) : [];
+        return {
+          kind,
+          tripId: typeof raw['tripId'] === 'string' ? raw['tripId'] : null,
+          month: typeof raw['month'] === 'string' ? raw['month'] : null,
+          title: asString(raw['title']),
+          subtitle: asString(raw['subtitle']),
+          cover: asString(raw['cover']),
+          photoCount: asNumber(raw['photoCount']),
+          photos,
+          lastAt: asString(raw['lastAt']),
+        };
+      });
     },
 
     // ---- memory ----

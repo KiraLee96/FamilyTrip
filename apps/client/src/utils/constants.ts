@@ -86,6 +86,28 @@ export function photoWriteHint(message: string, action: 'upload' | 'delete' = 'u
   return message;
 }
 
+/**
+ * 「后端还没部署」的统一判定与文案（2026-10-27）
+ * ============================================================================
+ * 背景：客户端与后端版本不同步时，旧后端有三种**假装成功**的姿势，都会让用户
+ * 以为功能坏了而不是以为没上线：
+ *   ① 新路由不存在        → `4040 资源不存在`（回忆墙的照片聚合就是这条）
+ *   ② 新字段被 Zod strip  → 200 OK，但值没写进去（预算、清单 kind）
+ *   ③ 新字段压根没读      → 返回体里没有该字段（同上）
+ *
+ * 这张表就是「把静默失效翻译成人话」的唯一出处，各调用点不要各写一份。
+ * 撤销条件：后端按 docs/交付说明-2026-10-27-五条反馈.md §6 部署完成后，本函数
+ * 不会被触发（条件不再成立），可以保留 —— 它防的是下一次版本错位。
+ */
+export function backendOutdatedHint(feature: string): string {
+  return `后端还没升级（${feature}）。请先部署：prisma migrate deploy → pnpm build → 重启 API`;
+}
+
+/** 是不是「后端缺这个能力」类错误（4040 = 路由/资源不存在） */
+export function isBackendOutdated(message: string | undefined): boolean {
+  return message !== undefined && /code 4040/.test(message);
+}
+
 /** 今日 YYYY-MM-DD（记账/安排的默认日期） */
 export function todayYmd(): string {
   const d = new Date();

@@ -33,6 +33,7 @@ import { BillImportSheet } from '../components/BillImportSheet';
 import { Icon, TRANSPORT_ICON } from '../components/Icon';
 import { ItineraryContent } from '../components/ItineraryContent';
 import { MemoryCard } from '../components/MemoryCard';
+import { TripPosterSheet } from '../components/TripPosterSheet';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
 import { RegionSheet } from '../components/RegionPicker';
@@ -43,11 +44,13 @@ import {
   EXPENSE_CATEGORIES,
   TRANSPORT_LABEL,
   TRANSPORT_MODES,
+  backendOutdatedHint,
   photoWriteHint,
   todayYmd,
   tripDisplayStatus,
   tripIsEnded,
 } from '../utils/constants';
+import { previewPhotos } from '../utils/preview';
 import { pickAndUploadPhotos } from '../utils/upload';
 
 type Tab = 'itinerary' | 'checklist' | 'expense' | 'photo' | 'memory';
@@ -133,6 +136,8 @@ export function TripDetailPage() {
 
   /** 编辑行程（标题 / 起止日期 / 目的地）内联表单开关 */
   const [editingTrip, setEditingTrip] = useState(false);
+  /** 行程长图弹层（已结束行程的分享入口，2026-10-26 反馈第 4 条） */
+  const [posterOpen, setPosterOpen] = useState(false);
   /**
    * 本会话上传图片的本地临时路径（assetId → tempFilePath）。
    * 提出到页面级而非表单内：表单提交后会被卸载，页面重拉数据时图片块只剩
@@ -157,25 +162,33 @@ export function TripDetailPage() {
   const tripMembers = detail.members;
 
   /**
-   * 只读口径（2026-10-26 调整）。
+   * 只读口径（2026-10-26 二次调整，反馈「已结束不能再新增安排」）。
    * ==========================================================================
-   * 三个来源，分两档：
+   * 三个来源，分三档本应是两档，但「安排」被单独收紧：
    *   · closed  —— 服务端已归档（FINISHED/CANCELLED）：信息类全部锁定；
    *   · ended   —— **日期已过但服务端还没流转**（派生，见 tripIsEnded）：
-   *               只锁「行程信息」，安排/清单/花销仍可补录 —— 用户出行回来第一件事
+   *               只锁「行程信息」，清单/花销仍可补录 —— 用户出行回来第一件事
    *               就是补记账，这一档不能锁死；
    *   · readonly —— 从回忆墙进入：信息只读（与 closed 同档展示）。
    *
+   * 🔴 2026-10-26 变更：用户明确「行程已结束就不能再新增安排了」。
+   *    此前安排只认 `closed`，于是「日期已过、自动完结任务还没扫到」的窗口期里
+   *    仍能加安排 —— 用户看到的正是这个窗口。现在安排额外认 `ended`：
+   *    只要日期过了就只读，不等服务端状态流转。
+   *    清单/花销**不跟着收紧**（补勾打包项、补记最后一笔是刚需，用户未要求锁）。
+   *
    * 🔴 照片是唯一例外：用户明确要求「已完成的行程……只能添加或删除回忆照片」，
    *    所以照片 tab **不再接 readonly**，任何状态下都保留上传/删除入口
-   *    （后端归档后媒体写仍会 403，见派发单 D-2026-10-26-02 P0-2）。
+   *    （后端归档后媒体写已放开，见派发单 D-2026-10-26-02 P0-2 / aabd435）。
    */
   const closed = t.status === 'FINISHED' || t.status === 'CANCELLED';
   const ended = tripIsEnded(t);
   /** 信息类写操作是否锁定（标题/日期/目的地/删除行程） */
   const ro = readonly || closed || ended;
-  /** 内容类写操作（安排/清单/花销）是否锁定 —— 只认服务端归档态 */
+  /** 内容类写操作（清单/花销）是否锁定 —— 只认服务端归档态 */
   const contentRo = readonly || closed;
+  /** 安排类写操作是否锁定 —— 日期过了就锁，不等状态流转（本轮反馈） */
+  const itineraryRo = readonly || closed || ended;
 
   return (
     <PageLayout title={t.title} sub={dateRange(t)}>
@@ -258,15 +271,26 @@ export function TripDetailPage() {
           <Text className="trip__manage-go">行程管理 ›</Text>
         </View>
 
-        {/* 邀请同行人：直达管理页的邀请区块（她要求"最上面加一个按钮"） */}
+        {/*
+          邀请同行人：直达管理页的邀请区块（她要求"最上面加一个按钮"）。
+          🔴 已结束（closed 或 ended）时**不再给邀请入口**（2026-10-26 反馈第 4 条），
+             改为「分享行程长图」—— 结束的行程只分享安排，不招募同行者。
+        */}
         <View className="trip__ops">
-          <View
-            className="btn btn--ghost trip__op trip__op--accent"
-            onClick={() => navigate(`/trips/${tripId}/manage`)}
-          >
-            <Icon name="link" size={13} />
-            邀请同行人
-          </View>
+          {closed || ended ? (
+            <View className="btn btn--ghost trip__op" onClick={() => setPosterOpen(true)}>
+              <Icon name="share" size={13} />
+              分享行程长图
+            </View>
+          ) : (
+            <View
+              className="btn btn--ghost trip__op trip__op--accent"
+              onClick={() => navigate(`/trips/${tripId}/manage`)}
+            >
+              <Icon name="link" size={13} />
+              邀请同行人
+            </View>
+          )}
           {!ro && (
             <View className="btn btn--ghost trip__op" onClick={() => setEditingTrip((v) => !v)}>
               <Icon name="edit" size={13} />
@@ -330,18 +354,28 @@ export function TripDetailPage() {
           defaultDate={t.startDate ?? undefined}
           localImages={localImages}
           onImageUploaded={rememberImage}
-          readonly={contentRo}
+          readonly={itineraryRo}
         />
       )}
       {tab === 'checklist' && (
         <ChecklistTab tripId={tripId} familyId={t.familyId} readonly={contentRo} />
       )}
       {tab === 'expense' && (
-        <ExpenseTab tripId={tripId} familyId={t.familyId} readonly={contentRo} />
+        <ExpenseTab
+          tripId={tripId}
+          familyId={t.familyId}
+          readonly={contentRo}
+          trip={t}
+          onTripChanged={trip.reload}
+        />
       )}
       {/* 照片：任何状态都允许加/删（用户明确要求「已完成的行程只能添加或删除回忆照片」） */}
       {tab === 'photo' && <PhotoTab tripId={tripId} />}
       {tab === 'memory' && <MemoryTab tripId={tripId} tripTitle={t.title} readonly={ro} />}
+
+      {posterOpen && (
+        <TripPosterSheet tripId={tripId} tripTitle={t.title} onClose={() => setPosterOpen(false)} />
+      )}
     </PageLayout>
   );
 }
@@ -1346,6 +1380,8 @@ function ChecklistTab({
   const [local, setLocal] = useState<Record<string, ChecklistItem>>({});
   const [draft, setDraft] = useState('');
   const [scope, setScope] = useState<'SHARED' | 'PERSONAL'>('SHARED');
+  /** 新增项归属哪一类（2026-10-27 需求③：待办 / 打包） */
+  const [kind, setKind] = useState<'PACK' | 'TODO'>('PACK');
   const [busy, setBusy] = useState(false);
   /** 「引用长期清单」弹层开关 */
   const [picking, setPicking] = useState(false);
@@ -1354,9 +1390,16 @@ function ChecklistTab({
   if (q.error) return <ErrorBox message={q.error} onRetry={q.reload} />;
 
   const list = (q.data ?? []).map((c) => local[c.id] ?? c);
-  const shared = list.filter((c) => c.scope === 'SHARED');
-  const personal = list.filter((c) => c.scope === 'PERSONAL');
-  const done = list.filter((c) => c.done).length;
+  /**
+   * 两类清单分开算（2026-10-27 需求③「需要做的事项」与「需要带的东西」是两回事）：
+   *   TODO → 行前动作（订门票 / 办签证 / 给猫找寄养）
+   *   PACK → 打包物品（身份证 / 充电宝 x2）
+   * 混成一个列表时，"勾了几项"这个进度没有意义 —— 订完门票不等于收拾好行李。
+   * 老后端 / 历史行没有 kind → 归 PACK（历史清单装的全是打包物品）。
+   */
+  const todo = list.filter((c) => c.kind === 'TODO');
+  const pack = list.filter((c) => c.kind !== 'TODO');
+  const doneOf = (arr: ChecklistItem[]): number => arr.filter((c) => c.done).length;
 
   const toggle = async (id: string) => {
     const cur = list.find((c) => c.id === id);
@@ -1374,19 +1417,35 @@ function ChecklistTab({
     if (!name) return;
     setBusy(true);
     try {
-      await api.createChecklistItem({ tripId, familyId, name, scope });
+      const created = await api.createChecklistItem({ tripId, familyId, name, scope, kind });
       setDraft('');
       q.reload();
+      /**
+       * 旧后端 `createChecklistItemSchema` 没有 `kind` → Zod strip → 200 OK，
+       * 但条目落库时用的是默认值 PACK。用户明明选了「要做的事」，结果出现在
+       * 「要带的东西」里 —— 不解释清楚就是一次"功能坏了"的投诉。
+       *
+       * 🔴 这里**不抛错**：条目已经在服务端建好了，抛错会让用户以为没成功而重复提交，
+       *    真正该做的是「照实显示 + 明确告知」。列表已 reload，用户能看到它落在哪。
+       */
+      if (created.kind !== kind) {
+        void Taro.showToast({
+          title: backendOutdatedHint('后端不认识清单分类 kind，这条已落到「要带的东西」'),
+          icon: 'none',
+          duration: 3200,
+        });
+      }
     } catch (e: unknown) {
       void Taro.showToast({ title: e instanceof Error ? e.message : '添加失败', icon: 'none' });
     } finally {
       setBusy(false);
     }
   };
-
   return (
     <>
-      <Progress done={done} total={list.length} label="整体准备度" />
+      {/* 两条独立进度：待办做完 ≠ 行李收好，合成一条会让两边都不准 */}
+      <Progress done={doneOf(todo)} total={todo.length} label="要做的事" />
+      <Progress done={doneOf(pack)} total={pack.length} label="要带的东西" />
 
       {/* 引用长期清单：把「家庭常用 / 我的常用」一次性拉进来，不用重敲一遍 */}
       {!readonly && (
@@ -1407,10 +1466,10 @@ function ChecklistTab({
         />
       )}
 
-      {shared.length > 0 && (
+      {todo.length > 0 && (
         <View className="card card--flush" style={{ marginTop: 12 }}>
-          <RowLabel>共享清单（{shared.length}）</RowLabel>
-          {shared.map((c) => (
+          <RowLabel>要做的事（{todo.length}）</RowLabel>
+          {todo.map((c) => (
             <CheckRow
               key={c.id}
               item={c}
@@ -1422,10 +1481,10 @@ function ChecklistTab({
         </View>
       )}
 
-      {personal.length > 0 && (
-        <View className="card card--flush">
-          <RowLabel>我的清单（{personal.length}）</RowLabel>
-          {personal.map((c) => (
+      {pack.length > 0 && (
+        <View className="card card--flush" style={{ marginTop: todo.length > 0 ? 10 : 12 }}>
+          <RowLabel>要带的东西（{pack.length}）</RowLabel>
+          {pack.map((c) => (
             <CheckRow
               key={c.id}
               item={c}
@@ -1439,12 +1498,28 @@ function ChecklistTab({
 
       {!readonly && (
         <View className="card card--flush">
+          {/* ① 先选「这是要办的事还是带的东西」—— 两类混着加，清单就没法用了 */}
+          <View className="filter-bar filter-bar--compact" style={{ padding: '0 14px 4px' }}>
+            <Text
+              className={`chip ${kind === 'TODO' ? 'chip--on' : 'chip--plain'}`}
+              onClick={() => setKind('TODO')}
+            >
+              要做的事
+            </Text>
+            <Text
+              className={`chip ${kind === 'PACK' ? 'chip--on' : 'chip--plain'}`}
+              onClick={() => setKind('PACK')}
+            >
+              要带的东西
+            </Text>
+          </View>
+          {/* ② 再选可见范围 */}
           <View className="filter-bar filter-bar--compact" style={{ padding: '0 14px 8px' }}>
             <Text
               className={`chip ${scope === 'SHARED' ? 'chip--on' : 'chip--plain'}`}
               onClick={() => setScope('SHARED')}
             >
-              共享
+              全家可见
             </Text>
             <Text
               className={`chip ${scope === 'PERSONAL' ? 'chip--on' : 'chip--plain'}`}
@@ -1641,6 +1716,174 @@ function CheckRow({
 }
 
 /**
+ * 预算卡（2026-10-27 需求③「花销里面没有记录预算的地方」）
+ * ============================================================================
+ * 为什么预算挂在行程上（`trip.budget_minor`）而不是新建一张预算表：
+ *   预算天然是「这一趟打算花多少」，一次行程一个数，没有多预算维度的需求；
+ *   挂在 trip 上还能复用已有的 CAS（version）与权限门，不必新开一个域。
+ *
+ * 口径：
+ *   `spentYuan` 来自花销汇总的 `totalCny`（人民币折算、字符串元），
+ *   与预算统一换算成「分」再比较 —— 一边元一边分是最常见的差 100 倍 bug。
+ *
+ * 预算为空（null）= 未设预算 → **不显示 0%、不显示"还剩 0 元"**，
+ *   只显示一个「设置预算」入口，避免把"没填"误读成"没预算可用"。
+ */
+function BudgetCard({
+  tripId,
+  budgetMinor,
+  spentYuan,
+  endDate,
+  version,
+  readonly,
+  onSaved,
+}: {
+  tripId: string;
+  budgetMinor: string | null;
+  /** 已花（人民币，元，字符串） */
+  spentYuan: string;
+  endDate: string | null;
+  version: number;
+  readonly: boolean;
+  onSaved: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  const budgetFen = budgetMinor === null || budgetMinor === '' ? null : Number(budgetMinor);
+  const spentFen = Math.round(Number(spentYuan || '0') * 100);
+  const remainFen = budgetFen === null ? null : budgetFen - spentFen;
+  const over = remainFen !== null && remainFen < 0;
+  const pct = budgetFen !== null && budgetFen > 0 ? Math.min(100, (spentFen / budgetFen) * 100) : 0;
+
+  /** 剩余天数（含今天）；已过结束日则为 0 → 不显示日均 */
+  const daysLeft = ((): number => {
+    if (endDate === null) return 0;
+    const end = Date.parse(`${endDate}T00:00:00`);
+    const now = Date.parse(`${todayYmd()}T00:00:00`);
+    if (!Number.isFinite(end)) return 0;
+    return Math.max(0, Math.round((end - now) / 86_400_000) + 1);
+  })();
+
+  const openEdit = (): void => {
+    setDraft(budgetFen === null ? '' : String(budgetFen / 100));
+    setErr('');
+    setEditing(true);
+  };
+
+  const save = async (): Promise<void> => {
+    const text = draft.trim();
+    // 空串 = 取消预算（显式传 null），不是"存 0"
+    if (text !== '' && (!Number.isFinite(Number(text)) || Number(text) < 0)) {
+      setErr('请输入正确的金额');
+      return;
+    }
+    setSaving(true);
+    setErr('');
+    try {
+      await api.updateTrip(tripId, {
+        version,
+        budgetMinor: text === '' ? null : String(Math.round(Number(text) * 100)),
+      });
+      setEditing(false);
+      onSaved();
+    } catch (e: unknown) {
+      setErr(e instanceof ApiError ? `${e.message}（code ${e.code}）` : '保存失败，请重试');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const yuan = (fen: number): string => {
+    const v = fen / 100;
+    return Number.isInteger(v)
+      ? v.toLocaleString('zh-CN')
+      : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  return (
+    <View className="card">
+      <View className="row-between">
+        <Text className="card__title">预算</Text>
+        {!readonly && !editing && (
+          <Text className="card__more" onClick={openEdit}>
+            {budgetFen === null ? '设置预算' : '修改'}
+          </Text>
+        )}
+      </View>
+
+      {editing ? (
+        <>
+          <View className="field" style={{ marginTop: 8 }}>
+            <Text className="field__label">这趟打算花多少（元）</Text>
+            <Input
+              className="input"
+              type="digit"
+              value={draft}
+              onInput={(e) => setDraft(e.detail.value)}
+              placeholder="如：5000（留空表示不设预算）"
+            />
+          </View>
+          {err !== '' ? <Text className="form-error">{err}</Text> : null}
+          <View className="btn-row">
+            <View className="btn btn--ghost" onClick={() => setEditing(false)}>
+              取消
+            </View>
+            <View
+              className={`btn ${saving ? 'btn--busy' : ''}`}
+              onClick={saving ? undefined : () => void save()}
+            >
+              {saving ? '保存中…' : '保存'}
+            </View>
+          </View>
+        </>
+      ) : budgetFen === null ? (
+        <Text className="muted" style={{ fontSize: 12, lineHeight: 1.7, marginTop: 6 }}>
+          还没设预算。设一个总额，花超了这里会立刻变红。
+        </Text>
+      ) : (
+        <>
+          <View className="row-between" style={{ marginTop: 8, alignItems: 'baseline' }}>
+            <Text style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)' }}>
+              ¥{yuan(budgetFen)}
+            </Text>
+            <Text
+              style={{
+                fontSize: 12.5,
+                fontWeight: 600,
+                color: over ? '#c0392b' : 'var(--text-2)',
+              }}
+            >
+              {over ? `超支 ¥${yuan(-(remainFen ?? 0))}` : `还剩 ¥${yuan(remainFen ?? 0)}`}
+            </Text>
+          </View>
+
+          <View className="budget-bar">
+            <View
+              className={over ? 'budget-bar__fill budget-bar__fill--over' : 'budget-bar__fill'}
+              style={{ width: `${pct}%` }}
+            />
+          </View>
+
+          <View className="row-between" style={{ marginTop: 5 }}>
+            <Text className="muted" style={{ fontSize: 11 }}>
+              已花 ¥{Number(spentYuan).toLocaleString('zh-CN')} · {Math.round(pct)}%
+            </Text>
+            {!over && daysLeft > 0 && remainFen !== null ? (
+              <Text className="muted" style={{ fontSize: 11 }}>
+                剩 {daysLeft} 天，日均可用 ¥{yuan(Math.floor(remainFen / daysLeft))}
+              </Text>
+            ) : null}
+          </View>
+        </>
+      )}
+    </View>
+  );
+}
+
+/**
  * 花销 tab —— 汇总 + 明细 + 记账（反馈 #6）
  * ============================================================================
  * 反馈根因：只有汇总和明细，没有「记一笔」入口 → 用户找不到录花销的地方。
@@ -1651,11 +1894,17 @@ function ExpenseTab({
   tripId,
   familyId,
   readonly = false,
+  trip,
+  onTripChanged,
 }: {
   tripId: string;
   familyId: string;
   /** 回忆墙只读入口：隐藏记账/编辑/删除，仅查看汇总与明细 */
   readonly?: boolean;
+  /** 行程本体（取 budgetMinor 与 version —— 预算走 PATCH /trips/:id 的 CAS） */
+  trip: Trip;
+  /** 预算保存成功后让外层重拉行程（version 会变，不重拉下次一定 409） */
+  onTripChanged: () => void;
 }) {
   const list = useAsync(
     useCallback(() => api.listExpenses(tripId), [tripId]),
@@ -1685,6 +1934,17 @@ function ExpenseTab({
 
   return (
     <>
+      {/* 预算卡（2026-10-27 需求③：花销里没有记录预算的地方）*/}
+      <BudgetCard
+        tripId={tripId}
+        budgetMinor={trip.budgetMinor ?? null}
+        spentYuan={s?.totalCny ?? '0'}
+        endDate={trip.endDate ?? null}
+        version={trip.version}
+        readonly={readonly}
+        onSaved={onTripChanged}
+      />
+
       <View className="card">
         <View className="money__total">
           <View className="money__num">
@@ -2087,6 +2347,13 @@ function PhotoTab({ tripId }: { tripId: string }) {
                   className="photo-cell__img"
                   src={src}
                   mode="aspectFill"
+                  // 点图看大图（与回忆墙同一套预览，可左右滑过本次行程的所有照片）
+                  onClick={() =>
+                    previewPhotos(
+                      photos.map((x) => localPaths[x.id] ?? (brokenUrls[x.id] ? '' : x.url)),
+                      src,
+                    )
+                  }
                   onError={() => setBrokenUrls((m) => (m[p.id] ? m : { ...m, [p.id]: true }))}
                 />
               ) : (

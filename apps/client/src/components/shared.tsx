@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { Text, View } from '@tarojs/components';
 
 import { Icon, type IconName } from './Icon';
-import type { Trip, TripStatus, Wish } from '../api/types';
+import type { TripStatus, Wish } from '../api/types';
 
 export const STATUS_TEXT: Record<TripStatus, string> = {
   DRAFT: '草稿',
@@ -18,29 +18,9 @@ export function StatusChip({ status }: { status: TripStatus }) {
   return <Text className={`status status--${status}`}>{STATUS_TEXT[status]}</Text>;
 }
 
-/** 2026-10-01 → 10/01 */
-export function shortDate(d?: string | null): string {
-  if (!d) return '待定';
-  const [, m, day] = d.split('-');
-  return m && day ? `${m}/${day}` : d;
-}
-
-/** 出行日期区间文案 */
-export function dateRange(t: Trip): string {
-  if (!t.startDate && !t.endDate) return '日期待定';
-  const days = tripDays(t);
-  const base = `${shortDate(t.startDate)} - ${shortDate(t.endDate)}`;
-  return days > 0 ? `${base} · ${days} 天` : base;
-}
-
-/** 含头含尾天数 */
-export function tripDays(t: Trip): number {
-  if (!t.startDate || !t.endDate) return 0;
-  const a = Date.parse(`${t.startDate}T00:00:00Z`);
-  const b = Date.parse(`${t.endDate}T00:00:00Z`);
-  if (Number.isNaN(a) || Number.isNaN(b)) return 0;
-  return Math.round((b - a) / 86_400_000) + 1;
-}
+// 纯日期逻辑已迁到 utils/dateRange（那边不依赖 Taro，可直接单测）；
+// 这里原样转出，现有从 components/shared 的引用无需改动。
+export { dateRange, formatDateRange, shortDate, tripDays } from '../utils/dateRange';
 
 /** 距出发日还有几天（当天=0；已出发为负；无日期返回 null） */
 export function daysUntil(d?: string | null): number | null {

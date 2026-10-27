@@ -24,6 +24,7 @@ import Taro from '@tarojs/taro';
 import { api } from '../api/index';
 import type { ChecklistTemplate, ChecklistTemplateItem, Trip } from '../api/types';
 import { Icon } from './Icon';
+import { ItemLibraryPanel } from './ItemLibraryPanel';
 import { Empty, ErrorBox, Loading } from './Loading';
 import { SectionTitle } from './shared';
 import { useAsync } from '../hooks/useAsync';
@@ -60,15 +61,16 @@ export function ChecklistPanel({ familyId }: { familyId: string }) {
     <>
       <View className="cl-intro card card--flush">
         <Text className="cl-intro__title">
-          <Icon name="package" size={14} /> 长期清单：维护一次，每个行程都能引用
+          <Icon name="package" size={14} /> 一份清单，三个可见范围
         </Text>
         <Text className="cl-intro__text">
-          家庭清单全家共用；我的清单只有自己看得见。行程里引用后会生成可勾选的打包项，
-          还能再补这次专属的物品。
+          {
+            '① 家庭清单：全家共用，谁都能引用\n② 我的清单：只有自己看得见\n③ 我的常备物品：只有自己看得见，可一键加入某次行程'
+          }
         </Text>
       </View>
 
-      <SectionTitle icon="users">家庭清单（{shared.length}）</SectionTitle>
+      <SectionTitle icon="users">家庭清单 · 全家可见（{shared.length}）</SectionTitle>
       {shared.length === 0 ? (
         <Empty text="还没有家庭共享清单，下面新建一套" />
       ) : (
@@ -84,7 +86,7 @@ export function ChecklistPanel({ familyId }: { familyId: string }) {
         ))
       )}
 
-      <SectionTitle icon="user">我的清单（{personal.length}）</SectionTitle>
+      <SectionTitle icon="user">我的清单 · 仅自己可见（{personal.length}）</SectionTitle>
       {personal.length === 0 ? (
         <Empty text="还没有私人清单，下面新建一套" />
       ) : (
@@ -101,6 +103,9 @@ export function ChecklistPanel({ familyId }: { familyId: string }) {
       )}
 
       <CreateTemplateForm familyId={familyId} onCreated={q.reload} />
+
+      {/* 原「物品库」独立页（2026-10-27 合并进来）：同样是"物品"，不该有两个入口两套权限 */}
+      <ItemLibraryPanel familyId={familyId} />
 
       {picking !== null && (
         <TripPickerSheet template={picking} familyId={familyId} onClose={() => setPicking(null)} />
@@ -133,14 +138,43 @@ function TemplateCard({
 
   const items = template.items;
 
-  /** 改模板（名称 / 条目整体替换）—— 后端未上线时按人话提示 */
+  /**
+   * 改模板（名称 / 条目整体替换）。
+   * ==========================================================================
+   * 🔴 改条目时服务端会把变更同步到「引用过它、且尚未成行」的行程清单
+   *    （已完成/已取消的行程不动，那是历史快照）。返回值里的 `synced`
+   *    就是这次同步的影响面 —— 必须告诉用户，否则他改完模板完全不知道
+   *    行程那边发生了什么，容易以为没生效而反复点。
+   */
   const patch = useCallback(
     async (input: { name?: string; items?: ChecklistTemplateItem[] }) => {
       setBusy(true);
       setErr('');
       try {
-        await api.updateChecklistTemplate(template.id, { version: template.version, ...input });
+        const r = await api.updateChecklistTemplate(template.id, {
+          version: template.version,
+          ...input,
+        });
         onChanged();
+
+        // 只改名字时没有 synced；改了条目才有
+        const s = r.synced;
+        if (s !== undefined) {
+          if (s.trips === 0) {
+            void Taro.showToast({ title: '已保存（暂无未成行的行程引用它）', icon: 'none' });
+          } else {
+            const parts: string[] = [];
+            if (s.created > 0) parts.push(`新增 ${s.created}`);
+            if (s.removed > 0) parts.push(`移除 ${s.removed}`);
+            if (s.updated > 0) parts.push(`改数 ${s.updated}`);
+            if (s.keptChecked > 0) parts.push(`保留已勾选 ${s.keptChecked}`);
+            void Taro.showToast({
+              title: `已同步 ${s.trips} 场未成行行程${parts.length > 0 ? `：${parts.join('、')}` : ''}`,
+              icon: 'none',
+              duration: 2600,
+            });
+          }
+        }
         return true;
       } catch (e: unknown) {
         setErr(templateWriteUnavailableHint(e instanceof Error ? e.message : '修改失败'));

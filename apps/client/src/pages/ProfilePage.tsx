@@ -115,15 +115,9 @@ export function ProfilePage() {
           <View className="mgmt-grid">
             <MgmtEntry
               icon="package"
-              label="物品清单"
-              hint="家庭 / 我的两套"
+              label="物品与清单"
+              hint="常备物品 / 家庭 / 我的"
               onClick={() => setTab('checklist')}
-            />
-            <MgmtEntry
-              icon="map"
-              label="物品库"
-              hint="按分类整理"
-              onClick={() => navigate('/items')}
             />
             <MgmtEntry
               icon="heart"

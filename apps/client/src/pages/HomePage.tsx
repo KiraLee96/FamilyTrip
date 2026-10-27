@@ -19,8 +19,9 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
-import { Text, View } from '@tarojs/components';
+import { ScrollView, Text, View } from '@tarojs/components';
 import { Link } from '../nav/Link';
+import { navigate } from '../nav';
 
 import { api, DATA_SOURCE } from '../api/index';
 import type { Trip, Wish } from '../api/types';
@@ -28,12 +29,13 @@ import { retryLogin } from '../api/session';
 import { Avatar } from '../components/Avatar';
 import { Icon } from '../components/Icon';
 import { ErrorBox, Loading } from '../components/Loading';
-import { MemoryCard } from '../components/MemoryCard';
 import { PageLayout } from '../components/PageLayout';
+import { PhotoCover } from '../components/PhotoCover';
 import { MONTH_LABELS, WISH_STATUS_TEXT, daysUntil, shortDate } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
 import { useSession } from '../hooks/useSession';
-import { pickAndUploadPhotos } from '../utils/upload';
+import { backendOutdatedHint, isBackendOutdated } from '../utils/constants';
+import { chooseTripForPhotos, pickAndUploadPhotos } from '../utils/upload';
 
 export function HomePage() {
   const me = useSession();
@@ -391,34 +393,43 @@ function WishSlips() {
   );
 }
 
-/** 最近回忆：最新一条回忆快照；空态引导上传第一张照片 */
+/**
+ * 最近回忆：**照片回忆组横向卡片**（2026-10-27 需求）
+ * ============================================================================
+ * 用户口径：「行程中的照片自动生成回忆墙。最近回忆显示之前所有旅行的照片，
+ * 类似苹果手机相册的回忆功能」。
+ *
+ * 与旧实现的区别（为什么整段重写）：
+ *   · 旧：`listMemories()` 取**最新一条** memoryArchive 快照 → 只显示一场旅行，
+ *     而且必须先手动「生成回忆」才有数据；
+ *   · 新：`listPhotoMemories()` 由服务端现算分组（有 tripId 按行程、无则按月份），
+ *     **照片一上传就自动出现**，横向滑过去就是历次旅行。
+ *
+ * 头像池已在服务端按 `fileKey` 前缀排除，不会混进来。
+ */
 function RecentMemory() {
   const q = useAsync(
-    useCallback(() => api.listMemories(), []),
+    useCallback(() => api.listPhotoMemories({ limit: 8 }), []),
     [],
   );
   const [busy, setBusy] = useState(false);
 
-  const latest = (q.data ?? [])[0];
-  const detail = useAsync(
-    useCallback(async () => (latest ? (await api.getMemory(latest.id)).snapshot : null), [latest]),
-    [latest],
-  );
+  const groups = q.data ?? [];
 
   const upload = async () => {
+    // 与回忆墙同一条路径：先问归属行程，否则照片永远进不了行程的照片 tab
+    const tripId = await chooseTripForPhotos();
+    if (tripId === null) return;
     setBusy(true);
     try {
-      await pickAndUploadPhotos();
+      await pickAndUploadPhotos(tripId);
       q.reload();
-      detail.reload();
     } catch {
       /* 用户取消或失败：静默 */
     } finally {
       setBusy(false);
     }
   };
-
-  const snap = detail.data ?? null;
 
   return (
     <>
@@ -432,9 +443,20 @@ function RecentMemory() {
           <Icon name="chevron-right" size={13} />
         </Link>
       </View>
-      {snap ? (
-        <MemoryCard snapshot={snap} />
-      ) : (
+
+      {isBackendOutdated(q.error) ? (
+        /**
+         * 4040 = 后端没有 `/media/memories`（生产 10-22 版）。
+         * 不能落到下面的「回忆墙还空着」—— 那是在撒谎，用户会以为照片没了。
+         */
+        <View className="card">
+          <Text style={{ fontSize: 12.5, fontWeight: 600 }}>最近回忆暂不可用</Text>
+          <Text className="muted" style={{ fontSize: 11.5, lineHeight: 1.7, marginTop: 4 }}>
+            {backendOutdatedHint('缺少 /media/memories 接口')}。照片本身没丢，
+            进「回忆墙」或行程的「照片」tab 仍能查看。
+          </Text>
+        </View>
+      ) : groups.length === 0 ? (
         <View className="card">
           <View className="blank" style={{ padding: '26px 12px 6px' }}>
             <View className="blank__art" style={{ width: 92, height: 92, fontSize: 44 }}>
@@ -443,7 +465,7 @@ function RecentMemory() {
             <Text className="blank__title" style={{ fontSize: 14.5 }}>
               回忆墙还空着
             </Text>
-            <Text className="blank__cap">旅行结束后，把照片和故事留在这里</Text>
+            <Text className="blank__cap">在行程里传几张照片，这里会自动长出回忆</Text>
             <View
               className={`btn btn--accent ${busy ? 'btn--busy' : ''}`}
               style={{ marginTop: 6, padding: '0 18px' }}
@@ -454,6 +476,36 @@ function RecentMemory() {
             </View>
           </View>
         </View>
+      ) : (
+        // 横向滑动：一屏能瞥见下一张，暗示「还有更多旅行」
+        <ScrollView scrollX className="memo-strip" enhanced showScrollbar={false}>
+          <View className="memo-strip__track">
+            {groups.map((g) => (
+              <View
+                key={`${g.kind}-${g.tripId ?? g.month ?? ''}`}
+                className="memo-card"
+                onClick={() =>
+                  navigate(
+                    g.kind === 'TRIP' && g.tripId !== null
+                      ? // 🔴 必须落 tab=photo：tab=memory 是「回忆快照」（要手动生成、不含照片），
+                        //    点进去只会看到「这场出行还没有生成回忆」，等于照片没了
+                        `/trips/${g.tripId}?tab=photo&readonly=1`
+                      : '/memory',
+                  )
+                }
+              >
+                <PhotoCover url={g.cover} />
+                <View className="memo-card__veil" />
+                <View className="memo-card__meta">
+                  <Text className="memo-card__title">{g.title}</Text>
+                  <Text className="memo-card__sub">
+                    {[g.subtitle, `${g.photoCount} 张`].filter((s) => s !== '').join(' · ')}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        </ScrollView>
       )}
     </>
   );

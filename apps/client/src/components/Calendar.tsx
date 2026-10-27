@@ -27,8 +27,14 @@ import {
   thisWeekend,
   todayYmd,
 } from '../utils/calendar';
+import { dayMarkOf, holidayRangesOfMonth } from '../utils/holidays';
 
 const WEEK_LABEL = ['一', '二', '三', '四', '五', '六', '日'];
+
+/** 'YYYY-MM-DD' → 'M/D'（假期一览用；完整年份在同一行里已由标题给出） */
+function mdText(ds: string): string {
+  return `${Number(ds.slice(5, 7))}/${Number(ds.slice(8, 10))}`;
+}
 
 export interface DateRangeSheetProps {
   /** 面板标题 */
@@ -58,6 +64,7 @@ export function DateRangeSheet({
   });
 
   const cells = useMemo(() => buildMonthCells(cursor.y, cursor.m), [cursor]);
+  const monthHolidays = useMemo(() => holidayRangesOfMonth(cursor.y, cursor.m), [cursor]);
 
   const pick = (ds: string): void => {
     const next = nextRangeSelection(selStart, selEnd, ds);
@@ -151,6 +158,7 @@ export function DateRangeSheet({
               if (c === null) {
                 return <View key={`b-${idx}`} className="cal__cell cal__cell--blank" />;
               }
+              const mark = dayMarkOf(c.ds);
               const isStart = c.ds === selStart;
               const isEnd = selEnd !== '' && c.ds === selEnd;
               const inRange = selStart !== '' && selEnd !== '' && c.ds > selStart && c.ds < selEnd;
@@ -160,15 +168,51 @@ export function DateRangeSheet({
                 inRange ? 'cal__cell--in' : '',
                 isStart ? 'cal__cell--edge cal__cell--start' : '',
                 isEnd ? 'cal__cell--edge cal__cell--end' : '',
+                mark?.kind === 'HOLIDAY' ? 'cal__cell--holiday' : '',
               ]
                 .filter(Boolean)
                 .join(' ');
               return (
                 <View key={c.ds} className={cls} onClick={() => pick(c.ds)}>
-                  <Text className="cal__cell-day">{c.day}</Text>
+                  {/* 日期 + 右上角「休 / 班」角标：调休这件事不标出来，
+                      用户会以为自己选了个普通周末，结果那天要上班 */}
+                  <View className="cal__day-wrap">
+                    <Text className="cal__cell-day">{c.day}</Text>
+                    {mark !== null && (
+                      <Text
+                        className={
+                          mark.kind === 'HOLIDAY'
+                            ? 'cal__tag cal__tag--off'
+                            : 'cal__tag cal__tag--work'
+                        }
+                      >
+                        {mark.kind === 'HOLIDAY' ? '休' : '班'}
+                      </Text>
+                    )}
+                  </View>
                 </View>
               );
             })}
+          </View>
+
+          {/* 本月假期一览：角标只有「休/班」两个字，节日名放这里说清楚 */}
+          {monthHolidays.length > 0 && (
+            <View className="cal__holidays">
+              {monthHolidays.map((h) => (
+                <Text key={`${h.name}-${h.from}`} className="cal__holidays-item">
+                  {h.name} {mdText(h.from)}–{mdText(h.to)}
+                </Text>
+              ))}
+            </View>
+          )}
+
+          <View className="cal__legend">
+            <Text className="cal__legend-item">
+              <Text className="cal__tag cal__tag--off cal__tag--inline">休</Text> 法定假期
+            </Text>
+            <Text className="cal__legend-item">
+              <Text className="cal__tag cal__tag--work cal__tag--inline">班</Text> 调休上班
+            </Text>
           </View>
         </View>
 

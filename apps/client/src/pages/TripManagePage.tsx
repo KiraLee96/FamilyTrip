@@ -27,9 +27,10 @@ import { Icon } from '../components/Icon';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
 import { StatusChip, dateRange } from '../components/shared';
+import { TripPosterSheet } from '../components/TripPosterSheet';
 import { useAsync } from '../hooks/useAsync';
 import { Link } from '../nav/Link';
-import { useRouteParams } from '../nav';
+import { backOr, useRouteParams } from '../nav';
 import { buildJoinLink, copyText } from '../utils/clipboard';
 import { inviteUnavailableHint, tripDisplayStatus, tripIsEnded } from '../utils/constants';
 
@@ -47,12 +48,41 @@ export function TripManagePage() {
 
   // 分享卡片携带的邀请码（页面级 useShareAppMessage 必须在顶层、提前返回之前注册）
   const shareRef = useRef<{ code: string; title: string } | null>(null);
+  /**
+   * 已结束的行程**不再允许通过转发卡片邀请他人加入**（2026-10-26 反馈第 4 条）。
+   * ==========================================================================
+   * 转发卡片的内容在 `useShareAppMessage` 里决定，而该钩子必须在提前返回之前注册，
+   * 拿不到下面才解构出来的 `ended` / `trip.title`。故用 ref 把「是否已结束」先存起来，
+   * 钩子被微信调用时读最新值。
+   *
+   * 未结束 → 仍是「加入「XX」一起出行」+ 邀请码路径（原有行为不变）；
+   * 已结束 → 只指向详情页（对方打开能看安排），**不带 invite 参数**，
+   *          同时 hideShareMenu 收起右上角转发菜单，避免从系统菜单再发出旧卡片。
+   */
+  const shareMetaRef = useRef<{ ended: boolean; title: string }>({ ended: false, title: '' });
   Taro.useShareAppMessage(() => {
+    const meta = shareMetaRef.current;
     const s = shareRef.current;
-    return s
-      ? { title: `加入「${s.title}」一起出行`, path: `/pages/JoinTripPage?invite=${s.code}` }
-      : { title: '来看看这场家庭出行', path: '/pages/JoinTripPage' };
+    if (meta.ended || s === null) {
+      return {
+        title: meta.title === '' ? '来看看这场家庭出行' : `${meta.title} · 行程安排`,
+        path: `/pages/TripDetailPage?id=${tripId}`,
+      };
+    }
+    return { title: `加入「${s.title}」一起出行`, path: `/pages/JoinTripPage?invite=${s.code}` };
   });
+
+  useEffect(() => {
+    if (detail.data === undefined) return;
+    const ended = tripIsEnded(detail.data.trip);
+    shareMetaRef.current = { ended, title: detail.data.trip.title };
+    if (!ended) return;
+    // 已结束：收起系统转发菜单（H5 为空实现，失败无需处理）
+    void Promise.resolve(Taro.hideShareMenu({})).catch(() => {});
+  }, [detail.data]);
+
+  /** 长图弹层 */
+  const [posterOpen, setPosterOpen] = useState(false);
 
   if (detail.loading) return <Loading />;
   if (detail.error) return <ErrorBox message={detail.error} onRetry={detail.reload} />;
@@ -65,14 +95,19 @@ export function TripManagePage() {
 
   return (
     <PageLayout title="行程管理" sub={trip.title}>
-      <Link
-        to={`/trips/${tripId}`}
+      {/*
+        🔴 这里必须用 backOr（退栈）而不是 Link（navigateTo）。
+        Link 会再压一个新的 TripDetailPage，详情↔管理来回点几次就把小程序页面栈
+        顶到 10 层，随后报 `routeDone with a webviewId N is not found`。
+      */}
+      <View
         className="muted"
         style={{ display: 'inline-flex', alignItems: 'center', gap: 3, marginBottom: 10 }}
+        onClick={() => backOr(`/trips/${tripId}`)}
       >
         <Icon name="chevron-right" size={14} className="rotate-180" />
         返回行程详情
-      </Link>
+      </View>
 
       <View className="card tm-summary">
         <View className="tm-summary__top">
@@ -86,15 +121,46 @@ export function TripManagePage() {
         </View>
       </View>
 
-      <InviteSection
-        tripId={tripId}
-        tripTitle={trip.title}
-        ended={ended}
-        shareRef={shareRef}
-        onApplied={detail.reload}
-      />
+      {ended ? (
+        /*
+         * 已结束：邀请位整体收起，换成「分享行程长图」。
+         * 不是把按钮置灰 —— 结束的行程让人看到邀请码本身就没有意义，
+         * 而且容易误发给别人一个「只能看归档」的加入入口。
+         */
+        <View className="card tm-block">
+          <View className="tm-block__head">
+            <Text className="tm-block__title">
+              <Icon name="share" size={15} /> 分享行程
+            </Text>
+            <Text className="tm-block__hint">行程已结束</Text>
+          </View>
+          <Text className="poster-entry__desc">
+            把这几天的安排生成一张长图，发给家人留存。已结束的行程不再提供邀请码，
+            也不能再加入新成员。
+          </Text>
+          <View className="btn poster-entry__btn" onClick={() => setPosterOpen(true)}>
+            <Icon name="share" size={14} />
+            生成行程长图
+          </View>
+        </View>
+      ) : (
+        <InviteSection
+          tripId={tripId}
+          tripTitle={trip.title}
+          shareRef={shareRef}
+          onApplied={detail.reload}
+        />
+      )}
 
       <MembersSection members={members} myRole={d.myRole} ended={ended} onChanged={detail.reload} />
+
+      {posterOpen && (
+        <TripPosterSheet
+          tripId={tripId}
+          tripTitle={trip.title}
+          onClose={() => setPosterOpen(false)}
+        />
+      )}
     </PageLayout>
   );
 }
@@ -107,13 +173,11 @@ export function TripManagePage() {
 function InviteSection({
   tripId,
   tripTitle,
-  ended,
   shareRef,
   onApplied,
 }: {
   tripId: string;
   tripTitle: string;
-  ended: boolean;
   shareRef: MutableRefObject<{ code: string; title: string } | null>;
   onApplied: () => void;
 }) {
@@ -199,8 +263,8 @@ function InviteSection({
 
       <View className="invite__ops" style={{ marginTop: 8 }}>
         <View
-          className={`btn btn--ghost invite__btn ${resetBusy || !code || ended ? 'btn--busy' : ''}`}
-          onClick={resetBusy || !code || ended ? undefined : onReset}
+          className={`btn btn--ghost invite__btn ${resetBusy || !code ? 'btn--busy' : ''}`}
+          onClick={resetBusy || !code ? undefined : onReset}
         >
           重置邀请码
         </View>
@@ -210,11 +274,7 @@ function InviteSection({
         </Link>
       </View>
 
-      <Text className="invite__hint">
-        {ended
-          ? '行程已结束：邀请码仍可展示，但新加入的人只会看到只读档案'
-          : '把邀请码或链接发给朋友，对方点开即可加入这场行程'}
-      </Text>
+      <Text className="invite__hint">把邀请码或链接发给朋友，对方点开即可加入这场行程</Text>
 
       {invite.error ? (
         <>

@@ -15,7 +15,7 @@
  */
 
 import Taro from '@tarojs/taro';
-import { api, type MediaAsset } from '../api';
+import { api, type MediaAsset, type Trip } from '../api';
 
 export interface UploadedPhoto {
   asset: MediaAsset;
@@ -124,7 +124,11 @@ export async function uploadAvatarImage(
   const size = byteSize ?? (await fileByteSize(tempFilePath));
   if (size <= 0) throw new Error('无法读取图片大小，请重试或换一张图');
   const { asset } = await uploadOne({ path: tempFilePath, size }, undefined, 'AVATAR');
-  return { avatarUrl: asset.url !== '' ? asset.url : tempFilePath, localPath: tempFilePath };
+  // 🔴 老写法 `asset.url !== ''` 会把 undefined 放行（`undefined !== ''` 为真），
+  //    于是 avatarUrl 被传成 undefined，PATCH 时字段消失、库里永远 NULL。
+  //    这里按「非空字符串」判定，拿不到持久 URL 就退本地临时路径（本会话可见）。
+  const settled = typeof asset.url === 'string' && asset.url !== '' ? asset.url : tempFilePath;
+  return { avatarUrl: settled, localPath: tempFilePath };
 }
 
 /** H5 端「从相册选择」头像：选图后走上传链路（小程序端头像入口是 chooseAvatar 按钮） */
@@ -137,4 +141,41 @@ export async function pickAndUploadAvatar(): Promise<UploadedAvatar> {
   const file = (choosen.tempFiles ?? [])[0];
   if (file === undefined) throw new Error('未选择图片');
   return uploadAvatarImage(file.path, file.size);
+}
+
+/**
+ * 让用户选「这批照片归到哪次旅行」。
+ * ============================================================================
+ * 为什么需要这一步：从回忆墙 / 首页直接上传时若不带 tripId，照片只会落进
+ * 「按月份归档」的组里，**永远不属于任何行程** —— 用户在行程详情的「照片」tab
+ * 里怎么翻都翻不到，体感就是"照片传丢了"。
+ *
+ * 返回语义（调用方必须区分对待）：
+ *   · `string`    → 绑定到该行程
+ *   · `undefined` → 明确选「不绑定」，或压根没有行程可绑
+ *   · `null`      → 用户取消了选择，**本次上传应中止**
+ */
+export async function chooseTripForPhotos(): Promise<string | undefined | null> {
+  let trips: Trip[] = [];
+  try {
+    trips = await api.listTrips();
+  } catch {
+    // 行程拉不到不该挡住传照片 —— 退化成「不绑定」
+    return undefined;
+  }
+  if (trips.length === 0) return undefined;
+
+  // 优先未结束的行程（进行中 / 计划中），没有则退回最近几场
+  const open = trips.filter((t) => t.status !== 'FINISHED' && t.status !== 'CANCELLED');
+  const pool = (open.length > 0 ? open : trips).slice(0, 3);
+
+  try {
+    const res = await Taro.showActionSheet({
+      itemList: [...pool.map((t) => `归到「${t.title}」`), '不绑定行程'],
+    });
+    if (res.tapIndex === pool.length) return undefined;
+    return pool[res.tapIndex]?.id;
+  } catch {
+    return null; // showActionSheet 取消会 reject
+  }
 }
