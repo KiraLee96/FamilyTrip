@@ -68,18 +68,42 @@ function newRequestId(): string {
 let token: string | undefined;
 
 /**
- * 「这个后端没有 `/media/memories`」的**会话级**结论（2026-10-27）。
+ * `/media/memories` 的能力标记：内存 + Storage（带 TTL）。
  * ============================================================================
- * 生产仍是 10-22 版时，首页与回忆墙每次挂载都会各打一次这个 404 —— 用户在
- * 微信开发者工具里看到的是「一进首页就红一条」，很容易以为是编译错误。
- *
- * 处理：
- *   · 首次 4040 → 置位 + 打一条**解释性 warn**（不是报错，告诉看日志的人这是版本问题）；
- *   · 本会话后续调用直接抛同样形状的错误，**不再发网络请求**（Console 只红一次）；
- *   · 不持久化：小程序冷启动即重置 —— 后端部署后重启小程序自动恢复，
- *     不存在「缓存把新功能锁死」的风险。
+ * 内存标记只顶一次会话 —— 用户每次冷启动都会再撞一次 404，Console 每次都红，
+ * 于是"每次都看到同样的报错"（2026-10-27 反复反馈）。
+ * 故再存一份进 Storage，带 **10 分钟 TTL**：
+ *   · 10 分钟内重启小程序也不再发这次注定失败的请求；
+ *   · 超过 TTL 自动重探 —— 后端部署后**最多 10 分钟自动恢复**，
+ *     不会像永久缓存那样把新功能锁死到"必须重装"。
  */
 let photoMemoriesUnavailable = false;
+
+const CAP_KEY = 'api_cap_photo_memories';
+const CAP_TTL_MS = 10 * 60 * 1000;
+
+/** Storage 里的能力标记是否仍在有效期内（读失败一律当"没标记"，宁可多探一次） */
+function photoMemoriesBlocked(): boolean {
+  if (photoMemoriesUnavailable) return true;
+  try {
+    const raw = Taro.getStorageSync(CAP_KEY);
+    if (typeof raw !== 'string' || raw.trim() === '') return false;
+    const at = Number(JSON.parse(raw) as { at?: unknown }['at']);
+    if (!Number.isFinite(at)) return false;
+    return Date.now() - at < CAP_TTL_MS;
+  } catch {
+    return false;
+  }
+}
+
+function markPhotoMemoriesMissing(): void {
+  photoMemoriesUnavailable = true;
+  try {
+    Taro.setStorageSync(CAP_KEY, JSON.stringify({ at: Date.now() }));
+  } catch {
+    /* 存不进去只影响"下次是否要再探一次"，不影响正确性 */
+  }
+}
 
 export function setToken(t: string | undefined): void {
   token = t;
@@ -98,6 +122,32 @@ let sessionRecoverer: (() => Promise<void>) | undefined;
 
 export function installSessionRecoverer(fn: () => Promise<void>): void {
   sessionRecoverer = fn;
+}
+
+/**
+ * 登录态闸门（session.ts 注入）：**第一个请求先等登录就位**。
+ * ============================================================================
+ * 修的是 2026-10-27 反复出现的 `GET /trips 401`：
+ *   页面挂载即发请求，而 `App.useLaunch` 里的 `bootstrapSession()` 还没拿到 token
+ *   → 请求裸奔（无 Authorization）→ 服务端 `4010 缺少 Authorization`
+ *   → 触发一次无谓的静默重登 → Console 每次冷启动都红一条。
+ *
+ * 现在：无 token 时先 await 闸门（= 一次登录），登录完成后再发 —— 首屏不再有 401。
+ * 失败不阻塞：闸门 reject 就照常发请求，让 401 走原来的重登兜底路径。
+ *
+ * 🔴 `gateBypass`：bootstrap 自身要发 `/auth/login`、`/auth/me`，
+ *    这些请求若也去等闸门就会**自己等自己**（死锁）。bootstrap 期间置位跳过。
+ */
+let sessionGate: (() => Promise<void>) | undefined;
+let gateBypass = false;
+
+export function installSessionGate(fn: () => Promise<void>): void {
+  sessionGate = fn;
+}
+
+/** 仅供 session.ts 在 bootstrap 前后调用：绕开闸门，避免自等死锁 */
+export function setGateBypass(v: boolean): void {
+  gateBypass = v;
 }
 
 /** 单航班重登：并发 401 只触发一次登录，其余请求复用同一 Promise */
@@ -514,6 +564,15 @@ async function request<T>(
   body?: unknown,
   opts: { retried?: boolean; requestId?: string; allowNullData?: boolean } = {},
 ): Promise<T> {
+  // 登录态初始化完成前，所有请求一律先等闸门。
+  // ==========================================================================
+  // 不只在「没有 token」时等 —— 因为**过期 token** 更常见：请求会带着旧凭证出去，
+  // 服务端回 4010 → 白触发一次重登，Console 照样红一条（用户每次冷启动都看到）。
+  // 一律等待后，首个请求发出时凭证要么是新的、要么确实未登录，不再有中间态。
+  // bootstrap 自身的请求通过 gateBypass 跳过，避免自己等自己。
+  if (!gateBypass && sessionGate !== undefined) {
+    await sessionGate().catch(() => undefined);
+  }
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
   // 重试沿用同一 requestId：重试是同一逻辑操作的再次投递，幂等键必须不变
@@ -1144,8 +1203,9 @@ export function createHttpClient(): ApiClient {
      * 与 `/checklists/items` 的裸数组不同 —— 别照搬那边的解析）。
      */
     listPhotoMemories: async (query) => {
-      // 已知后端没有这个路由 → 直接给同样形状的错误，不再打网络（Console 只红一次）
-      if (photoMemoriesUnavailable) {
+      // 已知后端没有这个路由（内存标记或 Storage 里的 10 分钟标记）
+      // → 直接给同样形状的错误，不再打网络
+      if (photoMemoriesBlocked()) {
         throw new ApiError(4040, '资源不存在');
       }
       const familyId = query?.familyId ?? (await resolveFamilyId());
@@ -1160,14 +1220,17 @@ export function createHttpClient(): ApiClient {
         );
       } catch (e) {
         if (e instanceof ApiError && e.code === 4040) {
-          photoMemoriesUnavailable = true;
+          const firstTime = !photoMemoriesBlocked();
+          markPhotoMemoriesMissing();
           // 用 warn 而不是 error：这不是客户端缺陷，是部署滞后。
-          // 让下一次有人翻 Console 时能直接读懂，而不是去翻代码。
-          console.warn(
-            '[api] 后端没有 /media/memories（生产仍是旧版本）：本会话不再重试，' +
-              '分组回忆不可用。部署后端后重启小程序即恢复。照片本身不受影响，' +
-              '「照片」区仍可正常查看。',
-          );
+          // 只在**首次**打，之后 10 分钟内连这次探测都不发了。
+          if (firstTime) {
+            console.warn(
+              '[api] 后端没有 /media/memories（生产仍是旧版本）：10 分钟内不再重试，' +
+                '分组回忆不可用。部署后端后最多 10 分钟自动恢复。照片本身不受影响，' +
+                '「照片」区仍可正常查看。',
+            );
+          }
         }
         throw e;
       }

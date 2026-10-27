@@ -17,7 +17,14 @@
 
 import Taro from '@tarojs/taro';
 import { api, DATA_SOURCE } from './index';
-import { installSessionRecoverer, resetFamilyIdCache, setToken, TOKEN_KEY } from './http';
+import {
+  installSessionGate,
+  installSessionRecoverer,
+  resetFamilyIdCache,
+  setGateBypass,
+  setToken,
+  TOKEN_KEY,
+} from './http';
 import type { User } from './types';
 
 const USER_KEY = 'auth_user';
@@ -98,6 +105,22 @@ export function bootstrapSession(): Promise<void> {
 }
 
 /**
+ * 登录闸门（2026-10-27）：让**第一个网络请求先等登录就位**。
+ * ============================================================================
+ * 此前首屏会出现 `GET /trips 401`：页面挂载即发请求，`useLaunch` 里的登录还没拿到
+ * token，请求裸奔 → 服务端 4010 → 白触发一次重登，Console 每次冷启动红一条。
+ *
+ * 这里在**模块装载时**注入（而不是等 bootstrapSession 被调）：
+ * App.tsx 的 useLaunch 与页面 effect 谁先跑没有保证，闸门必须先就位。
+ * 没有 token 时由闸门顺手拉起 bootstrap —— 第一个请求就会触发登录，而不是裸奔。
+ */
+installSessionGate(() => {
+  if (DATA_SOURCE !== 'http') return Promise.resolve();
+  booting ??= runBootstrap();
+  return booting;
+});
+
+/**
  * 401 恢复器（http 层在凭证失效时调用）。
  * 与界面「重新登录」按钮同一套重登逻辑，但失败要抛错——
  * http 层据此放弃重试、把 401 降级给界面，而不是无限重登。
@@ -114,6 +137,17 @@ async function forceRelogin(): Promise<void> {
 installSessionRecoverer(forceRelogin);
 
 async function runBootstrap(): Promise<void> {
+  // 🔴 必须绕过闸门：bootstrap 自己要发 /auth/login 与 /auth/me，
+  //    若这些请求也去等闸门，就会「等自己」而永久挂起。
+  setGateBypass(true);
+  try {
+    await runBootstrapInner();
+  } finally {
+    setGateBypass(false);
+  }
+}
+
+async function runBootstrapInner(): Promise<void> {
   const cached = Taro.getStorageSync(TOKEN_KEY);
   const hasToken = typeof cached === 'string' && cached.length > 0;
   if (hasToken) setToken(cached);
