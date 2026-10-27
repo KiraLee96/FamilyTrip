@@ -9,8 +9,11 @@
  *   微信 tabBar 硬上限 5 个，「回忆」让位给「我的」——回忆墙 MemoryPage
  *   保留为完整页面，从总览页「最近回忆 → 回忆墙」入口进入（非 tab）。
  * - 2026-10-27 反馈④：「物品库」与「物品清单」是两个并列入口、两套权限，用户分不清。
- *   物品库并入「我的 → 常备物品」（家庭常备 / 我的常备两半），tab 降到 4 个：
- *   总览 / 规划 / 行程 / 我的。
+ *   物品库的 item 表并入常备清单（家庭常备 / 我的常备两半，靠 scope 区分），
+ *   同一个东西只留一个入口。
+ * - 2026-10-27 反馈④第三次：「物品清单还是要作为一个 tab」——
+ *   恢复为一级 tab（而不是藏进「我的」的二级 tab，那会变成页面里两个入口）。
+ *   tab 顺序：总览 / 规划 / 行程 / 物品 / 我的。
  * - 视觉：米纸底 #F5F0E4 + 深绿主色 #1E5B45
  */
 
@@ -19,6 +22,7 @@ export default {
     'pages/HomePage',
     'pages/PlanPage',
     'pages/TripsPage',
+    'pages/ItemsPage',
     'pages/ProfilePage',
     'pages/MemoryPage',
     'pages/WishPoolPage',
@@ -45,6 +49,7 @@ export default {
       { pagePath: 'pages/HomePage', text: '总览' },
       { pagePath: 'pages/PlanPage', text: '规划' },
       { pagePath: 'pages/TripsPage', text: '行程' },
+      { pagePath: 'pages/ItemsPage', text: '物品' },
       { pagePath: 'pages/ProfilePage', text: '我的' },
     ],
   },

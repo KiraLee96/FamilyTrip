@@ -10,6 +10,7 @@
  *   /            → pages/HomePage      （tab：总览）
  *   /plan        → pages/PlanPage      （tab：规划）
  *   /trips       → pages/TripsPage     （tab：行程）
+ *   /items       → pages/ItemsPage     （tab：物品，2026-10-27 恢复）
  *   /profile     → pages/ProfilePage   （tab：我的，2026-10-14 账号管理回归）
  *   /memory      → pages/MemoryPage    （非 tab：回忆墙，从总览页「最近回忆」进入）
  *   /wishes      → pages/WishPoolPage  （非 tab，从首页/规划页心愿区块进入）
@@ -31,6 +32,7 @@ const TAB_PAGE: Record<string, string> = {
   '/': 'pages/HomePage',
   '/plan': 'pages/PlanPage',
   '/trips': 'pages/TripsPage',
+  '/items': 'pages/ItemsPage',
   '/profile': 'pages/ProfilePage',
 };
 

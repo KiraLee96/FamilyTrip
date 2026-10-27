@@ -26,7 +26,6 @@ import type { Family, FamilyDetail, FamilyMember, User } from '../api/types';
 import { patchSessionUser, retryLogin } from '../api/session';
 import { navigate } from '../nav';
 import { Avatar } from '../components/Avatar';
-import { ChecklistPanel } from '../components/ChecklistPanel';
 import { Icon } from '../components/Icon';
 import { Empty, ErrorBox, Loading } from '../components/Loading';
 import { PageLayout } from '../components/PageLayout';
@@ -39,12 +38,14 @@ import { pickAndUploadAvatar, uploadAvatarImage } from '../utils/upload';
 /** 编译期常量：分享面板在小程序是原生能力，H5 只能给链接（不 fork 组件，只分行为） */
 const IS_WEAPP = process.env.TARO_ENV === 'weapp';
 
-/** 我的页子 tab —— 2026-10-26：清单不作为 tabBar 入口，收进「我的」里 */
-type ProfileTab = 'account' | 'checklist';
+/*
+ * 2026-10-27 反馈④第三次：「物品清单还是要作为一个 tab」——
+ * 清单已恢复为一级 tabBar 入口（pages/ItemsPage），本页不再保留二级 tab。
+ * 🔴 同一功能不能既有 tab 又有页内入口，那正是用户最初嫌"混乱"的根源。
+ */
 
 export function ProfilePage() {
   const user = useSession();
-  const [tab, setTab] = useState<ProfileTab>('account');
   // 分享卡片携带的邀请信息（由展开的家庭卡片回填）
   const shareRef = useRef<{ code: string; name: string } | null>(null);
 
@@ -80,89 +81,55 @@ export function ProfilePage() {
     q.reload();
   });
 
-  const familyId = (q.data ?? [])[0]?.id ?? '';
-
   return (
-    <PageLayout
-      title="我的"
-      sub={tab === 'account' ? '账号与家庭成员' : '常备物品：家庭一半，我的一半'}
-    >
-      <View className="tabs tabs--sub">
-        {(
-          [
-            ['account', '账号与家庭'],
-            ['checklist', '常备物品'],
-          ] as Array<[ProfileTab, string]>
-        ).map(([k, label]) => (
-          <View
-            key={k}
-            className={tab === k ? 'tabs__btn tabs__btn--on' : 'tabs__btn'}
-            onClick={() => setTab(k)}
-          >
-            {label}
-          </View>
-        ))}
+    <PageLayout title="我的" sub="账号与家庭成员">
+      <AccountCard user={user} />
+
+      {/* 管理入口：家里各种要维护的数据，从一个地方进 */}
+      <SectionTitle icon="package">管理</SectionTitle>
+      <View className="mgmt-grid">
+        <MgmtEntry
+          icon="heart"
+          label="心愿池"
+          hint="想去的地方"
+          onClick={() => navigate('/wishes')}
+        />
+        <MgmtEntry
+          icon="sparkles"
+          label="回忆墙"
+          hint="出行档案"
+          onClick={() => navigate('/memory')}
+        />
       </View>
 
-      {tab === 'checklist' ? (
-        <ChecklistPanel familyId={familyId} />
+      <SectionTitle icon="users">我的家庭</SectionTitle>
+      {q.loading ? (
+        <Loading />
+      ) : q.error ? (
+        <ErrorBox message={q.error} onRetry={q.reload} />
       ) : (
         <>
-          <AccountCard user={user} />
-
-          {/* 管理入口：家里各种要维护的数据，从一个地方进 */}
-          <SectionTitle icon="package">管理</SectionTitle>
-          <View className="mgmt-grid">
-            <MgmtEntry
-              icon="package"
-              label="物品与清单"
-              hint="家庭一半 / 我的一半"
-              onClick={() => setTab('checklist')}
-            />
-            <MgmtEntry
-              icon="heart"
-              label="心愿池"
-              hint="想去的地方"
-              onClick={() => navigate('/wishes')}
-            />
-            <MgmtEntry
-              icon="sparkles"
-              label="回忆墙"
-              hint="出行档案"
-              onClick={() => navigate('/memory')}
-            />
-          </View>
-
-          <SectionTitle icon="users">我的家庭</SectionTitle>
-          {q.loading ? (
-            <Loading />
-          ) : q.error ? (
-            <ErrorBox message={q.error} onRetry={q.reload} />
+          {(q.data ?? []).length === 0 ? (
+            <Empty text="还没有家庭，下面新建一个或凭邀请码加入" />
           ) : (
-            <>
-              {(q.data ?? []).length === 0 ? (
-                <Empty text="还没有家庭，下面新建一个或凭邀请码加入" />
-              ) : (
-                (q.data ?? []).map((f) => (
-                  <FamilyCard
-                    key={f.id}
-                    family={f}
-                    onChanged={q.reload}
-                    onShareInfo={(info) => (shareRef.current = info)}
-                  />
-                ))
-              )}
-            </>
+            (q.data ?? []).map((f) => (
+              <FamilyCard
+                key={f.id}
+                family={f}
+                onChanged={q.reload}
+                onShareInfo={(info) => (shareRef.current = info)}
+              />
+            ))
           )}
-
-          <CreateFamilyForm onCreated={q.reload} />
-
-          <View className="add-bar" onClick={() => navigate('/join')}>
-            <Icon name="link" size={16} />
-            <Text className="add-bar__text">凭邀请码加入家庭</Text>
-          </View>
         </>
       )}
+
+      <CreateFamilyForm onCreated={q.reload} />
+
+      <View className="add-bar" onClick={() => navigate('/join')}>
+        <Icon name="link" size={16} />
+        <Text className="add-bar__text">凭邀请码加入家庭</Text>
+      </View>
     </PageLayout>
   );
 }
