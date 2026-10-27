@@ -67,6 +67,20 @@ function newRequestId(): string {
 
 let token: string | undefined;
 
+/**
+ * 「这个后端没有 `/media/memories`」的**会话级**结论（2026-10-27）。
+ * ============================================================================
+ * 生产仍是 10-22 版时，首页与回忆墙每次挂载都会各打一次这个 404 —— 用户在
+ * 微信开发者工具里看到的是「一进首页就红一条」，很容易以为是编译错误。
+ *
+ * 处理：
+ *   · 首次 4040 → 置位 + 打一条**解释性 warn**（不是报错，告诉看日志的人这是版本问题）；
+ *   · 本会话后续调用直接抛同样形状的错误，**不再发网络请求**（Console 只红一次）；
+ *   · 不持久化：小程序冷启动即重置 —— 后端部署后重启小程序自动恢复，
+ *     不存在「缓存把新功能锁死」的风险。
+ */
+let photoMemoriesUnavailable = false;
+
 export function setToken(t: string | undefined): void {
   token = t;
 }
@@ -1124,14 +1138,33 @@ export function createHttpClient(): ApiClient {
      * 与 `/checklists/items` 的裸数组不同 —— 别照搬那边的解析）。
      */
     listPhotoMemories: async (query) => {
+      // 已知后端没有这个路由 → 直接给同样形状的错误，不再打网络（Console 只红一次）
+      if (photoMemoriesUnavailable) {
+        throw new ApiError(4040, '资源不存在');
+      }
       const familyId = query?.familyId ?? (await resolveFamilyId());
       const parts = [`familyId=${familyId}`];
       if (query?.limit !== undefined) parts.push(`limit=${query.limit}`);
       if (query?.previewSize !== undefined) parts.push(`previewSize=${query.previewSize}`);
-      const r = await request<{ items?: Array<Record<string, unknown>> }>(
-        'GET',
-        `/media/memories?${parts.join('&')}`,
-      );
+      let r: { items?: Array<Record<string, unknown>> };
+      try {
+        r = await request<{ items?: Array<Record<string, unknown>> }>(
+          'GET',
+          `/media/memories?${parts.join('&')}`,
+        );
+      } catch (e) {
+        if (e instanceof ApiError && e.code === 4040) {
+          photoMemoriesUnavailable = true;
+          // 用 warn 而不是 error：这不是客户端缺陷，是部署滞后。
+          // 让下一次有人翻 Console 时能直接读懂，而不是去翻代码。
+          console.warn(
+            '[api] 后端没有 /media/memories（生产仍是旧版本）：本会话不再重试，' +
+              '分组回忆不可用。部署后端后重启小程序即恢复。照片本身不受影响，' +
+              '「照片」区仍可正常查看。',
+          );
+        }
+        throw e;
+      }
       const rows = Array.isArray(r.items) ? r.items : [];
       return rows.map((raw) => {
         const kind: 'TRIP' | 'MONTH' = raw['kind'] === 'TRIP' ? 'TRIP' : 'MONTH';
