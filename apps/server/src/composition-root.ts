@@ -441,6 +441,23 @@ export function stubWechat(): WechatCodeExchanger {
     // 纯同步桩：接口要求 Promise，此处显式落地，避免 `async` 无 await 的空壳
     exchange(code: string): Promise<{ openid: string }> {
       if (!code) return Promise.reject(new Error('code 不得为空'));
+      /**
+       * 🔴 本地身份稳定性（2026-10-26）。
+       *
+       * 默认 `openid_${code}` 的语义是「一次登录 = 一个新用户」：微信 `wx.login`
+       * 每次返回的 code 都不同，于是**每次重新登录/清缓存都换账号**，
+       * 之前建的家庭、行程、昵称全部看不见。用户侧表现为
+       * 「改完名字重新登录就没了」「物品清单/物品/回忆墙都是空的」
+       * ——根因不是页面坏了，是换了个人（派发单 D-2026-10-26-05）。
+       *
+       * `DEV_WECHAT_OPENID` 一旦配置，桩就固定返回它：本地反复登录始终同一用户。
+       * 只影响未配置真实微信凭证时的桩路径，生产走 `resolveWechatExchanger`，
+       * 根本不会进这个函数。
+       *
+       * ⚠️ 切换 openid 等于换账号 —— 首次生效时旧数据看不到是预期的，重建一次即可。
+       */
+      const fixed = (process.env['DEV_WECHAT_OPENID'] ?? '').trim();
+      if (fixed !== '') return Promise.resolve({ openid: fixed });
       return Promise.resolve({ openid: `openid_${code}` });
     },
   };

@@ -11,12 +11,29 @@ const idInput = z
 
 const dateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式须为 YYYY-MM-DD');
 
+/**
+ * 金额（最小货币单位整数，如 CNY 的「分」）。
+ * ============================================================================
+ * 2026-10-27 需求③：出行预算。
+ *
+ * 🔴 统一走**字符串**而非 number：`BigInt` 经 JSON 往返会被 double 吃掉精度，
+ *    前端也按字符串收（与 expense 的 amount / byteSize 同一套约定）。
+ *    上限 13 位 —— 与 DECIMAL/BIGINT 的实用区间一致，顺手挡住误输。
+ */
+const budgetInput = z
+  .union([z.string(), z.number()])
+  .transform((v) => String(v))
+  .refine((s) => /^\d+$/.test(s), { message: '预算必须为非负整数（最小货币单位，如「分」）' })
+  .refine((s) => s.length <= 13, { message: '预算数值过大' });
+
 export const createTripSchema = z.object({
   familyId: idInput,
   title: z.string().min(1, '出行标题不能为空').max(128),
   startDate: dateInput.optional(),
   endDate: dateInput.optional(),
   timezone: z.string().max(64).optional(),
+  /** 出行预算（最小货币单位）；不传 = 不设预算 */
+  budgetMinor: budgetInput.optional(),
   /** 目的地（数组，便于多处目的地） */
   destinations: z
     .array(z.object({ name: z.string().min(1).max(64), note: z.string().max(256).optional() }))
@@ -39,6 +56,8 @@ export const updateTripSchema = z.object({
   startDate: dateInput.nullable().optional(),
   endDate: dateInput.nullable().optional(),
   timezone: z.string().max(64).optional(),
+  /** 出行预算；显式传 null = 取消预算（与「不传 = 不改」区分开） */
+  budgetMinor: budgetInput.nullable().optional(),
   destinations: z
     .array(z.object({ name: z.string().min(1).max(64), note: z.string().max(256).optional() }))
     .max(20)

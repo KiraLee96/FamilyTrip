@@ -231,6 +231,9 @@ model Trip {
   actualJson   Json? @map("actual_json")
   /// A18：乐观锁版本号（保护 actual_json 并发写）
   version      BigInt @default(1) @db.UnsignedBigInt
+  /// 2026-10-27：出行预算（最小单位整数，CNY 分）。NULL = 未设预算。
+  /// 与 expense 的 amount_base 同口径（都是折算后的分），否则「花了多少 / 还剩多少」对不上。
+  budgetMinor  BigInt? @map("budget_minor")
   /// D-2026-10-14-02：行程邀请码（8 位，去易混字符；NULL=尚未生成，读取时懒生成）
   inviteCode   String? @map("invite_code") @db.VarChar(16)
   /// D-2026-10-14-02：邀请码最近重置时间（无重置=创建时间；不复用 updated_at）
@@ -448,6 +451,10 @@ model TripChecklistItem {
   templateId BigInt? @map("template_id")
   /// SHARED / PERSONAL（双语义，A23 由 Repository 强制封装）
   scope     String @default("SHARED") @db.VarChar(16)
+  /// 2026-10-27：清单分类 —— TODO（要做的事）/ PACK（要带的东西）。
+  /// 两者混在一张表里但 UI 与语义完全不同：待办有截止时间感，打包项有数量与勾选。
+  /// 默认 PACK 是对历史数据的正确回填（此前的行程清单装的全是"要带的东西"）。
+  kind      String @default("PACK") @db.VarChar(16)
   /// PERONAL 清单的归属人（SHARED 时为 NULL，A19/A23）
   ownerId   BigInt? @map("owner_id")
   createdBy BigInt @map("created_by")

@@ -18,6 +18,7 @@
  */
 
 import { AppError, ErrorCode } from '../../common/errors/error-code.js';
+import { stringCell } from '../../common/db/row-key.js';
 import type { DomainContext, TxHandle } from '../domain-context.js';
 import { serializeRow } from '../domain-context.js';
 import { stripExifServerSide, type ImageProcessor } from '../../common/media/exif-strip.js';
@@ -542,6 +543,185 @@ export class MediaService {
    * base 来自 `MEDIA_PUBLIC_BASE_URL`（生产接对象存储 / CDN 公网域名）；
    * 缺省回落占位域名，仅供联调阶段验证契约形状（链接不可达）。
    */
+  /**
+   * 照片回忆聚合（2026-10-27 需求：「行程中的照片自动生成回忆墙，最近回忆显示
+   * 之前所有旅行的照片，类似苹果手机相册的回忆」）。
+   * ============================================================================
+   * 🔴 为什么不用 `memoryArchive` 快照：那张表的唯一键是 `(familyId, year, type)`，
+   *    一年只能有一篇 TRIP 回忆，而且必须手动 `generateTripMemory` 才会产生。
+   *    用户要的是「自动 + 按行程聚合的照片流」，本质是**按 tripId 分组查询**，
+   *    不该走快照。所以这里直接从 `media_asset` 现算，照片一上传就自动出现在
+   *    回忆里，不需要任何"生成"动作。`memoryArchive` 的年度回顾保持原样。
+   *
+   * 分组规则：
+   *   · 有 `tripId` 的照片 → 按行程成组，标题取行程名、副标题取日期区间；
+   *   · 没 `tripId` 的照片 → 按 `created_at` 的月份成组（「2026 年 10 月」）。
+   *
+   * 🔴 必须排除头像池：头像也是 `media_asset` 行且 `tripId` 为空，
+   *    按月份分组会把「换过的头像」当成旅行照片混进回忆墙。
+   *    后端 local-disk 按 purpose 分池：头像 `a/<userId>/`、行程照片 `f/<familyId>/`
+   *    （见 commit aabd935），所以用 `fileKey` 前缀判定。
+   *
+   * 输出按「组内最新一张的时间」倒序，每组带封面 + 前 N 张（供九宫格预览）。
+   */
+  async listPhotoMemories(
+    userId: bigint,
+    q: { familyId?: bigint; limit?: number; previewSize?: number },
+  ): Promise<{
+    items: Array<{
+      kind: 'TRIP' | 'MONTH';
+      tripId: string | null;
+      month: string | null;
+      title: string;
+      subtitle: string;
+      cover: string;
+      photoCount: number;
+      photos: string[];
+      lastAt: string;
+    }>;
+    meta: Record<string, unknown>;
+  }> {
+    const visibleFamilies = await this.visibleFamilyIds(userId);
+    const all = await this.o.ctx.read.findMany('mediaAsset', { where: { deletedAt: null } });
+
+    const rows = all.filter((r) => {
+      if (!visibleFamilies.has(r['familyId'] as bigint)) return false;
+      if (q.familyId !== undefined && r['familyId'] !== q.familyId) return false;
+      // 只要图片（视频暂不参与回忆，避免封面无法展示）
+      // 用 stringCell 而不是 String(...)：行值是 unknown，String() 遇对象会产出
+      // '[object Object]'（no-base-to-string），那会让过滤条件静默变成 false。
+      if (!(stringCell(r, 'mimeType') ?? '').startsWith('image/')) return false;
+      // 排除头像池
+      if ((stringCell(r, 'fileKey') ?? '').startsWith('a/')) return false;
+      return true;
+    });
+
+    const tripCache = new Map<string, Record<string, unknown> | null>();
+    const groups = new Map<
+      string,
+      {
+        kind: 'TRIP' | 'MONTH';
+        tripId: bigint | null;
+        month: string | null;
+        rows: Record<string, unknown>[];
+      }
+    >();
+
+    for (const r of rows) {
+      const tripId = typeof r['tripId'] === 'bigint' ? r['tripId'] : null;
+      if (tripId !== null) {
+        const key = `T:${tripId.toString()}`;
+        let g = groups.get(key);
+        if (g === undefined) {
+          g = { kind: 'TRIP', tripId, month: null, rows: [] };
+          groups.set(key, g);
+        }
+        g.rows.push(r);
+        continue;
+      }
+      // 无行程 → 按创建月份分组
+      // 行里的 createdAt 可能是 Date（Prisma）或 ISO 字符串（内存驱动），
+      // 其它形态一律当「无时间」处理 —— 绝不用 String() 兜（会得到 '[object Object]'，
+      // 进而拼出非法月份、把不相干的照片合并进同一组）。
+      const created = r['createdAt'];
+      const iso =
+        created instanceof Date
+          ? created.toISOString()
+          : typeof created === 'string'
+            ? created
+            : '';
+      const month = iso.slice(0, 7); // YYYY-MM
+      const key = `M:${month}`;
+      let g = groups.get(key);
+      if (g === undefined) {
+        g = { kind: 'MONTH', tripId: null, month, rows: [] };
+        groups.set(key, g);
+      }
+      g.rows.push(r);
+    }
+
+    const previewSize = Math.max(1, Math.min(9, q.previewSize ?? 9));
+    const items: Array<{
+      kind: 'TRIP' | 'MONTH';
+      tripId: string | null;
+      month: string | null;
+      title: string;
+      subtitle: string;
+      cover: string;
+      photoCount: number;
+      photos: string[];
+      lastAt: string;
+    }> = [];
+
+    for (const g of groups.values()) {
+      // 组内按创建时间倒序：第一张就是封面
+      const sorted = [...g.rows].sort((a, b) => {
+        const ta = a['createdAt'] instanceof Date ? a['createdAt'].getTime() : 0;
+        const tb = b['createdAt'] instanceof Date ? b['createdAt'].getTime() : 0;
+        return tb - ta;
+      });
+      const photos = sorted.slice(0, previewSize).map((r) => {
+        const key = stringCell(r, 'fileKey') ?? '';
+        return key === '' ? '' : `${this.mediaBase}/${key}`;
+      });
+      // 组内最新一张的时间（instanceof 已收窄类型，无需再断言）
+      const newest = sorted[0]?.['createdAt'];
+      const lastAt = newest instanceof Date ? newest.toISOString() : new Date(0).toISOString();
+
+      if (g.kind === 'TRIP' && g.tripId !== null) {
+        const cacheKey = g.tripId.toString();
+        if (!tripCache.has(cacheKey)) {
+          tripCache.set(cacheKey, await this.o.ctx.read.findUnique('trip', { id: g.tripId }));
+        }
+        const trip = tripCache.get(cacheKey) ?? null;
+        if (trip === null || trip['deletedAt'] !== null) continue; // 行程已删 → 该组不露出
+        const title = typeof trip['title'] === 'string' ? trip['title'] : '一次旅行';
+        /**
+         * 🔴 Prisma 返回的 `startDate` / `endDate` 是 **Date 对象**，不是字符串。
+         *    之前只判 `typeof === 'string'`，日期恒为空 → 副标题退化成「N 张照片」，
+         *    前端再拼一次张数就变成「1 张照片 · 1 张」（2026-10-27 截图发现）。
+         */
+        const range = compactDateRange(toDateStr(trip['startDate']), toDateStr(trip['endDate']));
+        items.push({
+          kind: 'TRIP',
+          tripId: cacheKey,
+          month: null,
+          title,
+          subtitle: range,
+          cover: photos[0] ?? '',
+          photoCount: sorted.length,
+          photos,
+          lastAt,
+        });
+        continue;
+      }
+
+      const month = g.month ?? '';
+      items.push({
+        kind: 'MONTH',
+        tripId: null,
+        month,
+        title: monthFormat(month),
+        // 月份组的标题已含月份，副标题留空；张数由前端统一拼，避免「N 张照片 · N 张」
+        subtitle: '',
+        cover: photos[0] ?? '',
+        photoCount: sorted.length,
+        photos,
+        lastAt,
+      });
+    }
+
+    // 最近有更新的组排前面
+    items.sort((a, b) => (a.lastAt < b.lastAt ? 1 : a.lastAt > b.lastAt ? -1 : 0));
+    const limit = Math.max(1, Math.min(50, q.limit ?? 12));
+    const sliced = items.slice(0, limit);
+
+    return {
+      items: sliced,
+      meta: { total: items.length, returned: sliced.length },
+    };
+  }
+
   private withUrl(row: Record<string, unknown>): Record<string, unknown> {
     const fileKey = typeof row['fileKey'] === 'string' ? row['fileKey'] : '';
     return { ...row, url: fileKey ? `${this.mediaBase}/${fileKey}` : '' };
@@ -552,6 +732,31 @@ export class MediaService {
 function safeExt(fileName: string): string {
   const m = /\.([A-Za-z0-9]{1,8})$/.exec(fileName);
   return m ? `.${m[1]!.toLowerCase()}` : '';
+}
+
+/** '2026-10' → '2026 年 10 月'（月份回忆组的标题） */
+function monthFormat(month: string): string {
+  const m = /^(\d{4})-(\d{2})$/.exec(month);
+  if (m === null) return month === '' ? '未分类照片' : month;
+  return `${m[1]} 年 ${Number(m[2])} 月`;
+}
+
+/** Date | string | null → 'YYYY-MM-DD'（Prisma 的日期列是 Date，别只判 string） */
+function toDateStr(v: unknown): string {
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  if (typeof v === 'string') return v.slice(0, 10);
+  return '';
+}
+
+/**
+ * 日期区间文案：同年省略结束年份，跨年两年都写（与前端 formatDateRange 同口径）。
+ * 例如 `2026-10-22 ~ 10-25` / `2026-12-30 ~ 2027-01-02`。
+ */
+function compactDateRange(a: string, b: string): string {
+  if (a === '' || b === '') return '';
+  const ya = a.slice(0, 4);
+  const yb = b.slice(0, 4);
+  return ya === yb && ya !== '' ? `${a} ~ ${b.slice(5)}` : `${a} ~ ${b}`;
 }
 
 void PENDING_TTL_MS; // 供清理任务引用（导出于此便于配置化）

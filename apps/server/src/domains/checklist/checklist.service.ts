@@ -72,6 +72,23 @@ export interface TemplateItem {
 }
 
 /**
+ * 「模板条目变更 → 同步到未成行行程」的结果（2026-10-27）。
+ * 界面用它给用户一句话反馈，例如「已同步 2 场行程：新增 3 项、删除 1 项」。
+ */
+export interface TemplateSyncResult {
+  /** 实际处理的行程数（只算未归档的） */
+  trips: number;
+  /** 补进行程的新条目数 */
+  created: number;
+  /** 数量被同步的条目数 */
+  updated: number;
+  /** 因模板删掉而同步软删的条目数 */
+  removed: number;
+  /** 模板删了但行程里已勾选、因此保留下来的条目数 */
+  keptChecked: number;
+}
+
+/**
  * 把 `items_json` 归一化成条目数组（D-2026-10-26-01 P1-2）。
  *
  * 🔴 为什么读路径必须容三种形态：
@@ -131,6 +148,8 @@ export class ChecklistService {
       quantity: number;
       sort: number;
       scope: 'SHARED' | 'PERSONAL';
+      /** TODO = 要做的事 / PACK = 要带的东西（2026-10-27 需求③） */
+      kind?: 'TODO' | 'PACK';
       ownerId?: bigint;
       templateId?: bigint;
     },
@@ -157,6 +176,7 @@ export class ChecklistService {
         tripId: input.tripId,
         templateId: input.templateId ?? null,
         scope: input.scope,
+        kind: input.kind ?? 'PACK',
         ownerId,
         createdBy: userId,
         name: input.name,
@@ -192,6 +212,8 @@ export class ChecklistService {
       tripId?: bigint;
       familyId?: bigint;
       scope?: 'SHARED' | 'PERSONAL';
+      /** 只看某一类：TODO 待办 / PACK 打包（2026-10-27 需求③） */
+      kind?: 'TODO' | 'PACK';
       checked?: boolean;
       page?: unknown;
       pageSize?: unknown;
@@ -217,6 +239,9 @@ export class ChecklistService {
       rows = rows.filter((r) => tripIdsOfFamily.has(r['tripId'] as bigint));
     }
     if (q.scope !== undefined) rows = rows.filter((r) => r['scope'] === q.scope);
+    // 历史行没有 kind 列（迁移前写入的）→ 按默认值 PACK 处理，避免它们从两个分区里一起消失
+    if (q.kind !== undefined)
+      rows = rows.filter((r) => ((r['kind'] as string | null) ?? 'PACK') === q.kind);
     if (q.checked !== undefined) rows = rows.filter((r) => (r['checked'] === true) === q.checked);
 
     // 分流可见性
@@ -544,7 +569,12 @@ export class ChecklistService {
     userId: bigint,
     templateId: bigint,
     patch: { version: number; name?: string; items?: TemplateItem[] },
-  ): Promise<{ template: Record<string, unknown>; updatedAt: Date }> {
+  ): Promise<{
+    template: Record<string, unknown>;
+    updatedAt: Date;
+    /** 条目同步结果（只在本次确实改了 items 时返回） */
+    synced?: TemplateSyncResult;
+  }> {
     return this.o.ctx.tx(async (tx) => {
       const tpl = await tx.db.findUnique('checklistTemplate', { id: templateId, deletedAt: null });
       if (!tpl) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -568,6 +598,16 @@ export class ChecklistService {
         );
       }
 
+      /**
+       * 🔴 条目变了 → 把变更同步到引用了这套清单、且**尚未成行**的行程。
+       *    已完成/已取消的行程是历史快照，一律不回溯（用户口径：已完成的不用改）。
+       *    同步在同一事务内，避免「模板改了、行程只同步了一半」。
+       */
+      const synced =
+        patch.items !== undefined
+          ? await this.syncTemplateToOpenTrips(tx, templateId, tpl, patch.items, userId, now)
+          : null;
+
       await this.change(
         tx,
         'checklist_template',
@@ -582,8 +622,146 @@ export class ChecklistService {
       return {
         template: this.withTemplateItems(serializeRow(row ?? {}, TEMPLATE_BIGINT_FIELDS)),
         updatedAt: now,
+        ...(synced !== null ? { synced } : {}),
       };
     });
+  }
+
+  /**
+   * 模板条目变更 → 同步到引用它的「尚未成行」行程
+   * ============================================================================
+   * 用户口径（2026-10-27）：「清单中已经修改了，引用过的行程 未成行的要同步改，
+   * 已完成的就不用改了」。
+   *
+   * 同步范围：`trip.status ∈ {DRAFT, PLANNED, ONGOING}`。
+   * FINISHED / CANCELLED 一律跳过 —— 那是历史快照，改了会让「已归档的回忆」变动。
+   *
+   * 逐条规则（模板是权威，但尊重行程里已有的操作）：
+   *   ① 模板删掉的条目 → 行程里**未勾选**的软删；**已勾选**的保留（说明已打包，
+   *      直接删掉会让人以为「我明明勾好了怎么没了」）；
+   *   ② 模板新增的条目 → 行程里补一条未勾选项；
+   *   ③ 模板改了数量 → 行程里同步数量，**勾选状态不动**；
+   *   ④ 行程里 `templateId` 为空的自定义项 → 完全不动（那是本次出行专属的）；
+   *   ⑤ 用户手动删过的项（库里有软删行）→ **不复活**（否则每次改模板都冒出来）。
+   *
+   * 🔴 为什么按 `name` 对齐而不是 id：模板条目在 `items_json` 里只有
+   *    `{name, quantity}`，没有稳定标识。所以「模板里改名」在语义上等于
+   *    「删掉旧名 + 新增新名」——旧项若未勾选会被删、新名会被补上，这是可接受的行为。
+   */
+  private async syncTemplateToOpenTrips(
+    tx: TxHandle,
+    templateId: bigint,
+    tpl: Row,
+    items: TemplateItem[],
+    userId: bigint,
+    now: Date,
+  ): Promise<TemplateSyncResult> {
+    const result: TemplateSyncResult = {
+      trips: 0,
+      created: 0,
+      updated: 0,
+      removed: 0,
+      keptChecked: 0,
+    };
+
+    // 不带 deletedAt 过滤：需要看到软删行，才能判断「用户主动删过」而不复活它们
+    const all = await tx.db.findMany('tripChecklistItem', { where: { templateId } });
+    if (all.length === 0) return result;
+
+    const tripIds = [
+      ...new Set(all.map((r) => r['tripId']).filter((v): v is bigint => typeof v === 'bigint')),
+    ];
+    // 模板条目按名字索引（模板没有稳定条目标识，只能按 name 对齐）
+    const tplByName = new Map(items.map((it) => [it.name, it]));
+    const tplScope = typeof tpl['scope'] === 'string' ? tpl['scope'] : 'SHARED';
+    const tplOwnerId = typeof tpl['ownerId'] === 'bigint' ? tpl['ownerId'] : null;
+
+    for (const tripId of tripIds) {
+      const trip = await tx.db.findUnique('trip', { id: tripId, deletedAt: null });
+      if (!trip) continue;
+      const status = typeof trip['status'] === 'string' ? trip['status'] : '';
+      // 已归档不回溯：历史快照
+      if (status === 'FINISHED' || status === 'CANCELLED') continue;
+
+      result.trips += 1;
+
+      const live = all.filter((r) => r['tripId'] === tripId && r['deletedAt'] === null);
+      const removedNames = new Set(
+        all
+          .filter((r) => r['tripId'] === tripId && r['deletedAt'] !== null)
+          .map((r) => String(r['name'])),
+      );
+      const liveByName = new Map(live.map((r) => [String(r['name']), r]));
+
+      // ① 模板里已没有的条目
+      for (const row of live) {
+        const name = String(row['name']);
+        if (tplByName.has(name)) continue;
+        if (row['checked'] === true) {
+          // 已勾选 = 已打包，保留原样，仅在结果里计数供界面说明
+          result.keptChecked += 1;
+          continue;
+        }
+        const id = row['id'];
+        if (typeof id !== 'bigint') continue;
+        await tx.db.update(
+          'tripChecklistItem',
+          { id },
+          { deletedAt: now, updatedAt: now, version: Number(row['version'] ?? 0) + 1 },
+        );
+        await this.change(tx, 'trip_checklist_item', id, null, tripId, 'DELETE', now);
+        result.removed += 1;
+      }
+
+      // ②③ 模板里有的：缺的补、数量变了的改
+      let sort = live.length;
+      for (const it of items) {
+        const exist = liveByName.get(it.name);
+        const qty = it.quantity ?? 1;
+
+        if (exist !== undefined) {
+          if (Number(exist['quantity'] ?? 1) !== qty) {
+            const id = exist['id'];
+            if (typeof id !== 'bigint') continue;
+            await tx.db.update(
+              'tripChecklistItem',
+              { id },
+              { quantity: qty, updatedAt: now, version: Number(exist['version'] ?? 0) + 1 },
+            );
+            await this.change(tx, 'trip_checklist_item', id, null, tripId, 'UPDATE', now);
+            result.updated += 1;
+          }
+          continue;
+        }
+
+        // 用户主动删过 → 不复活
+        if (removedNames.has(it.name)) continue;
+
+        const id = tx.write.nextId();
+        await tx.db.insert('tripChecklistItem', {
+          id,
+          tripId,
+          templateId,
+          scope: tplScope,
+          ownerId: tplScope === 'PERSONAL' ? tplOwnerId : null,
+          createdBy: userId,
+          name: it.name,
+          quantity: qty,
+          checked: false,
+          checkedBy: null,
+          checkedAt: null,
+          sort: sort++,
+          version: 0,
+          createdAt: now,
+          updatedAt: now,
+          deletedAt: null,
+        });
+        await this.change(tx, 'trip_checklist_item', id, null, tripId, 'INSERT', now);
+        result.created += 1;
+      }
+    }
+
+    return result;
   }
 
   /**

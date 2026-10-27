@@ -70,7 +70,7 @@ export interface AutoFinishStats {
 /** 单条自动完结的处置结果 */
 type AutoFinishOutcome = { kind: 'finished'; row: Row } | { kind: 'skipped' } | { kind: 'failed' };
 
-const TRIP_BIGINT_FIELDS = ['id', 'familyId', 'createdBy', 'leaderId'];
+const TRIP_BIGINT_FIELDS = ['id', 'familyId', 'createdBy', 'leaderId', 'budgetMinor'];
 const MEMBER_BIGINT_FIELDS = ['id', 'tripId', 'userId', 'managedBy'];
 
 /** 不可再接受新成员的状态（GRP-08：结束后禁止加入） */
@@ -117,6 +117,8 @@ export class TripService {
       startDate?: string;
       endDate?: string;
       timezone?: string;
+      /** 出行预算（最小货币单位整数字符串）；不传 = 不设预算 */
+      budgetMinor?: string;
       destinations?: Array<{ name: string; note?: string }>;
     },
   ): Promise<Record<string, unknown>> {
@@ -136,6 +138,7 @@ export class TripService {
         startDate: input.startDate ? toDate(input.startDate) : null,
         endDate: input.endDate ? toDate(input.endDate) : null,
         timezone: input.timezone ?? 'Asia/Shanghai',
+        budgetMinor: input.budgetMinor !== undefined ? BigInt(input.budgetMinor) : null,
         destinationsJson: input.destinations ? JSON.stringify(input.destinations) : null,
         actualJson: null,
         // D-2026-10-14-02 §2.2：建行程即生成邀请码 ——
@@ -296,6 +299,8 @@ export class TripService {
       startDate?: string | null;
       endDate?: string | null;
       timezone?: string;
+      /** 出行预算；`null` = 取消预算，不传 = 不改 */
+      budgetMinor?: string | null;
       destinations?: Array<{ name: string; note?: string }>;
     },
   ): Promise<{ trip: Record<string, unknown>; updatedAt: string }> {
@@ -318,6 +323,9 @@ export class TripService {
         data['endDate'] = input.endDate === null ? null : toDate(input.endDate);
       if (input.destinations !== undefined)
         data['destinationsJson'] = JSON.stringify(input.destinations);
+      // 预算：显式 null 才是「取消预算」，undefined 表示这次不改（两者必须分开）
+      if (input.budgetMinor !== undefined)
+        data['budgetMinor'] = input.budgetMinor === null ? null : BigInt(input.budgetMinor);
 
       const affected = await tx.db.update(
         'trip',

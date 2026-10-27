@@ -123,7 +123,9 @@ export class AuthService {
   /** 更新本人资料 */
   async updateProfile(
     userId: bigint,
-    patch: { nickname?: string; homeTimezone?: string },
+    // avatarUrl 与 nickname/homeTimezone 同为 user 表直写列（见 prisma schema 的 avatar_url）；
+    // 本方法只做「通用 patch 透传 + 审计」，字段准入由 updateProfileSchema 把关。
+    patch: { nickname?: string; avatarUrl?: string; homeTimezone?: string },
   ): Promise<{ user: Record<string, unknown>; updatedAt: string }> {
     return this.o.ctx.tx(async (tx) => {
       const now = await tx.db.dbNow();

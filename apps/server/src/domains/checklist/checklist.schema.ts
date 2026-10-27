@@ -24,6 +24,13 @@ export const createChecklistItemSchema = z
     sort: z.coerce.number().int().default(0),
     /** SHARED = 全员共用；PERSONAL = 个人专属 */
     scope: z.enum(['SHARED', 'PERSONAL']).default('SHARED'),
+    /**
+     * 2026-10-27 需求③：清单分两类，语义完全不同，不能混着排。
+     *   TODO —— 「要做的事」（订门票、办签证、给猫找寄养）
+     *   PACK —— 「要带的东西」（身份证、充电宝 x2）
+     * 缺省 PACK：历史数据全是打包物品，且老客户端不传这个字段。
+     */
+    kind: z.enum(['TODO', 'PACK']).default('PACK'),
     /** PERSONAL 时必填（或取操作者） */
     ownerId: idInput.optional(),
     /** 从模板生成（可选） */
@@ -65,6 +72,8 @@ export const listChecklistQuerySchema = z.object({
   familyId: idInput.optional(),
   /** 不传则返回「共享 + 我自己可见的私有」（其余私有折叠成占位） */
   scope: z.enum(['SHARED', 'PERSONAL']).optional(),
+  /** 2026-10-27 需求③：只看「要做的事」或只看「要带的东西」 */
+  kind: z.enum(['TODO', 'PACK']).optional(),
   checked: z.coerce.boolean().optional(),
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().max(100).optional(),
@@ -83,25 +92,31 @@ export const batchToggleSchema = z.object({
 export type BatchToggleInput = z.infer<typeof batchToggleSchema>;
 
 /** 模板 */
-export const createTemplateSchema = z
-  .object({
-    familyId: idInput.optional(),
-    name: z.string().min(1).max(64),
-    scope: z.enum(['SHARED', 'PERSONAL']).default('SHARED'),
-    ownerId: idInput.optional(),
-    items: z
-      .array(
-        z.object({
-          name: z.string().min(1).max(64),
-          quantity: z.coerce.number().int().min(1).default(1),
-        }),
-      )
-      .max(200)
-      .default([]),
-  })
-  .refine((v) => v.scope !== 'PERSONAL' || v.ownerId !== undefined, {
-    message: 'PERSONAL 模板必须指定 ownerId',
-  });
+export const createTemplateSchema = z.object({
+  familyId: idInput.optional(),
+  name: z.string().min(1).max(64),
+  scope: z.enum(['SHARED', 'PERSONAL']).default('SHARED'),
+  /**
+   * 仅 PERSONAL 有意义：清单归属人。**可省略** —— 省略时服务端取当前登录用户
+   * （见 `ChecklistService.createTemplate` 的 `input.ownerId ?? userId`）。
+   *
+   * 🔴 这里此前有一条 `.refine(v => v.scope !== 'PERSONAL' || v.ownerId !== undefined)`
+   *    要求前端必须显式传 ownerId，而服务层本身已经会兜底 —— 两处口径不一致的结果是
+   *    「我的清单」永远创建不了，界面只显示「参数校验失败」（2026-10-27 反馈）。
+   *    前端不该传 ownerId 更安全：归属人应由 token 推导，前端传等于允许冒充他人。
+   *    代管场景（为被代管成员建清单）仍可显式传，权限由 `assertCanActForOwner` 把关。
+   */
+  ownerId: idInput.optional(),
+  items: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(64),
+        quantity: z.coerce.number().int().min(1).default(1),
+      }),
+    )
+    .max(200)
+    .default([]),
+});
 
 export type CreateTemplateInput = z.infer<typeof createTemplateSchema>;
 

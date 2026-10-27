@@ -17,10 +17,12 @@ import { MediaService } from './media.service.js';
 import {
   createMediaAssetSchema,
   listMediaQuerySchema,
+  listPhotoMemoriesQuerySchema,
   presignUploadSchema,
   stripExifSchema,
   type CreateMediaAssetInput,
   type ListMediaQueryInput,
+  type ListPhotoMemoriesQueryInput,
   type PresignUploadInput,
   type StripExifInput,
 } from './media.schema.js';
@@ -149,6 +151,30 @@ export function createMediaDomain(o: MediaDomainOptions): MediaDomain {
           ...(q.mimePrefix !== undefined ? { mimePrefix: q.mimePrefix } : {}),
           page: q.page,
           pageSize: q.pageSize,
+        });
+        return { data: r, meta: r.meta };
+      },
+    },
+
+    /**
+     * 照片回忆聚合（2026-10-27 需求）。
+     * ==========================================================================
+     * 「行程中的照片自动生成回忆墙，最近回忆显示之前所有旅行的照片」——
+     * 现算，不依赖 `memoryArchive` 快照，也不要求任何"生成"动作：
+     * 照片一上传就自动出现在对应行程/月份的回忆组里。
+     */
+    {
+      method: 'GET',
+      path: '/media/memories',
+      auth: { public: false, resourceType: 'media_asset', mode: 'READ' },
+      idParam: '__none__',
+      schema: listPhotoMemoriesQuerySchema as never,
+      handler: async (ctx, input) => {
+        const q = input as ListPhotoMemoriesQueryInput;
+        const r = await service.listPhotoMemories(ctx.userId!, {
+          ...(q.familyId !== undefined ? { familyId: BigInt(q.familyId) } : {}),
+          ...(q.limit !== undefined ? { limit: q.limit } : {}),
+          ...(q.previewSize !== undefined ? { previewSize: q.previewSize } : {}),
         });
         return { data: r, meta: r.meta };
       },

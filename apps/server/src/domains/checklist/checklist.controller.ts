@@ -110,6 +110,7 @@ export function createChecklistDomain(o: ChecklistDomainOptions): ChecklistDomai
           quantity: b.quantity,
           sort: b.sort,
           scope: b.scope,
+          kind: b.kind,
           ownerId: b.ownerId !== undefined ? BigInt(b.ownerId) : undefined,
           templateId: b.templateId !== undefined ? BigInt(b.templateId) : undefined,
         });
@@ -129,6 +130,7 @@ export function createChecklistDomain(o: ChecklistDomainOptions): ChecklistDomai
           tripId: q.tripId !== undefined ? BigInt(q.tripId) : undefined,
           familyId: q.familyId !== undefined ? BigInt(q.familyId) : undefined,
           scope: q.scope,
+          ...(q.kind !== undefined ? { kind: q.kind } : {}),
           checked: q.checked,
           page: q.page,
           pageSize: q.pageSize,
@@ -259,7 +261,14 @@ export function createChecklistDomain(o: ChecklistDomainOptions): ChecklistDomai
       schema: updateTemplateSchema as never,
       handler: async (ctx, input) => {
         const r = await service.updateTemplate(ctx.userId!, ctx.resourceId!, input);
-        return { data: { template: r.template }, meta: { updatedAt: r.updatedAt.toISOString() } };
+        return {
+          // synced：条目变更同步到「未成行行程」的结果（没改 items 时不出现）
+          data: {
+            template: r.template,
+            ...(r.synced !== undefined ? { synced: r.synced } : {}),
+          },
+          meta: { updatedAt: r.updatedAt.toISOString() },
+        };
       },
     },
 

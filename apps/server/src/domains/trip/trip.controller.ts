@@ -64,6 +64,7 @@ export function createTripDomain(o: TripDomainOptions): TripDomain {
           startDate: b.startDate,
           endDate: b.endDate,
           timezone: b.timezone,
+          ...(b.budgetMinor !== undefined ? { budgetMinor: b.budgetMinor } : {}),
           destinations: b.destinations,
         });
         return { data: { trip } };

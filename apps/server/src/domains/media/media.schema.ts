@@ -48,6 +48,21 @@ export const listMediaQuerySchema = z.object({
 
 export type ListMediaQueryInput = z.infer<typeof listMediaQuerySchema>;
 
+/**
+ * 照片回忆聚合（2026-10-27）。
+ * 与 `listMediaQuerySchema` 分开：回忆是「按行程/月份成组」的读模型，
+ * 不接受 page（分页语义在"组"上，用 limit 限制组数足够）。
+ */
+export const listPhotoMemoriesQuerySchema = z.object({
+  familyId: idInput.optional(),
+  /** 最多返回几组回忆（默认 12） */
+  limit: z.coerce.number().int().positive().max(50).optional(),
+  /** 每组带几张预览图（默认 9，上限 9 —— 九宫格） */
+  previewSize: z.coerce.number().int().positive().max(9).optional(),
+});
+
+export type ListPhotoMemoriesQueryInput = z.infer<typeof listPhotoMemoriesQuerySchema>;
+
 /** 预签名上传位（客户端直传前取） */
 export const presignUploadSchema = z.object({
   familyId: idInput,

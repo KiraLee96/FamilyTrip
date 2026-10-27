@@ -96,17 +96,22 @@ export class MemoryService {
   // 列表 / 详情
   // ══════════════════════════════════════════════════════════════════════
 
-  async list(userId: bigint, q: {
-    familyId: bigint;
-    type?: 'TRIP' | 'ANNUAL';
-    year?: number;
-    page?: unknown;
-    pageSize?: unknown;
-  }): Promise<{ items: Record<string, unknown>[]; meta: Record<string, unknown> }> {
+  async list(
+    userId: bigint,
+    q: {
+      familyId: bigint;
+      type?: 'TRIP' | 'ANNUAL';
+      year?: number;
+      page?: unknown;
+      pageSize?: unknown;
+    },
+  ): Promise<{ items: Record<string, unknown>[]; meta: Record<string, unknown> }> {
     await this.assertFamilyMember(this.o.ctx, q.familyId, userId);
     const page = normalizePageQuery(q.page, q.pageSize);
 
-    const all = await this.o.ctx.read.findMany('memoryArchive', { where: { familyId: q.familyId } });
+    const all = await this.o.ctx.read.findMany('memoryArchive', {
+      where: { familyId: q.familyId },
+    });
     let rows = [...all];
     if (q.type !== undefined) rows = rows.filter((r) => r['type'] === q.type);
     if (q.year !== undefined) rows = rows.filter((r) => Number(r['year']) === q.year);
@@ -127,7 +132,10 @@ export class MemoryService {
     };
   }
 
-  async detail(userId: bigint, memoryId: bigint): Promise<{ memory: Record<string, unknown>; snapshot: unknown }> {
+  async detail(
+    userId: bigint,
+    memoryId: bigint,
+  ): Promise<{ memory: Record<string, unknown>; snapshot: unknown }> {
     const row = await this.o.ctx.read.findUnique('memoryArchive', { id: memoryId });
     if (!row) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
     await this.assertFamilyMember(this.o.ctx, row['familyId'] as bigint, userId);
@@ -149,11 +157,14 @@ export class MemoryService {
    *    固化。多次出行场景由 `ref_id` 记录最后一次生成来源，快照内 `trip.id`
    *    为准。这是本期已知约束，二期引入 `(familyId, year, type, refId)`。
    */
-  async generateTripMemory(userId: bigint, input: {
-    tripId: bigint;
-    year?: number;
-    rebuild: boolean;
-  }): Promise<{ memory: Record<string, unknown>; snapshot: unknown; created: boolean }> {
+  async generateTripMemory(
+    userId: bigint,
+    input: {
+      tripId: bigint;
+      year?: number;
+      rebuild: boolean;
+    },
+  ): Promise<{ memory: Record<string, unknown>; snapshot: unknown; created: boolean }> {
     const read = this.o.ctx.read;
     const trip = await read.findUnique('trip', { id: input.tripId, deletedAt: null });
     if (!trip) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
@@ -161,15 +172,34 @@ export class MemoryService {
     const familyId = trip['familyId'] as bigint;
     await this.assertFamilyMember(this.o.ctx, familyId, userId);
 
-    const year = input.year ?? Number(String(ymd(trip['endDate']) ?? ymd(trip['startDate']) ?? new Date().toISOString()).slice(0, 4));
+    const year =
+      input.year ??
+      Number(
+        String(ymd(trip['endDate']) ?? ymd(trip['startDate']) ?? new Date().toISOString()).slice(
+          0,
+          4,
+        ),
+      );
 
     const snapshot = await this.buildTripSnapshot(trip, year);
 
+    /**
+     * 🔴 snap_key 是 `uk_snap` 的唯一键，schema 里 `NOT NULL` 且**无默认值**
+     *    （见迁移 20261013170000_b1_drift_fix §三确认项②）。
+     *    此前两处 insert 都没写这一列 → MySQL 严格模式报
+     *    `Field 'snap_key' doesn't have a default value`（1364）→ 事务回滚
+     *    → 全局兜底 500「服务内部错误」。内存驱动不校验 NOT NULL，
+     *    所以单元测试全绿而线上必挂 —— 这是「测试绿、线上红」的典型缺口。
+     *
+     *    同时用它做幂等键：v1.4 迁移已删除 `(family_id, year, type)` 唯一索引，
+     *    现在一场行程一篇，同一年多次出行不再互相顶掉（旧注释里的
+     *    「一年只能有一篇」约束随 uk_snap 落地已失效）。
+     */
+    const snapKey = `T:${input.tripId.toString()}`;
+
     return this.o.ctx.tx(async (tx) => {
       const now = await tx.db.dbNow();
-      const existing = await tx.db.findMany('memoryArchive', {
-        where: { familyId, year, type: 'TRIP' },
-      });
+      const existing = await tx.db.findMany('memoryArchive', { where: { snapKey } });
 
       if (existing.length > 0 && !input.rebuild) {
         // 快照语义 —— 已固化即返回，不覆盖
@@ -196,6 +226,7 @@ export class MemoryService {
         year,
         type: 'TRIP',
         refId: input.tripId,
+        snapKey,
         snapshotJson: snapshot,
         createdAt: now,
       });
@@ -217,19 +248,23 @@ export class MemoryService {
   }
 
   /** 生成年度回忆（每年 12 月定时任务 / 手动触发） */
-  async generateAnnualMemory(userId: bigint, input: {
-    familyId: bigint;
-    year: number;
-    rebuild: boolean;
-  }): Promise<{ memory: Record<string, unknown>; snapshot: unknown; created: boolean }> {
+  async generateAnnualMemory(
+    userId: bigint,
+    input: {
+      familyId: bigint;
+      year: number;
+      rebuild: boolean;
+    },
+  ): Promise<{ memory: Record<string, unknown>; snapshot: unknown; created: boolean }> {
     await this.assertFamilyMember(this.o.ctx, input.familyId, userId);
     const snapshot = await this.buildAnnualSnapshot(input.familyId, input.year);
 
+    // 同上：年度快照的 snap_key = `A:<familyId>:<year>`（schema 注释约定的合成规则）
+    const snapKey = `A:${input.familyId.toString()}:${input.year}`;
+
     return this.o.ctx.tx(async (tx) => {
       const now = await tx.db.dbNow();
-      const existing = await tx.db.findMany('memoryArchive', {
-        where: { familyId: input.familyId, year: input.year, type: 'ANNUAL' },
-      });
+      const existing = await tx.db.findMany('memoryArchive', { where: { snapKey } });
 
       if (existing.length > 0 && !input.rebuild) {
         const hit = existing[0]!;
@@ -251,6 +286,7 @@ export class MemoryService {
         year: input.year,
         type: 'ANNUAL',
         refId: null,
+        snapKey,
         snapshotJson: snapshot,
         createdAt: now,
       });
@@ -311,7 +347,8 @@ export class MemoryService {
     }
 
     const media = await read.findMany('mediaAsset', { where: { tripId, deletedAt: null } });
-    const currency = expenses[0] !== undefined ? (stringCell(expenses[0], 'currency') ?? 'CNY') : 'CNY';
+    const currency =
+      expenses[0] !== undefined ? (stringCell(expenses[0], 'currency') ?? 'CNY') : 'CNY';
 
     return {
       schemaVersion: 1,
@@ -332,7 +369,10 @@ export class MemoryService {
       itinerary: itinerary.map((r) => ({
         date: ymd(r['date']),
         title: stringCell(r, 'title') ?? '',
-        location: r['location'] === null || r['location'] === undefined ? null : stringCell(r, 'location') ?? null,
+        location:
+          r['location'] === null || r['location'] === undefined
+            ? null
+            : (stringCell(r, 'location') ?? null),
       })),
       expenseSummary: {
         currency,
@@ -434,7 +474,11 @@ export class MemoryService {
     await tx.db.update(model, { id }, { refId: null });
   }
 
-  private async assertFamilyMember(src: DomainContext | TxHandle, familyId: bigint, userId: bigint): Promise<void> {
+  private async assertFamilyMember(
+    src: DomainContext | TxHandle,
+    familyId: bigint,
+    userId: bigint,
+  ): Promise<void> {
     const db = 'db' in src ? src.db : src.read;
     const members = await db.findMany('familyMember', { where: { familyId, deletedAt: null } });
     const ok = members.some((m) => m['userId'] === userId);
