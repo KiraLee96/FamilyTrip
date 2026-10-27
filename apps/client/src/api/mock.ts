@@ -423,12 +423,12 @@ const TEMPLATES: ChecklistTemplate[] = [
     version: 1,
     updatedAt: '2026-10-01T00:00:00.000Z',
     items: [
-      { name: '身份证（全家 4 人）', quantity: 4 },
-      { name: '充电宝 + 数据线', quantity: 2 },
-      { name: '常备药（晕车 / 感冒 / 腹泻）', quantity: 1 },
-      { name: '雨伞 / 一次性雨衣', quantity: 2 },
-      { name: '纸巾 + 湿巾', quantity: 2 },
-      { name: '水杯（儿童保温杯）', quantity: 2 },
+      { name: '身份证（全家 4 人）', quantity: 4, category: '证件' },
+      { name: '充电宝 + 数据线', quantity: 2, category: '电子' },
+      { name: '常备药（晕车 / 感冒 / 腹泻）', quantity: 1, category: '药品' },
+      { name: '雨伞 / 一次性雨衣', quantity: 2, category: '其他' },
+      { name: '纸巾 + 湿巾', quantity: 2, category: '洗护' },
+      { name: '水杯（儿童保温杯）', quantity: 2, category: '母婴' },
     ],
   },
   {
@@ -440,10 +440,10 @@ const TEMPLATES: ChecklistTemplate[] = [
     version: 1,
     updatedAt: '2026-09-20T00:00:00.000Z',
     items: [
-      { name: '防晒霜 SPF50+', quantity: 1 },
-      { name: '赶海小桶 + 铲子', quantity: 2 },
-      { name: '凉拖 / 溯溪鞋', quantity: 4 },
-      { name: '防水手机袋', quantity: 2 },
+      { name: '防晒霜 SPF50+', quantity: 1, category: '洗护' },
+      { name: '赶海小桶 + 铲子', quantity: 2, category: '其他' },
+      { name: '凉拖 / 溯溪鞋', quantity: 4, category: '衣物' },
+      { name: '防水手机袋', quantity: 2, category: '电子' },
     ],
   },
   {
@@ -455,10 +455,10 @@ const TEMPLATES: ChecklistTemplate[] = [
     version: 1,
     updatedAt: '2026-10-05T00:00:00.000Z',
     items: [
-      { name: '常用药（个人处方药）', quantity: 1 },
-      { name: '隐形眼镜 + 护理液', quantity: 1 },
-      { name: 'kindle', quantity: 1 },
-      { name: '耳机', quantity: 1 },
+      { name: '常用药（个人处方药）', quantity: 1, category: '药品' },
+      { name: '隐形眼镜 + 护理液', quantity: 1, category: '洗护' },
+      { name: 'kindle', quantity: 1, category: '电子' },
+      { name: '耳机', quantity: 1, category: '电子' },
     ],
   },
 ];

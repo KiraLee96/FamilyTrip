@@ -24,14 +24,46 @@ import Taro from '@tarojs/taro';
 import { api } from '../api/index';
 import type { ChecklistTemplate, ChecklistTemplateItem, Trip } from '../api/types';
 import { Icon } from './Icon';
-import { ItemLibraryPanel } from './ItemLibraryPanel';
 import { Empty, ErrorBox, Loading } from './Loading';
 import { SectionTitle } from './shared';
 import { useAsync } from '../hooks/useAsync';
 import { parsePastedItems } from '../utils/checklistPaste';
-import { templateWriteUnavailableHint } from '../utils/constants';
+import { ITEM_CATEGORIES, templateWriteUnavailableHint } from '../utils/constants';
 
 type Scope = 'SHARED' | 'PERSONAL';
+
+const UNCATEGORIZED = '未分类';
+
+/** 给新条目挂类型；category 为空则**不带该字段**（不存空串分类） */
+function withCategory(item: ChecklistTemplateItem, category: string): ChecklistTemplateItem {
+  return category === '' ? item : { ...item, category };
+}
+
+/**
+ * 按类型分组（2026-10-27 反馈④第二次）。
+ * ============================================================================
+ * 顺序：先 ITEM_CATEGORIES 的既定顺序，再自定义分类（按名称），「未分类」垫底。
+ *
+ * 🔴 返回的条目带 `idx`（原始 items 数组下标）：分组会打乱顺序，
+ *    删除时若用分组内下标，删的会是另一条 —— 这类错删在清单里很难被发现。
+ */
+function groupByCategory(
+  items: ChecklistTemplateItem[],
+): Array<[string, Array<ChecklistTemplateItem & { idx: number }>]> {
+  const map = new Map<string, Array<ChecklistTemplateItem & { idx: number }>>();
+  items.forEach((it, idx) => {
+    const key = it.category === undefined || it.category === '' ? UNCATEGORIZED : it.category;
+    const arr = map.get(key);
+    if (arr) arr.push({ ...it, idx });
+    else map.set(key, [{ ...it, idx }]);
+  });
+  const rank = (k: string): number => {
+    if (k === UNCATEGORIZED) return 999;
+    const i = ITEM_CATEGORIES.indexOf(k as (typeof ITEM_CATEGORIES)[number]);
+    return i >= 0 ? i : 100;
+  };
+  return [...map.entries()].sort((a, b) => rank(a[0]) - rank(b[0]));
+}
 
 export function ChecklistPanel({ familyId }: { familyId: string }) {
   const q = useAsync(
@@ -61,18 +93,24 @@ export function ChecklistPanel({ familyId }: { familyId: string }) {
     <>
       <View className="cl-intro card card--flush">
         <Text className="cl-intro__title">
-          <Icon name="package" size={14} /> 一份清单，三个可见范围
+          <Icon name="package" size={14} /> 常备物品：维护一次，每个行程都能引用
         </Text>
         <Text className="cl-intro__text">
           {
-            '① 家庭清单：全家共用，谁都能引用\n② 我的清单：只有自己看得见\n③ 我的常备物品：只有自己看得见，可一键加入某次行程'
+            '常备物品分两半：家庭常备全家可见、我的常备只有自己看得见。\n每一半里的条目按类型归类（证件 / 电子 / 衣物 / 洗护 / 药品 / 食品 / 母婴 / 其他）。'
           }
         </Text>
       </View>
 
-      <SectionTitle icon="users">家庭清单 · 全家可见（{shared.length}）</SectionTitle>
+      {/*
+        2026-10-27 反馈④（第二次）：此前把「我的常备物品」做成了第三段并列，
+        与「家庭清单 / 我的清单」平级 —— 用户的原话是「常备物品其实就应该包含
+        家庭清单和我的清单」。故层改为：**常备物品（上位）→ 家庭常备 / 我的常备（两半）**。
+        数据结构不变（同一张 checklist_template，scope 区分），只是不再有第二套模型。
+      */}
+      <SectionTitle icon="users">家庭常备 · 全家可见（{shared.length}）</SectionTitle>
       {shared.length === 0 ? (
-        <Empty text="还没有家庭共享清单，下面新建一套" />
+        <Empty text="还没有家庭常备清单，下面新建一套" />
       ) : (
         shared.map((tpl) => (
           <TemplateCard
@@ -86,9 +124,9 @@ export function ChecklistPanel({ familyId }: { familyId: string }) {
         ))
       )}
 
-      <SectionTitle icon="user">我的清单 · 仅自己可见（{personal.length}）</SectionTitle>
+      <SectionTitle icon="user">我的常备 · 仅自己可见（{personal.length}）</SectionTitle>
       {personal.length === 0 ? (
-        <Empty text="还没有私人清单，下面新建一套" />
+        <Empty text="还没有私人常备清单，下面新建一套" />
       ) : (
         personal.map((tpl) => (
           <TemplateCard
@@ -104,8 +142,12 @@ export function ChecklistPanel({ familyId }: { familyId: string }) {
 
       <CreateTemplateForm familyId={familyId} onCreated={q.reload} />
 
-      {/* 原「物品库」独立页（2026-10-27 合并进来）：同样是"物品"，不该有两个入口两套权限 */}
-      <ItemLibraryPanel familyId={familyId} />
+      {/*
+        原「物品库」（item 表）不再作为并列的一段出现 —— 它是同一件事的第二套模型，
+        正是"混乱"的来源。保留**一次性导入**：把旧物品库的东西倒进「我的常备」，
+        导入后 item 表原行不动（可回滚；outfit_item 外键也不受影响）。
+      */}
+      <ImportLegacyItems familyId={familyId} personal={personal} onImported={q.reload} />
 
       {picking !== null && (
         <TripPickerSheet template={picking} familyId={familyId} onClose={() => setPicking(null)} />
@@ -135,6 +177,8 @@ function TemplateCard({
   const [err, setErr] = useState('');
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(template.name);
+  /** 新条目的类型（2026-10-27：条目按类型归类，新增/粘贴都落在这个类型下） */
+  const [category, setCategory] = useState('');
 
   const items = template.items;
 
@@ -192,9 +236,11 @@ function TemplateCard({
     // 允许「名称 x2」这种带数量的写法（与粘贴同一套解析规则）
     const parsed = parsePastedItems(text);
     if (parsed.length === 0) return;
-    const ok = await patch({ items: [...items, ...parsed] });
+    // 选中类型才落类型；没选 = 未分类（不猜，避免分类错乱比不分类更难查）
+    const withCat = parsed.map((p) => withCategory(p, category));
+    const ok = await patch({ items: [...items, ...withCat] });
     if (ok) setDraft('');
-  }, [draft, items, patch]);
+  }, [draft, items, patch, category]);
 
   const addPasted = useCallback(async () => {
     const parsed = parsePastedItems(pasteText);
@@ -202,13 +248,21 @@ function TemplateCard({
       setErr('没识别到物品，一行写一个名字即可');
       return;
     }
-    const ok = await patch({ items: [...items, ...parsed] });
+    // 一整段粘贴默认归到当前选中的类型下，避免贴完再逐条补类型
+    const withCat = parsed.map((p) => withCategory(p, category));
+    const ok = await patch({ items: [...items, ...withCat] });
     if (ok) {
       setPasteText('');
       setPasting(false);
-      void Taro.showToast({ title: `已加入 ${parsed.length} 项`, icon: 'none' });
+      void Taro.showToast({
+        title:
+          category === ''
+            ? `已加入 ${parsed.length} 项（未分类）`
+            : `已加入 ${category} ${parsed.length} 项`,
+        icon: 'none',
+      });
     }
-  }, [pasteText, items, patch]);
+  }, [pasteText, items, patch, category]);
 
   const removeItem = useCallback(
     async (idx: number) => {
@@ -260,19 +314,45 @@ function TemplateCard({
               这套清单还是空的，下面加几项，或者直接粘贴一整段。
             </Text>
           ) : (
-            items.map((it, idx) => (
-              <View className="cl-item" key={`${it.name}-${idx}`}>
-                <Text className="cl-item__name">{it.name}</Text>
-                {it.quantity > 1 ? <Text className="cl-item__qty">×{it.quantity}</Text> : null}
-                <View
-                  className="icon-btn icon-btn--danger"
-                  onClick={busy ? undefined : () => void removeItem(idx)}
-                >
-                  <Icon name="close" size={13} />
-                </View>
+            /*
+              条目按类型分组（2026-10-27 反馈④第二次）。
+              此前是平铺一长串，几十件东西一眼看不出"还缺哪一类"；
+              分组后每组带件数，缺什么类型一眼就看得见。
+            */
+            groupByCategory(items).map(([cat, list]) => (
+              <View key={cat} className="cl-group">
+                <Text className="cl-group__title">
+                  {cat}
+                  <Text className="cl-group__count">{list.length}</Text>
+                </Text>
+                {list.map((it) => (
+                  <View className="cl-item" key={`${cat}-${it.name}-${it.idx}`}>
+                    <Text className="cl-item__name">{it.name}</Text>
+                    {it.quantity > 1 ? <Text className="cl-item__qty">×{it.quantity}</Text> : null}
+                    <View
+                      className="icon-btn icon-btn--danger"
+                      onClick={busy ? undefined : () => void removeItem(it.idx)}
+                    >
+                      <Icon name="close" size={13} />
+                    </View>
+                  </View>
+                ))}
               </View>
             ))
           )}
+
+          {/* 新条目的类型：粘一段清单时也按这个类型落，避免一条条补 */}
+          <View className="filter-bar filter-bar--compact" style={{ marginBottom: 6 }}>
+            {ITEM_CATEGORIES.map((c) => (
+              <Text
+                key={c}
+                className={`chip chip--tiny ${category === c ? 'chip--on' : 'chip--plain'}`}
+                onClick={() => setCategory(category === c ? '' : c)}
+              >
+                {c}
+              </Text>
+            ))}
+          </View>
 
           <View className="add-row">
             <Input
@@ -280,7 +360,11 @@ function TemplateCard({
               value={draft}
               maxlength={64}
               onInput={(e) => setDraft(e.detail.value)}
-              placeholder="加一项，如：防晒霜 x1"
+              placeholder={
+                category === ''
+                  ? '加一项，如：防晒霜 x1（先选类型）'
+                  : `加到「${category}」，如：防晒霜 x1`
+              }
             />
             <View
               className={
@@ -555,6 +639,114 @@ function CreateTemplateForm({ familyId, onCreated }: { familyId: string; onCreat
         onClick={busy ? undefined : () => void create()}
       >
         {busy ? '创建中…' : '创建清单'}
+      </View>
+    </View>
+  );
+}
+
+/**
+ * 旧「物品库」(item 表) 的一次性并入 —— 2026-10-27 反馈④第二次
+ * ============================================================================
+ * 为什么还留着这段：item 表是**第二套模型**（有 category、无 templateId），
+ * 历史上在「物品库」页录过东西。现在 UI 不再给物品库入口，那些数据若直接消失，
+ * 等于把用户录过的物品藏起来 —— 那是数据丢失，不是信息架构调整。
+ *
+ * 做法（全程可回滚）：
+ *   · 只在**确实存在** item 行时才渲染，没有旧数据就完全不出现（不占版面）；
+ *   · 点击后按 name 去重，「复制」进一套 PERSONAL 常备清单
+ *     （已有同名「我的常备物品」优先，否则新建一套）；
+ *   · **不删 item 行** —— outfit_item 外键仍引用它们，删了就回不去。
+ */
+
+/** 并入时的目标清单名（固定，便于重复点击时命中同一套而不是越建越多） */
+const LEGACY_TARGET = '我的常备物品';
+
+export function ImportLegacyItems({
+  familyId,
+  personal,
+  onImported,
+}: {
+  familyId: string;
+  /** 已有的「我的常备」套（用于挑选并入目标） */
+  personal: ChecklistTemplate[];
+  onImported: () => void;
+}) {
+  const q = useAsync(
+    useCallback(() => api.listItems({ mineOnly: true }), []),
+    [],
+  );
+  const [busy, setBusy] = useState(false);
+
+  const items = q.data ?? [];
+
+  // 没有旧数据 / 还在读 / 读失败 → 整块不渲染（这是历史包袱，不该占主界面）
+  if (q.loading || q.error !== undefined || items.length === 0) return null;
+
+  const run = (): void => {
+    void Taro.showModal({
+      title: '并入常备物品',
+      content: `物品库里有 ${items.length} 件，会复制进「我的常备」（同名不重复加）。原物品库不删除。`,
+      confirmText: '开始并入',
+    }).then(async (res) => {
+      if (!res.confirm) return;
+      setBusy(true);
+      try {
+        // 目标清单：同名优先 → 否则第一套我的常备 → 都没有就新建
+        let target = personal.find((t) => t.name === LEGACY_TARGET) ?? personal[0];
+        if (target === undefined) {
+          target = await api.createChecklistTemplate({
+            ...(familyId !== '' ? { familyId } : {}),
+            name: LEGACY_TARGET,
+            scope: 'PERSONAL',
+            items: [],
+          });
+        }
+
+        const existing = target.items;
+        const had = new Set(existing.map((i) => i.name));
+        const add: ChecklistTemplateItem[] = items
+          .filter((i) => !had.has(i.name))
+          .map((i) => ({
+            name: i.name,
+            quantity: i.quantity,
+            ...(i.category !== undefined ? { category: i.category } : {}),
+          }));
+
+        if (add.length === 0) {
+          void Taro.showToast({ title: '物品库里的东西都已在常备清单里', icon: 'none' });
+          onImported();
+          return;
+        }
+
+        await api.updateChecklistTemplate(target.id, {
+          version: target.version,
+          items: [...existing, ...add],
+        });
+        void Taro.showToast({ title: `已并入 ${add.length} 项到「${target.name}」`, icon: 'none' });
+        onImported();
+      } catch (e: unknown) {
+        void Taro.showToast({
+          title: templateWriteUnavailableHint(e instanceof Error ? e.message : '并入失败'),
+          icon: 'none',
+        });
+      } finally {
+        setBusy(false);
+      }
+    });
+  };
+
+  return (
+    <View className="card card--flush" style={{ marginTop: 12 }}>
+      <View className="row-between" style={{ padding: '10px 14px' }}>
+        <View>
+          <Text style={{ fontSize: 12.5, fontWeight: 600 }}>还有旧物品库的数据</Text>
+          <Text className="muted" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
+            {items.length} 件（已不再单独维护），可一次性并入「我的常备」
+          </Text>
+        </View>
+        <Text className="cl-link" onClick={busy ? undefined : run} style={{ flexShrink: 0 }}>
+          {busy ? '并入中…' : '并入'}
+        </Text>
       </View>
     </View>
   );

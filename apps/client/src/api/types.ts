@@ -300,6 +300,13 @@ export interface ChecklistItem {
 export interface ChecklistTemplateItem {
   name: string;
   quantity: number;
+  /**
+   * 类型（2026-10-27 反馈④第二次「条目要按类型分类」）。
+   * 取值对齐 `ITEM_CATEGORIES`（证件/电子/衣物/洗护/药品/食品/母婴/其他），
+   * 但不做枚举硬约束 —— 家庭自建分类不该被前端类型挡住。
+   * 缺省 = 未分类（存量条目都没有这个字段）。
+   */
+  category?: string;
 }
 
 /**

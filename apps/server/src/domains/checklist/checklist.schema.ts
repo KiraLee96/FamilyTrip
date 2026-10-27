@@ -112,6 +112,11 @@ export const createTemplateSchema = z.object({
       z.object({
         name: z.string().min(1).max(64),
         quantity: z.coerce.number().int().min(1).default(1),
+        /**
+         * 条目类型（2026-10-27 反馈：清单条目要按类型归类）。
+         * 不锁枚举：家庭自建分类（如「露营」）不该被后端拒；宽度对齐 item.category。
+         */
+        category: z.string().trim().min(1).max(16).optional(),
       }),
     )
     .max(200)
@@ -139,6 +144,8 @@ export const updateTemplateSchema = z
         z.object({
           name: z.string().trim().min(1, '物品名不能为空').max(64),
           quantity: z.coerce.number().int().min(1).max(9999).default(1),
+          /** 条目类型；不传 = 未分类（前端按「未分类」分组） */
+          category: z.string().trim().min(1).max(16).optional(),
         }),
       )
       .max(200, '单套清单最多 200 条')

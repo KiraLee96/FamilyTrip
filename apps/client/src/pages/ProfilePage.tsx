@@ -85,13 +85,13 @@ export function ProfilePage() {
   return (
     <PageLayout
       title="我的"
-      sub={tab === 'account' ? '账号与家庭成员' : '长期清单：维护一次，处处引用'}
+      sub={tab === 'account' ? '账号与家庭成员' : '常备物品：家庭一半，我的一半'}
     >
       <View className="tabs tabs--sub">
         {(
           [
             ['account', '账号与家庭'],
-            ['checklist', '物品清单'],
+            ['checklist', '常备物品'],
           ] as Array<[ProfileTab, string]>
         ).map(([k, label]) => (
           <View
@@ -116,7 +116,7 @@ export function ProfilePage() {
             <MgmtEntry
               icon="package"
               label="物品与清单"
-              hint="常备物品 / 家庭 / 我的"
+              hint="家庭一半 / 我的一半"
               onClick={() => setTab('checklist')}
             />
             <MgmtEntry

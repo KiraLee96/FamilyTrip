@@ -69,6 +69,11 @@ function scopeOf(row: Row): string | undefined {
 export interface TemplateItem {
   name: string;
   quantity: number;
+  /**
+   * 条目类型（证件 / 电子 / 衣物 / 洗护 / 药品 / 食品 / 母婴 / 其他，或家庭自建）。
+   * 2026-10-27 反馈：清单条目要按类型归类。缺省 = 未分类（存量条目都没有）。
+   */
+  category?: string;
 }
 
 /**
@@ -123,9 +128,13 @@ export function parseTemplateItems(raw: unknown): TemplateItem[] {
     if (name === '') continue;
     const qty = Number(row['quantity']);
     // quantity 非法（NaN / 越界）按 1 兜底：宁可少显示数量，不可整条丢失
+    // 类型：只接受非空字符串，其它形态丢弃（不让脏数据把分组做出「undefined」列）
+    const rawCat = row['category'];
+    const category = typeof rawCat === 'string' ? rawCat.trim().slice(0, 16) : '';
     out.push({
       name: name.slice(0, 64),
       quantity: Number.isInteger(qty) && qty >= 1 && qty <= 9999 ? qty : 1,
+      ...(category !== '' ? { category } : {}),
     });
   }
   return out;
@@ -480,7 +489,7 @@ export class ChecklistService {
       name: string;
       scope: 'SHARED' | 'PERSONAL';
       ownerId?: bigint;
-      items: Array<{ name: string; quantity: number }>;
+      items: Array<{ name: string; quantity: number; category?: string }>;
     },
   ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {

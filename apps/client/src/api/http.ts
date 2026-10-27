@@ -464,7 +464,13 @@ function parseTemplateItems(src: unknown): ChecklistTemplateItem[] {
     const name = asString(row['name']).trim();
     if (name === '') continue;
     const q = asNumber(row['quantity']);
-    out.push({ name, quantity: q >= 1 ? q : 1 });
+    // 类型（2026-10-27）：存量条目没有这个字段 → 不投影，界面归到「未分类」
+    const category = asString(row['category']).trim();
+    out.push({
+      name,
+      quantity: q >= 1 ? q : 1,
+      ...(category !== '' ? { category } : {}),
+    });
   }
   return out;
 }
