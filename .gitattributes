@@ -1,6 +1,10 @@
 # 统一换行符为 LF，匹配 Prettier endOfLine: lf，避免 Windows/CRLF 导致格式化抖动
 * text=auto eol=lf
 
+# Windows 批处理脚本例外：检出必须是 CRLF，否则 cmd.exe 解析 goto/label 可能出错
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
 # 二进制资源不转换
 *.png binary
 *.jpg binary

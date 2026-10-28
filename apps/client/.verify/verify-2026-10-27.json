@@ -1,0 +1,76 @@
+{
+  "pass": 14,
+  "total": 14,
+  "results": [
+    {
+      "name": "R1a 头像 URL 已落库",
+      "ok": true,
+      "detail": "http://10.23.30.90:3000/media-files/a/390331277703647232/1793063550974-rni92hya.png"
+    },
+    {
+      "name": "R1b 头像位置渲染出真实图片",
+      "ok": true,
+      "detail": "http://10.23.30.90:3000/media-files/a/390331277703647232/1793063550974-rni92hya.png"
+    },
+    {
+      "name": "R7a 物品清单面板打开且有内容",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R4a 已结束行程无「邀请同行人」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R4b 已结束行程有「分享行程长图」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R3a 已结束行程安排可见",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R3b 已结束行程无「添加安排」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R5a 长图弹层打开",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R5b 长图画布已绘制（像素非空）",
+      "ok": true,
+      "detail": "1500x2196, dataURL 310842 字符"
+    },
+    {
+      "name": "R5d 生成成功状态可见",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R5c 长图弹层无招募入口（无加入/复制链接/邀请码形态字符串）",
+      "ok": true,
+      "detail": "signals=; codeLike=false"
+    },
+    {
+      "name": "R6a 未结束行程有「邀请同行人」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R6b 未结束行程可「添加安排」",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "R0 页面无未捕获异常",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}
