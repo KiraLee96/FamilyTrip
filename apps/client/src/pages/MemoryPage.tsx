@@ -65,8 +65,13 @@ export function MemoryPage() {
     if (tripId === null) return;
     setBusy(true);
     try {
-      await pickAndUploadPhotos(tripId);
+      const uploaded = await pickAndUploadPhotos(tripId);
+      if (uploaded.length === 0) {
+        void Taro.showToast({ title: '没有选中照片', icon: 'none' });
+        return;
+      }
       reloadAll();
+      void Taro.showToast({ title: `已上传 ${uploaded.length} 张`, icon: 'success' });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : '上传失败，请重试';
       // 用户主动取消不提示（chooseImage 的 fail 也是这个文案）

@@ -192,6 +192,21 @@ function toUser(raw: Record<string, unknown>): User {
 }
 
 /**
+ * GET / PATCH `/auth/me` 的统一拆包。
+ * 后端 auth.controller.ts 两种响应都是 `{ user }`（PATCH 另带 updatedAt）。
+ * 旧实现把 `{ user }` 当裸 user 投影，id/nickname 全为空 —— 重登后本地会话被
+ * 空用户覆盖，界面表现就是「昵称改完下次登录又没了」（反馈⑤）。
+ * 同时兼容极老后端直接返回裸 user 行的形状，避免版本错位时再次白屏。
+ */
+function unwrapUser(data: Record<string, unknown>): User {
+  const nested = data['user'];
+  if (nested !== null && typeof nested === 'object' && !Array.isArray(nested)) {
+    return toUser(nested as Record<string, unknown>);
+  }
+  return toUser(data);
+}
+
+/**
  * ─── 后端行 → 客户端模型投影（真后端形状适配层） ───
  * 服务端各域返回存储行（bigint 序列化 + 领域字段名 + 日期 ISO 全串），
  * 界面层只认 api/types.ts 的契约模型。适配全部收敛在本实现层：
@@ -376,12 +391,15 @@ function toExpense(raw: Record<string, unknown>): Expense {
 }
 
 function toFamily(raw: Record<string, unknown>): Family {
+  const reported = asNumber(raw['memberCount']);
   return {
     id: asString(raw['id']),
     name: asString(raw['name']),
     // 服务端字段名 ownerId；客户端契约 ownerUserId
     ownerUserId: asString(raw['ownerId']),
-    memberCount: asNumber(raw['memberCount']) || 1,
+    // 老后端 listMine 不返回 memberCount，先按「至少户主 1 人」兜底；
+    // createHttpClient.listFamilies / getFamily 会用详情里的 members.length 覆盖成真实人数。
+    memberCount: reported > 0 ? reported : 1,
     ...(optString(raw['inviteCode']) !== undefined
       ? { inviteCode: optString(raw['inviteCode']) }
       : {}),
@@ -727,26 +745,53 @@ export function createHttpClient(): ApiClient {
       Taro.setStorageSync(TOKEN_KEY, session.token);
       return toUser(session.user as unknown as Record<string, unknown>);
     },
-    me: () =>
-      request<User>('GET', '/auth/me').then((u) => toUser(u as unknown as Record<string, unknown>)),
+    // GET /auth/me 的 data = { user }；旧写法直接把包裹层当 user 投影会得到空昵称，
+    // 重登后覆盖本地会话，表现为「改名下次登录又没了」（反馈⑤）。统一走 unwrapUser。
+    me: async () => {
+      const r = await request<Record<string, unknown>>('GET', '/auth/me');
+      return unwrapUser(r);
+    },
     // PATCH /auth/me —— 更新本人资料（昵称 / 头像）。
     // 🔴 信封口径（对照 auth.controller.ts 的 handler）：
     //    data = { user, updatedAt } —— 不是裸 user 对象，必须拆一层再投影；
     //    与 GET /auth/me 的 data = { user } 同形（恰好都是 { user } 包裹）。
     updateMe: async (input: UpdateProfileInput) => {
-      const r = await request<{ user: Record<string, unknown> }>('PATCH', '/auth/me', input);
-      return toUser(r.user);
+      const r = await request<Record<string, unknown>>('PATCH', '/auth/me', input);
+      return unwrapUser(r);
     },
     listFamilies: async () => {
       const rows = await requestList<Record<string, unknown>>('GET', '/families');
-      return rows.map(toFamily);
+      const families = rows.map(toFamily);
+      // 老后端 listMine 不返回 memberCount（前端恒回退成 1，反馈②）。并发取详情，
+      // 用 members.length 补齐；单个家庭详情失败时保留列表原值，不让整个列表挂掉。
+      await Promise.all(
+        families.map(async (family, index) => {
+          try {
+            const r = await request<{ members?: Array<Record<string, unknown>> }>(
+              'GET',
+              `/families/${family.id}`,
+            );
+            if (Array.isArray(r.members)) {
+              families[index] = { ...family, memberCount: r.members.length };
+            }
+          } catch {
+            // 详情不可用：保留列表口径，页面还有兜底人数可显示
+          }
+        }),
+      );
+      return families;
     },
     getFamily: async (id) => {
       const r = await request<{
         family: Record<string, unknown>;
-        members: Array<Record<string, unknown>>;
+        members?: Array<Record<string, unknown>>;
+        memberCount?: number | string;
       }>('GET', `/families/${id}`);
-      const detail: FamilyDetail = { family: toFamily(r.family), members: r.members.map(toMember) };
+      const members = (r.members ?? []).map(toMember);
+      const family = toFamily(r.family);
+      // 详情里的成员数组是唯一可信的人数来源：保证「成员（2）」与卡片标签一致（反馈②）。
+      const count = members.length || asNumber(r['memberCount']) || family.memberCount;
+      const detail: FamilyDetail = { family: { ...family, memberCount: count }, members };
       return detail;
     },
     createFamily: async (input) => {

@@ -116,6 +116,7 @@ export function ProfilePage() {
               <FamilyCard
                 key={f.id}
                 family={f}
+                user={user}
                 onChanged={q.reload}
                 onShareInfo={(info) => (shareRef.current = info)}
               />
@@ -405,10 +406,12 @@ function NicknameEditor({ user }: { user: User }) {
 /** 单个家庭卡片：折叠态只显示概要；展开后拉取成员/邀请码，提供改名/解散/成员增删 */
 function FamilyCard({
   family,
+  user,
   onChanged,
   onShareInfo,
 }: {
   family: Family;
+  user: User | undefined;
   onChanged: () => void;
   onShareInfo: (info: { code: string; name: string }) => void;
 }) {
@@ -437,13 +440,17 @@ function FamilyCard({
   const live = detail.data?.family;
   const inviteCode = live?.inviteCode ?? family.inviteCode;
   const members = detail.data?.members ?? [];
+  // 展开后以真实成员数组为准；老后端列表不返回 memberCount 时也能显示 2 人（反馈②）。
+  const memberCount =
+    detail.data !== null && detail.data !== undefined ? members.length : family.memberCount;
+  const familyName = live?.name ?? family.name;
 
   return (
     <View className="card family-card">
       <View className="family-card__head" onClick={toggle}>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text className="family-card__name">{family.name}</Text>
-          <Text className="family-card__sub">{family.memberCount} 位成员</Text>
+          <Text className="family-card__sub">{memberCount} 位成员</Text>
         </View>
         <Text className={`chev ${open ? 'rotate-180' : ''}`}>
           <Icon name="chevron-right" size={18} />
@@ -506,7 +513,13 @@ function FamilyCard({
 
               <Text className="family-card__label">成员（{members.length}）</Text>
               {members.map((m) => (
-                <MemberRow key={m.id} member={m} onRemoved={rerun} />
+                <MemberRow
+                  key={m.id}
+                  member={m}
+                  currentUser={user}
+                  familyName={familyName}
+                  onRemoved={rerun}
+                />
               ))}
 
               <AddMemberRow familyId={family.id} onAdded={rerun} />
@@ -527,13 +540,39 @@ function FamilyCard({
   );
 }
 
-function MemberRow({ member, onRemoved }: { member: FamilyMember; onRemoved: () => void }) {
+function MemberRow({
+  member,
+  currentUser,
+  familyName,
+  onRemoved,
+}: {
+  member: FamilyMember;
+  currentUser: User | undefined;
+  familyName: string;
+  onRemoved: () => void;
+}) {
   const [busy, setBusy] = useState(false);
+  // 后端创建家庭时曾把户主 displayName 写成家庭名（反馈①）。只在「本人成员 +
+  // 展示名恰好等于家庭名」这一明确的脏数据形态下用账号昵称兜底，不覆盖其它
+  // 成员或手动设置的别名；后端按派送单修好后该分支自然不再命中。
+  const nickname = (currentUser?.nickname ?? '').trim();
+  const mine =
+    member.userId !== null &&
+    currentUser?.id !== undefined &&
+    nickname !== '' &&
+    member.userId === currentUser.id;
+  const wrongName = member.displayName === '' || member.displayName === familyName;
+  const name =
+    mine && wrongName
+      ? nickname
+      : member.displayName.trim() !== ''
+        ? member.displayName
+        : '未命名成员';
 
   const remove = useCallback(async () => {
     const res = await Taro.showModal({
       title: '移除成员',
-      content: `确定把「${member.displayName}」移出家庭？`,
+      content: `确定把「${name}」移出家庭？`,
       confirmText: '移除',
       confirmColor: '#e5484d',
     });
@@ -547,7 +586,7 @@ function MemberRow({ member, onRemoved }: { member: FamilyMember; onRemoved: () 
     } finally {
       setBusy(false);
     }
-  }, [member.id, member.displayName, onRemoved]);
+  }, [member.id, name, onRemoved]);
 
   return (
     <View className="member">
@@ -555,7 +594,7 @@ function MemberRow({ member, onRemoved }: { member: FamilyMember; onRemoved: () 
         <Icon name="user" size={16} />
       </View>
       <View className="member__body">
-        <Text className="member__name">{member.displayName}</Text>
+        <Text className="member__name">{name}</Text>
         <Text className="member__sub">
           {member.role === 'OWNER' ? '管理员' : '成员'}
           {member.isVirtual ? ' · 代管' : ''}

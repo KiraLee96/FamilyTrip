@@ -15,7 +15,7 @@
  */
 
 import Taro from '@tarojs/taro';
-import { api, type MediaAsset, type Trip } from '../api';
+import { api, DATA_SOURCE, type MediaAsset, type Trip } from '../api';
 
 export interface UploadedPhoto {
   asset: MediaAsset;
@@ -31,45 +31,95 @@ export interface UploadedAvatar {
 }
 
 /**
+ * 从本地临时路径推断 MIME。
+ * Taro 在部分端（尤其 H5 / 微信头像选择器）的 tempFiles 不带 type，
+ * 旧实现一律按 image/jpeg 申报，PNG/WebP 会在 presign 或 confirm 与实际文件
+ * 不符，也拿不到正确扩展名 —— 照片"传了却看不到"的诱因之一（反馈③）。
+ */
+function mimeTypeOfPath(filePath: string): string {
+  const ext = /\.([A-Za-z0-9]+)(?:[?#].*)?$/.exec(filePath)?.[1]?.toLowerCase() ?? '';
+  switch (ext) {
+    case 'png':
+      return 'image/png';
+    case 'webp':
+      return 'image/webp';
+    case 'gif':
+      return 'image/gif';
+    case 'bmp':
+      return 'image/bmp';
+    default:
+      return 'image/jpeg';
+  }
+}
+
+/**
  * 单个文件的「预签名 → 直传 → 登记」三段链路。
  * 照片墙与头像上传共用；purpose 区分用途（AVATAR 不走家庭媒体池）。
+ * 每一段单独报错，避免把 presign / 直传 / confirm 混成一句「上传失败」无法定位。
  */
 async function uploadOne(
-  file: { path: string; size: number },
+  file: { path: string; size?: number },
   tripId?: string,
   purpose?: 'MEDIA' | 'AVATAR',
 ): Promise<UploadedPhoto> {
   const fileName = file.path.split('/').pop() ?? 'photo.jpg';
+  const mimeType = mimeTypeOfPath(file.path);
+  // 部分端不返回 size；后端 presign 要求 byteSize > 0，拿不到就现读文件信息
+  const reported = typeof file.size === 'number' && file.size > 0 ? file.size : 0;
+  const byteSize = reported > 0 ? reported : await fileByteSize(file.path);
+  if (byteSize <= 0) throw new Error('无法读取图片大小，请重试或换一张图');
 
   // 1) 预签名（服务端生成 fileKey，防目录穿越）
-  const presign = await api.presignUpload({
-    fileName,
-    mimeType: 'image/jpeg',
-    byteSize: file.size,
-    ...(purpose !== undefined ? { purpose } : {}),
-  });
+  let presign: Awaited<ReturnType<typeof api.presignUpload>>;
+  try {
+    presign = await api.presignUpload({
+      fileName,
+      mimeType,
+      byteSize,
+      ...(purpose !== undefined ? { purpose } : {}),
+    });
+  } catch (e: unknown) {
+    throw new Error(`预签名失败：${e instanceof Error ? e.message : '请检查媒体服务配置'}`);
+  }
 
   // 2) 直传对象存储（Mock 模式 uploadUrl 为空 → 跳过）
-  if (presign.uploadUrl) {
-    const up = await Taro.uploadFile({
-      url: presign.uploadUrl,
-      filePath: file.path,
-      name: 'file',
-      ...(presign.headers !== undefined ? { header: presign.headers } : {}),
-    });
-    if (up.statusCode < 200 || up.statusCode >= 300) {
-      throw new Error(`上传失败（HTTP ${up.statusCode}）`);
+  if (typeof presign.uploadUrl === 'string' && presign.uploadUrl !== '') {
+    // Taro.uploadFile 用 multipart，必须自己生成带 boundary 的 Content-Type。
+    // 若把签名返回的 Content-Type 原样塞进 header，boundary 会丢失，收单端点
+    // 解析不到 file 分片 —— 表现为「照片传了但回忆墙没有」（反馈③）。
+    const headers: Record<string, string> = { ...(presign.headers ?? {}) };
+    delete headers['Content-Type'];
+    delete headers['content-type'];
+    let statusCode: number;
+    try {
+      const up = await Taro.uploadFile({
+        url: presign.uploadUrl,
+        filePath: file.path,
+        name: 'file',
+        ...(Object.keys(headers).length > 0 ? { header: headers } : {}),
+      });
+      statusCode = up.statusCode;
+    } catch (e: unknown) {
+      throw new Error(`图片直传失败：${e instanceof Error ? e.message : '网络异常'}`);
+    }
+    if (statusCode < 200 || statusCode >= 300) {
+      throw new Error(`图片直传失败（HTTP ${statusCode}）：请检查媒体上传地址与代理配置`);
     }
   }
 
   // 3) 登记资产
-  const asset = await api.confirmMediaAsset({
-    ...(tripId !== undefined ? { tripId } : {}),
-    fileKey: presign.fileKey,
-    mimeType: 'image/jpeg',
-    byteSize: file.size,
-    ...(purpose !== undefined ? { purpose } : {}),
-  });
+  let asset: MediaAsset;
+  try {
+    asset = await api.confirmMediaAsset({
+      ...(tripId !== undefined ? { tripId } : {}),
+      fileKey: presign.fileKey,
+      mimeType,
+      byteSize,
+      ...(purpose !== undefined ? { purpose } : {}),
+    });
+  } catch (e: unknown) {
+    throw new Error(`照片登记失败：${e instanceof Error ? e.message : '请重试'}`);
+  }
 
   return { asset, localPath: file.path };
 }
@@ -124,10 +174,16 @@ export async function uploadAvatarImage(
   const size = byteSize ?? (await fileByteSize(tempFilePath));
   if (size <= 0) throw new Error('无法读取图片大小，请重试或换一张图');
   const { asset } = await uploadOne({ path: tempFilePath, size }, undefined, 'AVATAR');
-  // 🔴 老写法 `asset.url !== ''` 会把 undefined 放行（`undefined !== ''` 为真），
-  //    于是 avatarUrl 被传成 undefined，PATCH 时字段消失、库里永远 NULL。
-  //    这里按「非空字符串」判定，拿不到持久 URL 就退本地临时路径（本会话可见）。
-  const settled = typeof asset.url === 'string' && asset.url !== '' ? asset.url : tempFilePath;
+  const url = typeof asset.url === 'string' ? asset.url : '';
+  // 真后端的 PATCH /auth/me 只接受 http(s) 绝对 URL（auth.schema.ts 正则）。
+  // 旧实现拿不到持久 URL 时回退 wxfile:/blob: 本地路径，PATCH 必然 400，
+  // 用户看到的就是「头像更新失败且没有任何更新」（反馈④）。宁可明确报出
+  // 服务端媒体配置问题，也不要静默提交一个注定被拒的地址。
+  // Mock 无对象存储，保留本地临时路径以便开发态即时预览。
+  if (DATA_SOURCE === 'http' && !/^https?:\/\//i.test(url)) {
+    throw new Error('头像上传未完成：服务端未返回可用的图片地址，请检查媒体服务配置');
+  }
+  const settled = url !== '' ? url : tempFilePath;
   return { avatarUrl: settled, localPath: tempFilePath };
 }
 
