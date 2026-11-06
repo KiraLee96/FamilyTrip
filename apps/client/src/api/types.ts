@@ -66,7 +66,17 @@ export interface FamilyMember {
   isVirtual: boolean;
   /** 代管人 memberId（虚拟成员必有；真实成员为 null） */
   managedBy: string | null;
+  /** 家庭内**称呼**（如「爸爸」「二姨」），由家人设定，与账号昵称相互独立 */
   displayName: string;
+  /**
+   * 账号昵称（2026-11-06 起后端随成员行返回）。
+   *
+   * 渲染口径：主行显示 `nickname ?? displayName`，副行在
+   * `nickname !== null && nickname !== displayName` 时用灰色小字显示 `displayName`。
+   * · 虚拟成员没有账号 → `null`
+   * · 老后端 / Mock 未返回 → `undefined`（按 null 处理，退化成只显示 displayName）
+   */
+  nickname?: string | null;
   joinedAt: string;
 }
 
@@ -108,7 +118,15 @@ export interface TripMember {
   /** 外部同行者（如朋友），不属家庭（PRD §2.6 临时家庭模型） */
   isExternal: boolean;
   accessLevel: TripAccessLevel;
+  /** 行程内**称呼**（如「爸爸」「同事小王」），由主导者设定，与账号昵称相互独立 */
   displayName: string;
+  /**
+   * 账号昵称（2026-11-06 起后端随成员行返回）。
+   *
+   * 与家庭成员同口径：主行 `nickname ?? displayName`，副行灰字 `displayName`（两者不同时）。
+   * 外部同行者 / 虚拟成员没有账号 → `null`；老后端 / Mock 未返回 → `undefined`。
+   */
+  nickname?: string | null;
   /** 代管人 memberId（虚拟成员必有；真实成员为 null） */
   managedBy: string | null;
   joinedAt: string;
