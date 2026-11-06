@@ -534,7 +534,13 @@ export interface MediaAsset {
   id: string;
   /** 可访问 URL（后端拼接，方案 A）；Mock 联调置空串 */
   url: string;
-  familyId: string;
+  /**
+   * 归属家庭。2026-11-05 后端把 `media_asset.family_id` 放宽为可空：
+   * AVATAR 是用户资产（fileKey 前缀 `a/<userId>/`），不隶属家庭 → null；
+   * MEDIA 才是家庭照片（前缀 `f/<familyId>/`）→ 字符串。
+   * 与 `media.service.ts` 的 `familyId: bigint | null` 及 serializeRow 输出对齐。
+   */
+  familyId: string | null;
   tripId: string | null;
   ownerId: string;
   fileKey: string;

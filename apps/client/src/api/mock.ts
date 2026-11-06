@@ -1637,12 +1637,13 @@ export function createMockClient(): ApiClient {
       return respond<PresignUploadResult>({ uploadUrl: '', expiresIn: 0, fileKey });
     },
     async confirmMediaAsset(input) {
-      // AVATAR 用途不落家庭媒体池（Mock 与真后端建议口径一致：头像是用户资产），
-      // 返回一个轻量资产行供上传链路解链；url 恒为空串，界面按本地路径降级。
+      // AVATAR 用途不落家庭媒体池（头像是用户资产），返回一个轻量资产行供
+      // 上传链路解链；url 恒为空串，界面按本地路径降级。
+      // 2026-11-05：familyId 与真后端一致置 null（media_asset.family_id 已放宽可空）。
       if (input.purpose === 'AVATAR') {
         const avatarAsset: MediaAsset = {
           id: nextId('media'),
-          familyId: state.families[0]?.id ?? FAMILY.id,
+          familyId: null,
           tripId: null,
           ownerId: ME.id,
           fileKey: input.fileKey,
