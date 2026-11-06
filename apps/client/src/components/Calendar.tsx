@@ -36,6 +36,16 @@ function mdText(ds: string): string {
   return `${Number(ds.slice(5, 7))}/${Number(ds.slice(8, 10))}`;
 }
 
+/**
+ * 假期区间文案（含头含尾）。
+ *
+ * 单日假只写一个日期：2027 起端午（6/9）、中秋（9/15）各只放 1 天，
+ * 原样拼区间会渲染成「端午节 6/9–6/9」，看着像数据出错。
+ */
+function holidayRangeText(from: string, to: string): string {
+  return from === to ? mdText(from) : `${mdText(from)}–${mdText(to)}`;
+}
+
 export interface DateRangeSheetProps {
   /** 面板标题 */
   title?: string;
@@ -200,7 +210,7 @@ export function DateRangeSheet({
             <View className="cal__holidays">
               {monthHolidays.map((h) => (
                 <Text key={`${h.name}-${h.from}`} className="cal__holidays-item">
-                  {h.name} {mdText(h.from)}–{mdText(h.to)}
+                  {h.name} {holidayRangeText(h.from, h.to)}
                 </Text>
               ))}
             </View>
