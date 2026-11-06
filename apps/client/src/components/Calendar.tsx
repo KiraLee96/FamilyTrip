@@ -26,8 +26,9 @@ import {
   parseYmd,
   thisWeekend,
   todayYmd,
+  yearOptionsOf,
 } from '../utils/calendar';
-import { dayMarkOf, holidayRangesOfMonth } from '../utils/holidays';
+import { dayMarkOf, holidayRangesOfMonth, knownHolidayYears } from '../utils/holidays';
 
 const WEEK_LABEL = ['一', '二', '三', '四', '五', '六', '日'];
 
@@ -64,6 +65,9 @@ export function DateRangeSheet({
 }: DateRangeSheetProps) {
   const [selStart, setSelStart] = useState(initialStart);
   const [selEnd, setSelEnd] = useState(initialEnd);
+  // 年份条：默认收起，点月历标题展开。之前只能逐月翻，从 2026-11 到 2027-10
+  // 要按 11 次右箭头，用户几乎不可能发现「明年已经有假期数据」。
+  const [yearPickerOpen, setYearPickerOpen] = useState(false);
 
   const today = todayYmd();
 
@@ -75,6 +79,8 @@ export function DateRangeSheet({
 
   const cells = useMemo(() => buildMonthCells(cursor.y, cursor.m), [cursor]);
   const monthHolidays = useMemo(() => holidayRangesOfMonth(cursor.y, cursor.m), [cursor]);
+  const knownYears = useMemo(() => knownHolidayYears(), []);
+  const yearOptions = useMemo(() => yearOptionsOf(cursor.y, knownYears), [cursor.y, knownYears]);
 
   const pick = (ds: string): void => {
     const next = nextRangeSelection(selStart, selEnd, ds);
@@ -147,13 +153,40 @@ export function DateRangeSheet({
             <View className="cal__nav-btn" onClick={() => shiftMonth(-1)}>
               <Icon name="chevron-left" size={17} />
             </View>
-            <Text className="cal__nav-title">
-              {cursor.y} 年 {cursor.m} 月
-            </Text>
+            <View className="cal__nav-title" onClick={() => setYearPickerOpen((open) => !open)}>
+              <Text>
+                {cursor.y} 年 {cursor.m} 月
+              </Text>
+              {/* 用字符切换而不是 CSS transform：小程序 WXSS 对 transition 的支持各基础库不一 */}
+              <Text className="cal__nav-caret">{yearPickerOpen ? '▴' : '▾'}</Text>
+            </View>
             <View className="cal__nav-btn" onClick={() => shiftMonth(1)}>
               <Icon name="chevron-right" size={17} />
             </View>
           </View>
+
+          {/* 年份条：点标题展开，直接跳年。落在目标年 1 月而不是沿用当前月，
+              因为每年 1 月必有元旦，能立刻看到「休」和本月假期一览；
+              没有数据的年份按月历原有逻辑退化为不标记，不会报错。 */}
+          {yearPickerOpen && (
+            <View className="cal__years">
+              <Text className="cal__years-hint">
+                已收录节假日：{knownYears.join('、')} 年（其它年份不标「休 / 班」）
+              </Text>
+              {yearOptions.map((y) => (
+                <Text
+                  key={y}
+                  className={`cal__year ${y === cursor.y ? 'cal__year--on' : ''}`}
+                  onClick={() => {
+                    setCursor({ y, m: 1 });
+                    setYearPickerOpen(false);
+                  }}
+                >
+                  {y}
+                </Text>
+              ))}
+            </View>
+          )}
 
           <View className="cal__week">
             {WEEK_LABEL.map((w) => (

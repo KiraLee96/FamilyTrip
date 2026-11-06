@@ -120,3 +120,28 @@ export function buildMonthCells(y: number, m: number): Array<{ day: number; ds: 
   while (list.length < 35) list.push(null);
   return list;
 }
+
+/**
+ * 年份快捷选择的候选列表（供 `DateRangeSheet` 的年份条使用）。
+ *
+ * 口径：
+ *   · 以当前所在年为中心 ±2，保证「翻到下一年」始终一键可达；
+ *   · 并入「字典里已有节假日数据的年份」（`knownHolidayYears()`），
+ *     这样即使用户已经翻到没有数据的 2029，也能一键回到 2026 / 2027；
+ *   · 去重、升序；非法值（NaN / 越界）静默丢弃，不让脏数据污染 UI。
+ *
+ * 抽成纯函数是为了能直接单测候选范围，避免把「哪几年能点」藏在视图里。
+ */
+export function yearOptionsOf(cursorYear: number, knownYears: readonly number[] = []): number[] {
+  const set = new Set<number>();
+  if (Number.isInteger(cursorYear)) {
+    for (let d = -2; d <= 2; d += 1) {
+      const y = cursorYear + d;
+      if (y >= 1900 && y <= 9999) set.add(y);
+    }
+  }
+  for (const y of knownYears) {
+    if (Number.isInteger(y) && y >= 1900 && y <= 9999) set.add(y);
+  }
+  return [...set].sort((a, b) => a - b);
+}

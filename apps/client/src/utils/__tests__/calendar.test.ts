@@ -18,7 +18,9 @@ import {
   nextRangeSelection,
   parseYmd,
   rangeText,
+  yearOptionsOf,
 } from '../calendar';
+import { knownHolidayYears } from '../holidays';
 
 describe('nextRangeSelection · 两次点选语义', () => {
   it('无起点时，点一下即为起点', () => {
@@ -114,5 +116,37 @@ describe('parseYmd / buildMonthCells · 网格构建', () => {
   it('闰年 2 月有 29 天', () => {
     expect(daysInMonth(2028, 2)).toBe(29);
     expect(daysInMonth(2027, 2)).toBe(28);
+  });
+});
+
+describe('yearOptionsOf · 日历年份快捷条', () => {
+  it('默认为当前年 ±2，升序且无重复', () => {
+    expect(yearOptionsOf(2026)).toEqual([2024, 2025, 2026, 2027, 2028]);
+    expect(yearOptionsOf(2027)).toEqual([2025, 2026, 2027, 2028, 2029]);
+  });
+
+  it('用户在 2026 年时，2027 必须是一键可达（本次需求的回归点）', () => {
+    const options = yearOptionsOf(2026, knownHolidayYears());
+    expect(options).toContain(2027);
+    expect(options).toContain(2026);
+  });
+
+  it('翻到没有数据的年份后，仍能一键回到已收录节假日的年份', () => {
+    const options = yearOptionsOf(2030, [2026, 2027]);
+    expect(options).toContain(2026);
+    expect(options).toContain(2027);
+    expect(options).toEqual([...options].sort((a, b) => a - b));
+    expect(new Set(options).size).toBe(options.length);
+  });
+
+  it('重复值与脏数据被静默丢弃，不会污染 UI', () => {
+    expect(yearOptionsOf(2026, [2026, 2026, 2027])).toEqual([2024, 2025, 2026, 2027, 2028]);
+    expect(yearOptionsOf(2026, [Number.NaN, 0, 99999, -1, 2027.5])).toEqual([
+      2024, 2025, 2026, 2027, 2028,
+    ]);
+  });
+
+  it('cursorYear 非法时仍返回合法字典年份，不抛错', () => {
+    expect(yearOptionsOf(Number.NaN, [2026, 2027])).toEqual([2026, 2027]);
   });
 });
