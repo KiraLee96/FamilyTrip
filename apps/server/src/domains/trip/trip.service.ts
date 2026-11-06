@@ -642,7 +642,25 @@ export class TripService {
       const now = await tx.db.dbNow();
       const data: Row = { updatedAt: now };
       if (patch.accessLevel !== undefined) data['accessLevel'] = patch.accessLevel;
-      if (patch.displayName !== undefined) data['displayName'] = patch.displayName;
+      if (patch.displayName !== undefined) {
+        /**
+         * 🔴 2026-11-06 口径 A（与 `family.service.updateMember` 同源规则）：
+         *    真实同行者（`userId` 非空）的名字是账号昵称的投影，
+         *    改昵称时会被 `auth.service.syncMemberDisplayNames` 全量覆盖，
+         *    所以不允许在这里**事后**单独设 —— 否则用户下次改名时名字会「莫名回弹」。
+         *    （「加入/被邀请那一刻」指定称呼仍允许，那属于初始快照。）
+         *
+         *    外部/虚拟同行者（`userId` 为空，如「奶奶」「同事小王」）没有账号，
+         *    名字是它唯一标识，必须允许改。
+         */
+        if (m['userId'] !== null && m['userId'] !== undefined) {
+          throw new AppError(
+            ErrorCode.VALIDATION_FAILED,
+            '真实同行者的展示名跟随账号昵称，请让本人通过「我的」修改昵称',
+          );
+        }
+        data['displayName'] = patch.displayName;
+      }
       if (patch.managedBy !== undefined) {
         data['managedBy'] = patch.managedBy === null ? null : BigInt(patch.managedBy);
       }

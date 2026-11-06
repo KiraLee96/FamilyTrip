@@ -19,7 +19,7 @@
 
 import { AppError, ErrorCode } from '../../common/errors/error-code.js';
 import type { Row, TableDriver } from '../../common/db/table-client.js';
-import type { DomainContext } from '../domain-context.js';
+import type { DomainContext, TxHandle } from '../domain-context.js';
 import { serializeRow } from '../domain-context.js';
 
 /** 微信 code2session 抽象 —— 便于测试注入 */
@@ -136,13 +136,39 @@ export class AuthService {
       );
       if (affected === 0) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
 
+      /**
+       * 🔴 昵称是「成员展示名」的权威源（2026-11-06 口径 A）。
+       *
+       * `family_member.display_name` / `trip_member.display_name` 都是**加入那一刻
+       * 拷贝的快照**（`displayNameOf`）。只改 `user.nickname` 不同步快照的后果是：
+       * 本人页面靠前端投影看着是新的，但**其他家庭成员看到的永远是旧名** ——
+       * 而且这个不一致会一直持续到下次改名，属于「看着没坏、越用越怪」的脏数据。
+       *
+       * 所以必须同事务：昵称已改但快照没改，是比两者都旧更糟的中间态。
+       */
+      const synced =
+        patch.nickname !== undefined
+          ? await this.syncMemberDisplayNames(tx, userId, patch.nickname, now)
+          : undefined;
+
       await this.audit(tx, {
         actorId: userId,
         action: 'auth.update_profile',
         reason: 'PROFILE_CHANGED',
         severity: 'INFO',
         targetId: userId,
-        detail: { fields: Object.keys(patch) },
+        detail: {
+          fields: Object.keys(patch),
+          ...(synced !== undefined
+            ? {
+                // 便于排查「改了昵称但家人还看到旧的」：这两个数应该是
+                // 「我在几个家庭/几次出行里」而不是 0
+                syncedMemberRows: synced.familyMembers + synced.tripMembers,
+                syncedFamilyMemberRows: synced.familyMembers,
+                syncedTripMemberRows: synced.tripMembers,
+              }
+            : {}),
+        },
         at: now,
       });
 
@@ -152,6 +178,76 @@ export class AuthService {
         updatedAt: now.toISOString(),
       };
     });
+  }
+
+  /**
+   * 昵称变更 → 同事务批量同步成员展示名快照。
+   *
+   * 口径（2026-11-06 产品拍板 A）：**真实成员的展示名恒等于账号昵称**。
+   *   · 只动 `user_id = 我` 的行 —— 虚拟成员 / 外部同行者（`user_id IS NULL`）
+   *     没有账号，名字就是它的唯一标识（「奶奶」「小满」），一个字都不碰；
+   *   · 只动 `deleted_at IS NULL` 的行 —— 已移除的成员关系不复活。
+   *
+   * 为什么逐行写 changeLog：family / trip 两域对成员的任何写操作都会写 change_log
+   * （`family.service.addMember`、`trip.service.updateMember`）。这里不写就等于
+   * 「实体变了、同步游标没动」，服务端 sync 域会漏掉这次变化。客户端目前不消费
+   * change_log，但契约要保持同构，不能因为「暂时没人读」就省掉。
+   *
+   * 写放大评估：一个用户的家庭数 × 1 + 出行数 × 1 行，实测口径是个位数量级；
+   * 审计里记了计数，真出现异常大户可以从 `auth.update_profile` 的 detail 里看出来。
+   */
+  private async syncMemberDisplayNames(
+    tx: TxHandle,
+    userId: bigint,
+    nickname: string,
+    now: Date,
+  ): Promise<{ familyMembers: number; tripMembers: number }> {
+    const familyMembers = await tx.db.findMany('familyMember', {
+      where: { userId, deletedAt: null },
+    });
+    for (const m of familyMembers) {
+      await tx.db.update(
+        'familyMember',
+        { id: m['id'] },
+        { displayName: nickname, updatedAt: now },
+      );
+      await tx.db.insert('changeLog', {
+        id: tx.write.nextId(),
+        entityType: 'family_member',
+        entityId: m['id'],
+        familyId: m['familyId'],
+        tripId: null,
+        op: 'UPDATE',
+        changedAt: now,
+        createdAt: now,
+      });
+    }
+
+    const tripMembers = await tx.db.findMany('tripMember', { where: { userId, deletedAt: null } });
+    // trip_member 没有 family_id 冗余列，change_log 的 family_id 需回查行程；
+    // 用一次 IN 批量取，避免逐行 N+1。
+    const tripIds = [...new Set(tripMembers.map((m) => m['tripId'] as bigint))];
+    const familyOfTrip = new Map<string, bigint>();
+    if (tripIds.length > 0) {
+      const trips = await tx.db.findMany('trip', { where: { id: tripIds } });
+      for (const t of trips) familyOfTrip.set(String(t['id']), t['familyId'] as bigint);
+    }
+
+    for (const m of tripMembers) {
+      await tx.db.update('tripMember', { id: m['id'] }, { displayName: nickname, updatedAt: now });
+      await tx.db.insert('changeLog', {
+        id: tx.write.nextId(),
+        entityType: 'trip_member',
+        entityId: m['id'],
+        familyId: familyOfTrip.get(String(m['tripId'])) ?? null,
+        tripId: m['tripId'],
+        op: 'UPDATE',
+        changedAt: now,
+        createdAt: now,
+      });
+    }
+
+    return { familyMembers: familyMembers.length, tripMembers: tripMembers.length };
   }
 
   /**

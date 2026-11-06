@@ -273,6 +273,18 @@ export class FamilyService {
         role: 'MEMBER',
         isVirtual: false,
         managedBy: null,
+        /**
+         * 🔴 口径 A 的**初始化例外**（`join` 与 `addMember` 同一规则）：
+         *    「加入/被邀请那一刻」允许指定称呼 —— 这是真实家庭场景
+         *    （账号叫「张三」，家里叫「爸爸」；加入页「我的称呼（可选）」也是它）。
+         *
+         *    但它是**初始快照，不是别名**：本人之后一旦通过 `PATCH /auth/me`
+         *    改昵称，本行会被全量覆盖成新昵称
+         *    （见 `auth.service.syncMemberDisplayNames`）。
+         *
+         *    与「禁止别名」的边界在这里：`updateMember` 那种**事后再改**的持续编辑
+         *    能力已收口（真实成员 422），所以不存在「改完又被下一次改名冲掉」的循环。
+         */
         displayName: input.displayName ?? (await this.displayNameOf(tx, userId)),
         joinedAt: now,
         createdAt: now,
@@ -396,7 +408,30 @@ export class FamilyService {
 
       const now = await tx.db.dbNow();
       const data: Row = { updatedAt: now };
-      if (patch.displayName !== undefined) data['displayName'] = patch.displayName;
+      if (patch.displayName !== undefined) {
+        /**
+         * 🔴 2026-11-06 口径 A：**真实成员的展示名恒等于账号昵称**。
+         *
+         * 真实成员（`userId` 非空）的名字是 `user.nickname` 的投影 ——
+         * `PATCH /auth/me` 改昵称时会在同事务里全量回写所有成员行
+         * （见 `auth.service.syncMemberDisplayNames`）。若允许这里单独立改名，
+         * 用户下次改昵称时又会被覆盖，表现为「户主改的名莫名消失」。
+         *
+         * 注意与「初始化」的边界：**加入/被邀请那一刻**仍可指定称呼
+         * （`join` / `addMember`，真实家庭场景里的「爸爸」「妈妈」），
+         * 那是初始快照；这里禁止的是**事后再改**这种持续编辑能力。
+         *
+         * 虚拟成员（`userId` 为空，如「奶奶」「小满」）没有账号，名字就是它的
+         * 唯一标识，必须允许改 —— 这不是别名，是它存在的全部意义。
+         */
+        if (member['userId'] !== null && member['userId'] !== undefined) {
+          throw new AppError(
+            ErrorCode.VALIDATION_FAILED,
+            '真实成员的展示名跟随账号昵称，请让本人通过「我的」修改昵称',
+          );
+        }
+        data['displayName'] = patch.displayName;
+      }
       if (patch.managedBy !== undefined) {
         data['managedBy'] = patch.managedBy === null ? null : BigInt(patch.managedBy);
       }
