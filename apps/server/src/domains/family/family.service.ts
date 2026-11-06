@@ -51,6 +51,10 @@ export class FamilyService {
 
       const inviteCode = await this.uniqueInviteCode(tx);
       const familyId = tx.write.nextId();
+      // 户主展示名取用户昵称（与 join / addMember 同源）。
+      // 🔴 不能用家庭名兜底：家庭名是「我们的小家」，成员名却是人名，
+      //    混用会让成员列表 / 回忆 / 账单里出现「我们的家庭 上传了 3 张照片」。
+      const ownerDisplayName = await this.displayNameOf(tx, userId);
 
       await tx.db.insert('family', {
         id: familyId,
@@ -71,7 +75,7 @@ export class FamilyService {
         role: 'OWNER',
         isVirtual: false,
         managedBy: null,
-        displayName: input.name, // 户主的展示名先用家庭名，后续可改
+        displayName: ownerDisplayName,
         joinedAt: now,
         createdAt: now,
         updatedAt: now,
@@ -116,9 +120,16 @@ export class FamilyService {
 
     const slice = mine.slice(page.skip, page.skip + page.take);
 
+    // 🔴 memberCount 口径 = `family_member.deletedAt IS NULL` 的行数（虚拟成员也算，
+    //    代管关系不重复计数）。**不是** family.ownerId、不是唯一 userId 数，
+    //    也**不是**行程 memberCount（那是 trip_member 口径，见 trip.service）。
+    //    一次 IN 查询后内存聚合 —— 逐家庭 count 会在家庭数多时变成 N+1。
+    const counts = await this.countActiveMembers(familyIds);
+
     const items = slice.map((f) => ({
       ...serializeRow(f, FAMILY_BIGINT_FIELDS),
       myRole: memberships.find((m) => m['familyId'] === f['id'])?.['role'] ?? 'MEMBER',
+      memberCount: counts.get(String(f['id'])) ?? 0,
     }));
 
     return { items, meta: buildPageMeta(page, mine.length) as unknown as Record<string, unknown> };
@@ -137,6 +148,8 @@ export class FamilyService {
     return {
       family: serializeRow(family, FAMILY_BIGINT_FIELDS),
       members: members.map((m) => serializeRow(m, MEMBER_BIGINT_FIELDS)),
+      // 与列表同口径：直接用已查到的活跃成员行数，不再发第二次 count
+      memberCount: members.length,
     };
   }
 
@@ -538,6 +551,28 @@ export class FamilyService {
   private async displayNameOf(tx: TxHandle, userId: bigint): Promise<string> {
     const u = await tx.db.findUnique('user', { id: userId, deletedAt: null });
     return (u?.['nickname'] as string | undefined) ?? '成员';
+  }
+
+  /**
+   * 批量统计家庭活跃成员数（`family_member.deletedAt IS NULL`）。
+   *
+   * 返回 `Map<familyId 十进制字符串, 人数>`：key 用字符串是为了和
+   * `serializeRow` 输出的 id 形状一致（比对、日志、测试断言都不用再转一次）。
+   * 调用方查不到时按 0 处理。
+   */
+  private async countActiveMembers(familyIds: bigint[]): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    if (familyIds.length === 0) return counts;
+
+    const rows = await this.o.ctx.read.findMany('familyMember', {
+      // 数组 = IN；一次查询覆盖当前用户全部家庭，避免逐家庭 count 的 N+1
+      where: { familyId: familyIds, deletedAt: null },
+    });
+    for (const r of rows) {
+      const key = String(r['familyId']);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
   }
 
   private async uniqueInviteCode(tx: TxHandle): Promise<string> {

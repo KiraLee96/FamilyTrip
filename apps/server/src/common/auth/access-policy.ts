@@ -127,6 +127,26 @@ export interface DecisionDetail {
 }
 
 /**
+ * 媒体资产是**双语义**表：`family_id` / `trip_id` 都为空 → 纯用户资产（头像）。
+ *
+ * 2026-11-05（派发单 §4）：头像不再绑定家庭，`media_asset.family_id` 放宽为 NULL。
+ * 若不在这里分流，`checkShared` 会因为「没有家庭维度、没有出行维度」直接 Deny ——
+ * 表现为「用户删不掉/读不到自己的头像」。
+ *
+ * 🔴 只在**两者都为空**时短路：带 familyId 的家庭照片仍必须走家庭维度，
+ *    绝不能因为「我是上传者」就绕过家庭成员门。
+ */
+export function isPersonalMedia(res: {
+  familyId?: bigint | null;
+  tripId?: bigint | null;
+}): boolean {
+  return (
+    (res.familyId === null || res.familyId === undefined) &&
+    (res.tripId === null || res.tripId === undefined)
+  );
+}
+
+/**
  * 统一权限判定。
  *
  * ⛔ 越权一律返回 Deny，由调用方转成**与「不存在」逐字节一致**的 404。
@@ -143,6 +163,9 @@ export function checkAccess(
       return checkPrivate(ctx, res);
     }
   } else if (RESOURCE_DOMAIN[res.type] === AccessDomain.Private) {
+    return checkPrivate(ctx, res);
+  } else if (res.type === 'media_asset' && isPersonalMedia(res)) {
+    // 头像等纯用户资产：owner 短路，不参与家庭/出行 OR 合并
     return checkPrivate(ctx, res);
   }
 

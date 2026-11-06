@@ -64,7 +64,11 @@ export class MediaService {
   async presign(
     userId: bigint,
     input: {
-      familyId: bigint;
+      /**
+       * 2026-11-05：按用途可选。MEDIA 必填、AVATAR 可省略
+       * （头像不是家庭资产，不该被「没有家庭」卡住）。
+       */
+      familyId?: bigint;
       /** D-2026-10-22-01 §2.3：带 tripId 时先做行程写入门判定 */
       tripId?: bigint;
       /** D-2026-10-26-04 §7：用途分流（MEDIA / AVATAR），缺省 MEDIA */
@@ -80,22 +84,39 @@ export class MediaService {
     fileKey: string;
   }> {
     this.assertMimeAllowed(input.mimeType);
-    await this.assertFamilyMember(this.o.ctx, input.familyId, userId);
-    // D-2026-10-26-02 P0-2：带 tripId 时**只校验行程归属**（成员/创建者），
-    // 不校验 access_level —— 已归档行程仍要能补回忆照片。
-    // 这里是「早失败」优化；真正的口径由 confirm 承担（那时 tripId 一定已知）。
-    if (input.tripId !== undefined) {
-      await this.assertTripMediaWritable(this.o.ctx, input.tripId, userId);
+
+    const purpose = input.purpose ?? 'MEDIA';
+    let familyId: bigint | null = null;
+
+    if (purpose === 'AVATAR') {
+      // 头像 = 用户资产：只校验账号本身。旧版这里无条件 `assertFamilyMember`，
+      // 导致「一个家庭都没加入的用户传不了头像」（docs/媒体存储接入.md 已知限制 #2）。
+      if (input.tripId !== undefined) {
+        throw new AppError(ErrorCode.VALIDATION_FAILED, '头像不支持行程归属');
+      }
+      await this.assertActiveUser(this.o.ctx, userId);
+    } else {
+      if (input.familyId === undefined) {
+        throw new AppError(ErrorCode.VALIDATION_FAILED, '家庭照片必须提供 familyId');
+      }
+      familyId = input.familyId;
+      await this.assertFamilyMember(this.o.ctx, familyId, userId);
+      // D-2026-10-26-02 P0-2：带 tripId 时**只校验行程归属**（成员/创建者），
+      // 不校验 access_level —— 已归档行程仍要能补回忆照片。
+      // 这里是「早失败」优化；真正的口径由 confirm 承担（那时 tripId 一定已知）。
+      if (input.tripId !== undefined) {
+        await this.assertTripMediaWritable(this.o.ctx, input.tripId, userId);
+      }
     }
 
     const size = BigInt(input.byteSize);
     if (size <= 0n) throw new AppError(ErrorCode.VALIDATION_FAILED, '文件大小必须为正');
 
-    const purpose = input.purpose ?? 'MEDIA';
     // fileKey 由服务端生成 —— 不让客户端指定路径（防目录穿越 / 覆盖他人文件）
     // D-2026-10-26-04 §7：头像走 `a/<userId>/`，家庭照片走 `f/<familyId>/`，两种用途不再共池
-    const prefix =
-      purpose === 'AVATAR' ? `a/${userId.toString()}` : `f/${input.familyId.toString()}`;
+    // ⚠️ 用 familyId 判空前缀，而不是再判一次 purpose：两者是同一事实的两种表达，
+    //    重复判定会在将来加第三种用途时出现「purpose 说 B、前缀还是 A」的漂移。
+    const prefix = familyId !== null ? `f/${familyId.toString()}` : `a/${userId.toString()}`;
     const ext = safeExt(input.fileName);
     const fileKey = `${prefix}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
 
@@ -133,8 +154,11 @@ export class MediaService {
   async confirm(
     userId: bigint,
     input: {
-      familyId: bigint;
+      /** 2026-11-05：AVATAR 可省略（头像不落家庭）；MEDIA 由 service 强制要求 */
+      familyId?: bigint;
       tripId?: bigint;
+      /** 显式用途；缺省以 `file_pending.purpose` 为准，仅用于冲突检测 */
+      purpose?: 'MEDIA' | 'AVATAR';
       fileKey: string;
       mimeType: string;
       byteSize: string;
@@ -149,20 +173,9 @@ export class MediaService {
     this.assertMimeAllowed(input.mimeType);
 
     return this.o.ctx.tx(async (tx) => {
-      await this.assertFamilyMember(tx, input.familyId, userId);
-
-      // D-2026-10-26-02 P0-2（口径变更，覆盖 D-2026-10-22-01 §2.3）：
-      // 用户原话「已完成的行程不能编辑信息**只能添加或删除回忆照片**」——
-      // 故归档行程的照片登记**放行**，只校验行程归属；`archived` 为真时补一条
-      // INFO 审计（归档后仍写入，需要留痕以便对账）。
-      // 🔴 只有 media 域放宽：itinerary / checklist / expense / booking 一律维持 403。
-      let archived = false;
-      if (input.tripId !== undefined) {
-        const gate = await this.assertTripMediaWritable(tx, input.tripId, userId);
-        archived = gate.archived;
-      }
-
-      // filePending 必须存在且属于我（防「登记别人上传的文件」）
+      // ── 第一段必须先认领 fileKey：用途只有 pending 记录知道 ──
+      // 「不存在」与「不是我的」同形 404：fileKey 由服务端生成且带随机段，
+      // 区分两者只是给攻击者多一个枚举信号。
       const pending = await tx.db.findUnique('filePending', {
         fileKey: input.fileKey,
         deletedAt: null,
@@ -170,12 +183,52 @@ export class MediaService {
       if (!pending) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
       if (pending['ownerId'] !== userId) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
 
+      /**
+       * 用途以 **pending 为准**（客户端上传时由 presign 落库）。
+       * 客户端显式传且与 pending 冲突 → 拒绝：否则改一个 `purpose` 字段
+       * 就能把头像当家庭照片登记（或反过来绕过家庭门）。
+       */
+      const pendingPurpose = stringCell(pending, 'purpose') ?? 'MEDIA';
+      if (input.purpose !== undefined && input.purpose !== pendingPurpose) {
+        throw new AppError(
+          ErrorCode.VALIDATION_FAILED,
+          `purpose 与上传位不一致（上传位为 ${pendingPurpose}）`,
+        );
+      }
+
+      let familyId: bigint | null = null;
+      // D-2026-10-26-02 P0-2（口径变更，覆盖 D-2026-10-22-01 §2.3）：
+      // 用户原话「已完成的行程不能编辑信息**只能添加或删除回忆照片**」——
+      // 故归档行程的照片登记**放行**，只校验行程归属；`archived` 为真时补一条
+      // INFO 审计（归档后仍写入，需要留痕以便对账）。
+      // 🔴 只有 media 域放宽：itinerary / checklist / expense / booking 一律维持 403。
+      let archived = false;
+
+      if (pendingPurpose === 'AVATAR') {
+        // 头像：只认账号本身 + pending 归属（上面已校验 ownerId === userId）
+        if (input.tripId !== undefined) {
+          throw new AppError(ErrorCode.VALIDATION_FAILED, '头像不支持行程归属');
+        }
+        await this.assertActiveUser(tx, userId);
+      } else {
+        if (input.familyId === undefined) {
+          throw new AppError(ErrorCode.VALIDATION_FAILED, '家庭照片必须提供 familyId');
+        }
+        familyId = input.familyId;
+        await this.assertFamilyMember(tx, familyId, userId);
+        if (input.tripId !== undefined) {
+          const gate = await this.assertTripMediaWritable(tx, input.tripId, userId);
+          archived = gate.archived;
+        }
+      }
+
       const now = await tx.db.dbNow();
       const id = tx.write.nextId();
 
       await tx.db.insert('mediaAsset', {
         id,
-        familyId: input.familyId,
+        // 🔴 头像是用户资产：familyId 落 null（该列已放宽为可空）
+        familyId,
         tripId: input.tripId ?? null,
         ownerId: userId,
         fileKey: input.fileKey,
@@ -198,7 +251,7 @@ export class MediaService {
         { status: 'CONFIRMED', updatedAt: now },
       );
 
-      await this.change(tx, 'media_asset', id, input.familyId, input.tripId ?? null, 'INSERT', now);
+      await this.change(tx, 'media_asset', id, familyId, input.tripId ?? null, 'INSERT', now);
 
       // 归档行程补照片：放行但留痕（INFO 级，不进告警通道）
       if (archived) {
@@ -250,7 +303,13 @@ export class MediaService {
       deletedAt: null,
     });
     if (!asset) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
-    await this.assertFamilyMember(this.o.ctx, asset['familyId'] as bigint, userId);
+    // 头像（`familyId` 为空的用户资产）只校验归属人；家庭照片仍走家庭成员门
+    const assetFamilyId = (asset['familyId'] ?? null) as bigint | null;
+    if (assetFamilyId === null) {
+      if (asset['ownerId'] !== userId) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+    } else {
+      await this.assertFamilyMember(this.o.ctx, assetFamilyId, userId);
+    }
 
     // ── 事务外：读 → 剥离 → 写回 ──
     const raw = await this.o.fetchObject(input.fileKey);
@@ -311,6 +370,10 @@ export class MediaService {
 
     const all = await this.o.ctx.read.findMany('mediaAsset', { where: { deletedAt: null } });
     let rows = all.filter((r) => visibleFamilies.has(r['familyId'] as bigint));
+    // 🔴 头像池不得进家庭相册：新资产的 `familyId` 已是 null（天然被上面过滤），
+    //    但**改造前**上传的头像仍带 `familyId` 且 `fileKey` 为 `a/<userId>/...`，
+    //    只靠 familyId 判空会把历史头像继续露在家庭相册里。故按前缀再挡一层。
+    rows = rows.filter((r) => !(stringCell(r, 'fileKey') ?? '').startsWith('a/'));
     if (q.familyId !== undefined) rows = rows.filter((r) => r['familyId'] === q.familyId);
     if (q.tripId !== undefined) {
       // D-2026-10-15-01（P1）：行程软删后，其名下资产行**不级联软删**
@@ -348,9 +411,11 @@ export class MediaService {
         await this.assertTripMediaWritableOrGone(tx, tripId, userId);
       }
 
-      // 仅上传者可删（避免他人删你照片）
+      // 仅上传者可删（避免他人删你照片）；头像是纯用户资产，没有「户主」可言
+      const familyId = (r['familyId'] ?? null) as bigint | null;
       if (r['ownerId'] !== userId) {
-        await this.assertFamilyOwner(tx, r['familyId'] as bigint, userId);
+        if (familyId === null) throw new AppError(ErrorCode.FORBIDDEN, '仅上传者可删除');
+        await this.assertFamilyOwner(tx, familyId, userId);
       }
 
       const now = await tx.db.dbNow();
@@ -359,7 +424,7 @@ export class MediaService {
         tx,
         'media_asset',
         assetId,
-        r['familyId'] as bigint,
+        familyId,
         (r['tripId'] ?? null) as bigint | null,
         'DELETE',
         now,
@@ -389,6 +454,19 @@ export class MediaService {
     });
     if (managed.length > 0) return;
     throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+  }
+
+  /**
+   * 账号存在性校验（头像用途专用）。
+   *
+   * AVATAR 是**用户资产**，不隶属任何家庭 —— 因此不能复用 `assertFamilyMember`
+   * （那会把「还没加入任何家庭的新用户」判成 404，正是派发单 §4 的病因）。
+   * 仍要挡一次已注销账号：否则 token 未过期时可以往鬼账号名下堆头像。
+   */
+  private async assertActiveUser(src: TxHandle | DomainContext, userId: bigint): Promise<void> {
+    const db = 'db' in src ? src.db : src.read;
+    const u = await db.findUnique('user', { id: userId, deletedAt: null });
+    if (!u) throw new AppError(ErrorCode.UNAUTHORIZED, '账号不存在或已注销');
   }
 
   private async assertFamilyOwner(tx: TxHandle, familyId: bigint, userId: bigint): Promise<void> {

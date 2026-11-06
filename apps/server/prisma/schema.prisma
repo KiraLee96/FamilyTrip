@@ -716,7 +716,8 @@ model NotifySubscription {
 /// M6：EXIF 剥离 + GPS 告警落库（可审计）
 model MediaAsset {
   id           BigInt @id
-  familyId     BigInt @map("family_id")
+  /// 家庭照片必有；头像（purpose=AVATAR）为 NULL —— 头像是用户资产，不隶属家庭
+  familyId     BigInt? @map("family_id")
   tripId       BigInt? @map("trip_id")
   ownerId      BigInt @map("owner_id")
   /// COS 对象 key
@@ -737,7 +738,7 @@ model MediaAsset {
   updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
   deletedAt    DateTime? @map("deleted_at") @db.DateTime(3)
 
-  family Family @relation(fields: [familyId], references: [id])
+  family Family? @relation(fields: [familyId], references: [id])
   trip   Trip?  @relation(fields: [tripId], references: [id])
   owner  User   @relation(fields: [ownerId], references: [id])
 

@@ -62,16 +62,27 @@ export function createMediaDomain(o: MediaDomainOptions): MediaDomain {
    * 🔴 归属维度必须透传链在 withOwner 段读到的 `resolved`。
    *    写死 `familyId: null` 会让 SHARED_FAMILY 判定永远失败——
    *    表现为「自己是成员却被 404」，是最难查的一类权限 bug。
+   *
+   * 2026-11-05：**同时透传 `ownerId`**。头像资产的 `familyId` 已放宽为 NULL，
+   * 权限层按「无家庭/无行程 → 用户私有」短路（见 access-policy `isPersonalMedia`），
+   * 那里比对的是 `ownerId`；漏传会让用户删不掉自己的头像（403/404）。
    */
   const ref = (
     id: bigint,
     _req: unknown,
     resolved: ResolvedOwnership,
-  ): { type: 'media_asset'; id: bigint; familyId: bigint | null; tripId: bigint | null } => ({
+  ): {
+    type: 'media_asset';
+    id: bigint;
+    familyId: bigint | null;
+    tripId: bigint | null;
+    ownerId: bigint | null;
+  } => ({
     type: 'media_asset',
     id,
     familyId: resolved.familyId,
     tripId: resolved.tripId,
+    ownerId: resolved.ownerId,
   });
 
   const routes: RouteSpec<never, unknown>[] = [
@@ -84,7 +95,8 @@ export function createMediaDomain(o: MediaDomainOptions): MediaDomain {
       handler: async (ctx, input) => {
         const b = input as PresignUploadInput;
         const r = await service.presign(ctx.userId!, {
-          familyId: BigInt(b.familyId),
+          // 2026-11-05：AVATAR 允许不带 familyId（头像不隶属家庭）
+          ...(b.familyId !== undefined ? { familyId: BigInt(b.familyId) } : {}),
           ...(b.tripId !== undefined ? { tripId: BigInt(b.tripId) } : {}),
           // D-2026-10-26-04 §7：用途分流（schema 已给默认值 MEDIA）
           purpose: b.purpose,
@@ -105,8 +117,12 @@ export function createMediaDomain(o: MediaDomainOptions): MediaDomain {
       handler: async (ctx, input) => {
         const b = input as CreateMediaAssetInput;
         const asset = await service.confirm(ctx.userId!, {
-          familyId: BigInt(b.familyId),
+          // 2026-11-05：AVATAR 可省略 familyId；MEDIA 缺它会由 service 报 422
+          ...(b.familyId !== undefined ? { familyId: BigInt(b.familyId) } : {}),
           ...(b.tripId !== undefined ? { tripId: BigInt(b.tripId) } : {}),
+          // 派发单 §3.1 第 2 条：此前 confirm 会静默 strip 掉 purpose，
+          // 客户端以为传了、服务端根本没看 → 现在透传并做一致性校验
+          ...(b.purpose !== undefined ? { purpose: b.purpose } : {}),
           fileKey: b.fileKey,
           mimeType: b.mimeType,
           byteSize: b.byteSize,
