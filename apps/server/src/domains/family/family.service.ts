@@ -145,9 +145,17 @@ export class FamilyService {
       orderBy: [{ joinedAt: 'asc' }],
     });
 
+    const nicknames = await this.nicknamesOf(members);
+
     return {
       family: serializeRow(family, FAMILY_BIGINT_FIELDS),
-      members: members.map((m) => serializeRow(m, MEMBER_BIGINT_FIELDS)),
+      // 每个成员带两个展示字段，前端分层渲染「昵称（主）+ 称呼（灰字副行）」：
+      //   · nickname    = 账号昵称（virtual 成员为 null）
+      //   · displayName = 家庭内称呼
+      members: members.map((m) => ({
+        ...serializeRow(m, MEMBER_BIGINT_FIELDS),
+        nickname: nicknames.get(String(m['userId'])) ?? null,
+      })),
       // 与列表同口径：直接用已查到的活跃成员行数，不再发第二次 count
       memberCount: members.length,
     };
@@ -410,26 +418,15 @@ export class FamilyService {
       const data: Row = { updatedAt: now };
       if (patch.displayName !== undefined) {
         /**
-         * 🔴 2026-11-06 口径 A：**真实成员的展示名恒等于账号昵称**。
+         * `displayName` 是**家庭内的称呼**（「爸爸」「二姨」），与账号昵称是两个独立字段：
+         *   · 昵称 `user.nickname`：本人可随时改，权威；
+         *   · 称呼 `family_member.display_name`：家人设定，可以长期不动。
+         * `GET /families/:id` 会把两者一起返回，前端渲染成「昵称（主）+ 称呼（灰字副行）」。
          *
-         * 真实成员（`userId` 非空）的名字是 `user.nickname` 的投影 ——
-         * `PATCH /auth/me` 改昵称时会在同事务里全量回写所有成员行
-         * （见 `auth.service.syncMemberDisplayNames`）。若允许这里单独立改名，
-         * 用户下次改昵称时又会被覆盖，表现为「户主改的名莫名消失」。
-         *
-         * 注意与「初始化」的边界：**加入/被邀请那一刻**仍可指定称呼
-         * （`join` / `addMember`，真实家庭场景里的「爸爸」「妈妈」），
-         * 那是初始快照；这里禁止的是**事后再改**这种持续编辑能力。
-         *
-         * 虚拟成员（`userId` 为空，如「奶奶」「小满」）没有账号，名字就是它的
-         * 唯一标识，必须允许改 —— 这不是别名，是它存在的全部意义。
+         * 所以真实成员**允许**单独设称呼 —— 这不是别名，是这个字段的本义。
+         * 唯一要避免的是它的值停留在「旧昵称副本」上（改昵称后界面出现幽灵旧名），
+         * 那由 `auth.service.syncMemberDisplayNames` 按「值 === 旧昵称」判定处理。
          */
-        if (member['userId'] !== null && member['userId'] !== undefined) {
-          throw new AppError(
-            ErrorCode.VALIDATION_FAILED,
-            '真实成员的展示名跟随账号昵称，请让本人通过「我的」修改昵称',
-          );
-        }
         data['displayName'] = patch.displayName;
       }
       if (patch.managedBy !== undefined) {
@@ -586,6 +583,30 @@ export class FamilyService {
   private async displayNameOf(tx: TxHandle, userId: bigint): Promise<string> {
     const u = await tx.db.findUnique('user', { id: userId, deletedAt: null });
     return (u?.['nickname'] as string | undefined) ?? '成员';
+  }
+
+  /**
+   * 批量取真实成员的账号昵称（`userId → nickname`）。
+   *
+   * 成员行的 `displayName` 是**家庭内称呼**，账号昵称存在 `user` 表 ——
+   * 前端要同时展示两个值，只能由后端拼进响应（其他成员的昵称前端拿不到）。
+   * 一次 IN 查询覆盖全部成员，避免逐行查 user 的 N+1。
+   *
+   * 虚拟成员（`userId` 为空）没有账号，不会出现在返回里；调用方按 null 处理。
+   */
+  private async nicknamesOf(members: Row[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const ids = [
+      ...new Set(members.map((m) => m['userId']).filter((v): v is bigint => typeof v === 'bigint')),
+    ];
+    if (ids.length === 0) return out;
+
+    const users = await this.o.ctx.read.findMany('user', { where: { id: ids, deletedAt: null } });
+    for (const u of users) {
+      const nick = u['nickname'];
+      if (typeof nick === 'string' && nick !== '') out.set(String(u['id']), nick);
+    }
+    return out;
   }
 
   /**

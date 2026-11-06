@@ -274,9 +274,16 @@ export class TripService {
       where: { tripId, deletedAt: null },
     });
 
+    const nicknames = await this.nicknamesOf(members);
+
     return {
       trip: serializeRow(row, TRIP_BIGINT_FIELDS),
-      members: members.map((m) => serializeRow(m, MEMBER_BIGINT_FIELDS)),
+      // 与家庭详情同构：nickname = 账号昵称（外部同行者为 null），
+      // displayName = 行程内称呼。前端分层渲染，两者都保留。
+      members: members.map((m) => ({
+        ...serializeRow(m, MEMBER_BIGINT_FIELDS),
+        nickname: nicknames.get(String(m['userId'])) ?? null,
+      })),
       memberCount: members.length,
       myRole: members.find((m) => m['userId'] === userId)?.['role'] ?? null,
       myAccessLevel: members.find((m) => m['userId'] === userId)?.['accessLevel'] ?? null,
@@ -644,21 +651,13 @@ export class TripService {
       if (patch.accessLevel !== undefined) data['accessLevel'] = patch.accessLevel;
       if (patch.displayName !== undefined) {
         /**
-         * 🔴 2026-11-06 口径 A（与 `family.service.updateMember` 同源规则）：
-         *    真实同行者（`userId` 非空）的名字是账号昵称的投影，
-         *    改昵称时会被 `auth.service.syncMemberDisplayNames` 全量覆盖，
-         *    所以不允许在这里**事后**单独设 —— 否则用户下次改名时名字会「莫名回弹」。
-         *    （「加入/被邀请那一刻」指定称呼仍允许，那属于初始快照。）
+         * 与 `family.service.updateMember` 同规则：`displayName` 是**行程内称呼**
+         * （「爸爸」「同事小王」），与账号昵称独立。前端把昵称作主行、称呼作灰字副行，
+         * 所以真实同行者也允许单独设称呼。
          *
-         *    外部/虚拟同行者（`userId` 为空，如「奶奶」「同事小王」）没有账号，
-         *    名字是它唯一标识，必须允许改。
+         * 若它的值仍等于旧昵称，改名时会被 `auth.service.syncMemberDisplayNames`
+         * 一并更新，避免界面出现「新昵称 + 灰色旧名」的幽灵残留。
          */
-        if (m['userId'] !== null && m['userId'] !== undefined) {
-          throw new AppError(
-            ErrorCode.VALIDATION_FAILED,
-            '真实同行者的展示名跟随账号昵称，请让本人通过「我的」修改昵称',
-          );
-        }
         data['displayName'] = patch.displayName;
       }
       if (patch.managedBy !== undefined) {
@@ -1266,6 +1265,28 @@ export class TripService {
   private async displayNameOf(tx: TxHandle, userId: bigint): Promise<string> {
     const u = await tx.db.findUnique('user', { id: userId, deletedAt: null });
     return (u?.['nickname'] as string | undefined) ?? '成员';
+  }
+
+  /**
+   * 批量取真实同行者的账号昵称（`userId → nickname`）。
+   *
+   * 与 `family.service.nicknamesOf` 同构：`trip_member.display_name` 是行程内称呼，
+   * 昵称在 `user` 表 —— 前端要「昵称主行 + 称呼副行」，只能由后端拼。
+   * 一次 IN 查询，避免逐行 N+1。外部同行者（`userId` 为空）不在返回里。
+   */
+  private async nicknamesOf(members: Row[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const ids = [
+      ...new Set(members.map((m) => m['userId']).filter((v): v is bigint => typeof v === 'bigint')),
+    ];
+    if (ids.length === 0) return out;
+
+    const users = await this.o.ctx.read.findMany('user', { where: { id: ids, deletedAt: null } });
+    for (const u of users) {
+      const nick = u['nickname'];
+      if (typeof nick === 'string' && nick !== '') out.set(String(u['id']), nick);
+    }
+    return out;
   }
 
   private async visibleFamilyIds(userId: bigint): Promise<Set<bigint>> {

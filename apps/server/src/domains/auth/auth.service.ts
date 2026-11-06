@@ -129,6 +129,10 @@ export class AuthService {
   ): Promise<{ user: Record<string, unknown>; updatedAt: string }> {
     return this.o.ctx.tx(async (tx) => {
       const now = await tx.db.dbNow();
+      // 改名前的昵称：用来判断成员行里的 `display_name` 是否还是「昵称的副本」
+      const before = await tx.db.findUnique('user', { id: userId, deletedAt: null });
+      const oldNickname = typeof before?.['nickname'] === 'string' ? before['nickname'] : null;
+
       const affected = await tx.db.update(
         'user',
         { id: userId, deletedAt: null },
@@ -137,18 +141,23 @@ export class AuthService {
       if (affected === 0) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
 
       /**
-       * 🔴 昵称是「成员展示名」的权威源（2026-11-06 口径 A）。
+       * 🔴 昵称与「家庭称呼」是两个独立字段（2026-11-06 产品口径）：
+       *   · `user.nickname`        —— 账号昵称，本人可随时改，**权威源**
+       *   · `familyMember.displayName` / `tripMember.displayName`
+       *                            —— 家里/行程里的**称呼**（如「爸爸」「二姨」），
+       *                               由家人设定，可以长期不动
+       * 前端渲染成「昵称（主）+ 称呼（灰色副行）」，所以**不能无脑覆盖**称呼。
        *
-       * `family_member.display_name` / `trip_member.display_name` 都是**加入那一刻
-       * 拷贝的快照**（`displayNameOf`）。只改 `user.nickname` 不同步快照的后果是：
-       * 本人页面靠前端投影看着是新的，但**其他家庭成员看到的永远是旧名** ——
-       * 而且这个不一致会一直持续到下次改名，属于「看着没坏、越用越怪」的脏数据。
+       * 唯一要修的是「称呼其实只是昵称的副本、没人动过」这种情况：
+       * 若不跟着改，用户改完昵称会看到「小满」下面还挂着一个灰色的「小明」——
+       * 那不是称呼，是残留的旧昵称。
        *
-       * 所以必须同事务：昵称已改但快照没改，是比两者都旧更糟的中间态。
+       * 判据：`displayName === 旧昵称` 视为「没手改过」，跟着改；
+       * 其余（家人设过的称呼）一律保留。不需要新增「是否手改」列。
        */
       const synced =
         patch.nickname !== undefined
-          ? await this.syncMemberDisplayNames(tx, userId, patch.nickname, now)
+          ? await this.syncMemberDisplayNames(tx, userId, oldNickname, patch.nickname, now)
           : undefined;
 
       await this.audit(tx, {
@@ -161,11 +170,9 @@ export class AuthService {
           fields: Object.keys(patch),
           ...(synced !== undefined
             ? {
-                // 便于排查「改了昵称但家人还看到旧的」：这两个数应该是
-                // 「我在几个家庭/几次出行里」而不是 0
-                syncedMemberRows: synced.familyMembers + synced.tripMembers,
-                syncedFamilyMemberRows: synced.familyMembers,
-                syncedTripMemberRows: synced.tripMembers,
+                // 排查用：synced 是「跟着改的昵称副本」，kept 是「保留的称呼」
+                syncedMemberRows: synced.synced,
+                keptCustomMemberRows: synced.kept,
               }
             : {}),
         },
@@ -181,31 +188,60 @@ export class AuthService {
   }
 
   /**
-   * 昵称变更 → 同事务批量同步成员展示名快照。
+   * 昵称变更 → 同事务处理成员行里的 `display_name`（称呼）。
    *
-   * 口径（2026-11-06 产品拍板 A）：**真实成员的展示名恒等于账号昵称**。
-   *   · 只动 `user_id = 我` 的行 —— 虚拟成员 / 外部同行者（`user_id IS NULL`）
-   *     没有账号，名字就是它的唯一标识（「奶奶」「小满」），一个字都不碰；
-   *   · 只动 `deleted_at IS NULL` 的行 —— 已移除的成员关系不复活。
+   * 🔴 不是「全量覆盖」，而是**只改还没变成称呼的那些行**：
+   *   · `displayName === 旧昵称` → 它只是加入时拷贝的昵称副本、没人动过，
+   *     跟着改成新昵称（否则界面会出现「小满」+ 灰色「小明」这种幽灵旧名）；
+   *   · `displayName !== 旧昵称` → 家人设过的称呼（「爸爸」「二姨」），**保留**。
    *
-   * 为什么逐行写 changeLog：family / trip 两域对成员的任何写操作都会写 change_log
+   * 这样不需要为「是否手改」新增列，也不需要数据迁移：判据是值相等，
+   * 而「昵称副本」本来就是这个值。
+   *
+   * 只动 `user_id = 我` 且 `deleted_at IS NULL` 的行 —— 虚拟成员 / 外部同行者
+   * 没有账号，名字是它唯一的标识，一个字都不碰。
+   *
+   * 逐行写 changeLog 的理由：family / trip 两域对成员的任何写操作都会写 change_log
    * （`family.service.addMember`、`trip.service.updateMember`）。这里不写就等于
-   * 「实体变了、同步游标没动」，服务端 sync 域会漏掉这次变化。客户端目前不消费
-   * change_log，但契约要保持同构，不能因为「暂时没人读」就省掉。
+   * 「实体变了、同步游标没动」，服务端 sync 域会漏掉这次变化。
    *
-   * 写放大评估：一个用户的家庭数 × 1 + 出行数 × 1 行，实测口径是个位数量级；
-   * 审计里记了计数，真出现异常大户可以从 `auth.update_profile` 的 detail 里看出来。
+   * @param oldNickname 改名前的昵称（null = 之前没有昵称，无从比对，全部保留）
    */
   private async syncMemberDisplayNames(
     tx: TxHandle,
     userId: bigint,
+    oldNickname: string | null,
     nickname: string,
     now: Date,
-  ): Promise<{ familyMembers: number; tripMembers: number }> {
+  ): Promise<{ synced: number; kept: number }> {
+    const isNicknameCopy = (row: Row): boolean =>
+      oldNickname !== null && row['displayName'] === oldNickname;
+
     const familyMembers = await tx.db.findMany('familyMember', {
       where: { userId, deletedAt: null },
     });
+    const tripMembers = await tx.db.findMany('tripMember', { where: { userId, deletedAt: null } });
+
+    // trip_member 没有 family_id 冗余列，change_log 的 family_id 需回查行程；
+    // 用一次 IN 批量取，避免逐行 N+1。
+    const tripIds = [...new Set(tripMembers.map((m) => m['tripId']))];
+    const familyOfTrip = new Map<string, bigint>();
+    if (tripIds.length > 0) {
+      const trips = await tx.db.findMany('trip', { where: { id: tripIds } });
+      for (const t of trips) {
+        const familyId = t['familyId'];
+        if (typeof familyId === 'bigint') familyOfTrip.set(String(t['id']), familyId);
+      }
+    }
+
+    let synced = 0;
+    let kept = 0;
+
     for (const m of familyMembers) {
+      if (!isNicknameCopy(m)) {
+        kept += 1;
+        continue;
+      }
       await tx.db.update(
         'familyMember',
         { id: m['id'] },
@@ -221,19 +257,14 @@ export class AuthService {
         changedAt: now,
         createdAt: now,
       });
-    }
-
-    const tripMembers = await tx.db.findMany('tripMember', { where: { userId, deletedAt: null } });
-    // trip_member 没有 family_id 冗余列，change_log 的 family_id 需回查行程；
-    // 用一次 IN 批量取，避免逐行 N+1。
-    const tripIds = [...new Set(tripMembers.map((m) => m['tripId'] as bigint))];
-    const familyOfTrip = new Map<string, bigint>();
-    if (tripIds.length > 0) {
-      const trips = await tx.db.findMany('trip', { where: { id: tripIds } });
-      for (const t of trips) familyOfTrip.set(String(t['id']), t['familyId'] as bigint);
+      synced += 1;
     }
 
     for (const m of tripMembers) {
+      if (!isNicknameCopy(m)) {
+        kept += 1;
+        continue;
+      }
       await tx.db.update('tripMember', { id: m['id'] }, { displayName: nickname, updatedAt: now });
       await tx.db.insert('changeLog', {
         id: tx.write.nextId(),
@@ -245,9 +276,10 @@ export class AuthService {
         changedAt: now,
         createdAt: now,
       });
+      synced += 1;
     }
 
-    return { familyMembers: familyMembers.length, tripMembers: tripMembers.length };
+    return { synced, kept };
   }
 
   /**

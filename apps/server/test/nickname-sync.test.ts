@@ -1,19 +1,22 @@
 /**
- * 改昵称后成员展示名同步（派发单 2026-11-06 口径 A）
+ * 昵称与「家庭称谓」的分离（派发单 2026-11-06 · 产品口径）
  * ============================================================================
- * 背景：`family_member.display_name` / `trip_member.display_name` 是**加入时的快照**。
- * `PATCH /auth/me` 原来只改 `user.nickname`，于是：
- *   · 本人页面靠前端投影看着是新的；
- *   · **其他家庭成员看到的永远是旧名**（`GET /families/:id` 直接读快照）。
+ * 两个字段各管一件事：
+ *   · `user.nickname`            —— 账号昵称，本人随时可改，**权威源**
+ *   · `family_member.displayName` / `trip_member.displayName`
+ *                                —— 家里 / 行程里的**称呼**（「爸爸」「二姨」），
+ *                                   由家人设定，可以长期不动
+ * 前端渲染：昵称做主行，称呼做灰字副行 → 所以**两个值都必须由后端给**。
  *
- * 口径 A（产品拍板）：真实成员的展示名**恒等于账号昵称**；虚拟成员 / 外部同行者
- * 没有账号，名字就是它的唯一标识，一个字都不动。
+ * 于是「改昵称」的正确行为不是覆盖，而是**只处理幽灵旧名**：
+ *   · `displayName === 旧昵称`（没人动过的昵称副本）→ 跟着改
+ *   · `displayName` 是家人设过的称呼 → 原样保留
  *
- * 本文件锁四组行为：
- *   1. 改名后他人视角立即正确（含多家庭、多行程，不漏行）
- *   2. 虚拟成员 / 其他用户 / 只改头像 → 不受影响
- *   3. 别名入口收口：真实成员不能在成员接口里单独改名，虚拟成员可以
- *   4. 留痕：审计计数 + change_log UPDATE（否则同步游标会漏掉这次变化）
+ * 本文件锁：
+ *   1. 成员接口同时返回 nickname + displayName（家庭 & 行程）
+ *   2. 昵称副本跟着改、称呼保留、虚拟成员不动、只改头像不触发
+ *   3. 称呼可以被家人改（不是别名，是本义），真实成员也允许
+ *   4. change_log 只给真正变更的行写
  */
 
 import { describe, expect, it } from 'vitest';
@@ -37,10 +40,15 @@ async function login(app: BuiltApp, code: string): Promise<{ token: string; user
   return { token: r.token, userId: r.user.id };
 }
 
+async function rename(app: BuiltApp, token: string, nickname: string): Promise<void> {
+  mustOk(await app.dispatch(req('PATCH', '/auth/me', { token, body: { nickname } })));
+}
+
 interface MemberRow {
   id: string;
   userId: string | null;
   displayName: string;
+  nickname: string | null;
   role: string;
 }
 
@@ -58,56 +66,106 @@ async function tripMembers(app: BuiltApp, token: string, tripId: string): Promis
   return r.members;
 }
 
-async function rename(app: BuiltApp, token: string, nickname: string): Promise<void> {
-  mustOk(await app.dispatch(req('PATCH', '/auth/me', { token, body: { nickname } })));
+/** 建家庭 + 拉 B 进来（B 的称呼 = B 的昵称副本，未手改） */
+async function familyWithTwo(
+  app: BuiltApp,
+  aCode: string,
+  bCode: string,
+  aNick = '小明',
+  bNick = '小红',
+): Promise<{
+  a: { token: string; userId: string };
+  b: { token: string; userId: string };
+  familyId: string;
+}> {
+  const a = await login(app, aCode);
+  await rename(app, a.token, aNick);
+  const family = mustOk<{ family: { id: string; inviteCode: string } }>(
+    await app.dispatch(req('POST', '/families', { token: a.token, body: { name: '我们的家' } })),
+  );
+
+  const b = await login(app, bCode);
+  await rename(app, b.token, bNick);
+  mustOk(
+    await app.dispatch(
+      req('POST', '/families/join', {
+        token: b.token,
+        body: { inviteCode: family.family.inviteCode },
+      }),
+    ),
+  );
+
+  return { a, b, familyId: family.family.id };
 }
 
-describe('口径 A · 改昵称后他人视角同步', () => {
-  it('A 从「小明」改成「小满」→ B 调 GET /families/:id 看到「小满」', async () => {
+describe('成员接口同时返回 nickname 与 displayName', () => {
+  it('家庭详情：真实成员带账号昵称，虚拟成员 nickname 为 null', async () => {
     const app = freshApp();
-    const a = await login(app, 'sync-a');
-    await rename(app, a.token, '小明');
-    const family = mustOk<{ family: { id: string; inviteCode: string } }>(
-      await app.dispatch(req('POST', '/families', { token: a.token, body: { name: '我们的家' } })),
-    );
+    const { a, familyId } = await familyWithTwo(app, 'sep-a', 'sep-b');
 
-    const b = await login(app, 'sync-b');
     mustOk(
       await app.dispatch(
-        req('POST', '/families/join', {
-          token: b.token,
-          body: { inviteCode: family.family.inviteCode },
+        req('POST', `/families/${familyId}/members`, {
+          token: a.token,
+          body: { displayName: '奶奶', isVirtual: true },
         }),
       ),
     );
 
-    // 改名前：B 看到小明
-    expect(
-      (await familyMembers(app, b.token, family.family.id)).find((m) => m.userId === a.userId)
-        ?.displayName,
-    ).toBe('小明');
+    const members = await familyMembers(app, a.token, familyId);
+    const me = members.find((m) => m.userId === a.userId)!;
+    expect(me.nickname).toBe('小明');
+    expect(me.displayName).toBe('小明');
 
-    await rename(app, a.token, '小满');
-
-    // 改名后：B 看到小满（不再依赖前端投影）
-    expect(
-      (await familyMembers(app, b.token, family.family.id)).find((m) => m.userId === a.userId)
-        ?.displayName,
-    ).toBe('小满');
-
-    // A 自己读也一样（前后端口径一致）
-    expect(
-      (await familyMembers(app, a.token, family.family.id)).find((m) => m.userId === a.userId)
-        ?.displayName,
-    ).toBe('小满');
+    const virtual = members.find((m) => m.userId === null)!;
+    expect(virtual.nickname).toBeNull();
+    expect(virtual.displayName).toBe('奶奶');
   });
 
-  it('两个家庭 + 两个行程全部同步，一行不漏（审计计数 = 4）', async () => {
+  it('行程详情同构：nickname + displayName 都有', async () => {
     const app = freshApp();
-    const a = await login(app, 'sync-multi-a');
-    await rename(app, a.token, '小明');
+    const s = await scaffold(app, 'sep-trip');
+    const members = await tripMembers(app, s.token, s.tripId);
+    const me = members.find((m) => m.userId === s.userId)!;
+    expect(me.nickname).toBeTruthy();
+    expect(me.displayName).toBe(me.nickname);
+  });
+});
 
-    // 家庭 1 + 行程 1（A 是户主与创建者）
+describe('改昵称：昵称副本跟着改，称呼保留', () => {
+  it('未手改的成员行随昵称更新；家人设过的称呼原样保留（两个值共存）', async () => {
+    const app = freshApp();
+    const { a, b, familyId } = await familyWithTwo(app, 'sep-keep-a', 'sep-keep-b');
+
+    // 户主给 B 设称呼「二姨」（这是称呼，不是别名）
+    const bRow = (await familyMembers(app, a.token, familyId)).find((m) => m.userId === b.userId)!;
+    mustOk(
+      await app.dispatch(
+        req('PATCH', `/families/members/${bRow.id}`, {
+          token: a.token,
+          body: { displayName: '二姨' },
+        }),
+      ),
+    );
+
+    // B 改昵称：昵称变了，称呼保持「二姨」
+    await rename(app, b.token, '红红');
+
+    const after = await familyMembers(app, a.token, familyId);
+    const bAfter = after.find((m) => m.userId === b.userId)!;
+    expect(bAfter.nickname).toBe('红红'); // 主行：账号昵称
+    expect(bAfter.displayName).toBe('二姨'); // 副行：家庭称呼（保留）
+
+    // A 自己那行没手改过 → 称呼仍是昵称本身
+    const aAfter = after.find((m) => m.userId === a.userId)!;
+    expect(aAfter.nickname).toBe('小明');
+    expect(aAfter.displayName).toBe('小明');
+  });
+
+  it('A 改昵称后，A 的昵称副本（家庭 + 行程）全部跟着改，不漏行', async () => {
+    const app = freshApp();
+    const a = await login(app, 'sep-multi-a');
+    await rename(app, a.token, '小明');
     const f1 = mustOk<{ family: { id: string; inviteCode: string } }>(
       await app.dispatch(req('POST', '/families', { token: a.token, body: { name: 'A 家' } })),
     );
@@ -124,9 +182,7 @@ describe('口径 A · 改昵称后他人视角同步', () => {
         }),
       ),
     );
-
-    // 家庭 2：B 建、A 凭邀请码加入；再在该家庭建行程 2
-    const b = await login(app, 'sync-multi-b');
+    const b = await login(app, 'sep-multi-b');
     const f2 = mustOk<{ family: { id: string; inviteCode: string } }>(
       await app.dispatch(req('POST', '/families', { token: b.token, body: { name: 'B 家' } })),
     );
@@ -154,71 +210,72 @@ describe('口径 A · 改昵称后他人视角同步', () => {
 
     await rename(app, a.token, '小满');
 
-    for (const [token, familyId] of [
-      [a.token, f1.family.id],
-      [b.token, f2.family.id],
-    ] as const) {
-      const mine = (await familyMembers(app, token, familyId)).find((m) => m.userId === a.userId);
-      expect(mine?.displayName, `家庭 ${familyId} 未同步`).toBe('小满');
+    for (const familyId of [f1.family.id, f2.family.id]) {
+      const mine = (await familyMembers(app, a.token, familyId)).find(
+        (m) => m.userId === a.userId,
+      )!;
+      expect(mine.displayName, `家庭 ${familyId}`).toBe('小满');
+      expect(mine.nickname).toBe('小满');
     }
     for (const tripId of [t1.trip.id, t2.trip.id]) {
-      const mine = (await tripMembers(app, a.token, tripId)).find((m) => m.userId === a.userId);
-      expect(mine?.displayName, `行程 ${tripId} 未同步`).toBe('小满');
+      const mine = (await tripMembers(app, a.token, tripId)).find((m) => m.userId === a.userId)!;
+      expect(mine.displayName, `行程 ${tripId}`).toBe('小满');
     }
 
-    // 审计：2 家庭 + 2 行程 = 4 行
+    // 审计：2 家庭 + 2 行程 = 4 行跟着改，0 行保留
     const audit = dumpTable(app, 'auditLog').filter((r) => r['action'] === 'auth.update_profile');
-    const last = audit[audit.length - 1]!;
-    const detail = last['detail'] as Record<string, unknown>;
+    const detail = audit[audit.length - 1]!['detail'] as Record<string, unknown>;
     expect(detail['syncedMemberRows']).toBe(4);
-    expect(detail['syncedFamilyMemberRows']).toBe(2);
-    expect(detail['syncedTripMemberRows']).toBe(2);
+    expect(detail['keptCustomMemberRows']).toBe(0);
+  });
+
+  it('有保留称呼时，审计的 kept 计数如实反映', async () => {
+    const app = freshApp();
+    const { a, b, familyId } = await familyWithTwo(app, 'sep-kept-a', 'sep-kept-b');
+    const bRow = (await familyMembers(app, a.token, familyId)).find((m) => m.userId === b.userId)!;
+    mustOk(
+      await app.dispatch(
+        req('PATCH', `/families/members/${bRow.id}`, {
+          token: a.token,
+          body: { displayName: '二姨' },
+        }),
+      ),
+    );
+
+    await rename(app, b.token, '红红');
+
+    // B 只有家庭一行成员（没建行程）→ 0 行同步、1 行保留
+    const audit = dumpTable(app, 'auditLog').filter((r) => r['action'] === 'auth.update_profile');
+    const detail = audit[audit.length - 1]!['detail'] as Record<string, unknown>;
+    expect(detail['syncedMemberRows']).toBe(0);
+    expect(detail['keptCustomMemberRows']).toBe(1);
   });
 });
 
-describe('口径 A · 不该被动的行', () => {
-  it('虚拟成员、其他用户的成员行不受影响', async () => {
+describe('不该被动的情况', () => {
+  it('虚拟成员、其他用户的行不被同步影响', async () => {
     const app = freshApp();
-    const a = await login(app, 'sync-scope-a');
-    await rename(app, a.token, '小明');
-    const family = mustOk<{ family: { id: string; inviteCode: string } }>(
-      await app.dispatch(req('POST', '/families', { token: a.token, body: { name: 'A 家' } })),
-    );
+    const { a, b, familyId } = await familyWithTwo(app, 'sep-scope-a', 'sep-scope-b');
     mustOk(
       await app.dispatch(
-        req('POST', `/families/${family.family.id}/members`, {
+        req('POST', `/families/${familyId}/members`, {
           token: a.token,
           body: { displayName: '奶奶', isVirtual: true },
         }),
       ),
     );
 
-    const b = await login(app, 'sync-scope-b');
-    await rename(app, b.token, '小红');
-    mustOk(
-      await app.dispatch(
-        req('POST', '/families/join', {
-          token: b.token,
-          body: { inviteCode: family.family.inviteCode },
-        }),
-      ),
-    );
-
     await rename(app, a.token, '小满');
 
-    const members = await familyMembers(app, a.token, family.family.id);
-    expect(members.find((m) => m.userId === a.userId)?.displayName).toBe('小满');
+    const members = await familyMembers(app, a.token, familyId);
     expect(members.find((m) => m.userId === null)?.displayName).toBe('奶奶');
     expect(members.find((m) => m.userId === b.userId)?.displayName).toBe('小红');
+    expect(members.find((m) => m.userId === a.userId)?.displayName).toBe('小满');
   });
 
-  it('只改头像 / 时区 → 不同步成员行，审计也不带计数', async () => {
+  it('只改头像 → 不同步、审计不带计数', async () => {
     const app = freshApp();
-    const a = await login(app, 'sync-avatar');
-    await rename(app, a.token, '小明');
-    const family = mustOk<{ family: { id: string } }>(
-      await app.dispatch(req('POST', '/families', { token: a.token, body: { name: 'A 家' } })),
-    );
+    const { a, familyId } = await familyWithTwo(app, 'sep-avatar-a', 'sep-avatar-b');
 
     mustOk(
       await app.dispatch(
@@ -229,189 +286,119 @@ describe('口径 A · 不该被动的行', () => {
       ),
     );
 
-    expect((await familyMembers(app, a.token, family.family.id))[0]?.displayName).toBe('小明');
+    expect(
+      (await familyMembers(app, a.token, familyId)).find((m) => m.userId === a.userId)?.displayName,
+    ).toBe('小明');
 
     const audit = dumpTable(app, 'auditLog').filter((r) => r['action'] === 'auth.update_profile');
-    const last = audit[audit.length - 1]!;
-    expect((last['detail'] as Record<string, unknown>)['syncedMemberRows']).toBeUndefined();
-  });
-
-  it('加入时自定义的「我的称呼」仍作为初始快照生效（口径 A 的既定例外）', async () => {
-    const app = freshApp();
-    const a = await login(app, 'sync-join-a');
-    const family = mustOk<{ family: { id: string; inviteCode: string } }>(
-      await app.dispatch(req('POST', '/families', { token: a.token, body: { name: 'A 家' } })),
-    );
-
-    const b = await login(app, 'sync-join-b');
-    await rename(app, b.token, '小红');
-    mustOk(
-      await app.dispatch(
-        req('POST', '/families/join', {
-          token: b.token,
-          body: { inviteCode: family.family.inviteCode, displayName: '二姨' },
-        }),
-      ),
-    );
-
-    const before = (await familyMembers(app, a.token, family.family.id)).find(
-      (m) => m.userId === b.userId,
-    );
-    expect(before?.displayName).toBe('二姨');
-
-    // 本人改名后回到账号昵称（这就是「初始快照 ≠ 别名」的可验证语义）
-    await rename(app, b.token, '红红');
-    const after = (await familyMembers(app, a.token, family.family.id)).find(
-      (m) => m.userId === b.userId,
-    );
-    expect(after?.displayName).toBe('红红');
+    const detail = audit[audit.length - 1]!['detail'] as Record<string, unknown>;
+    expect(detail['syncedMemberRows']).toBeUndefined();
   });
 });
 
-describe('口径 A · 别名入口收口', () => {
-  it('家庭：户主改真实成员名 → 422；改虚拟成员名 → 200', async () => {
+describe('称呼可以被家人修改（真实成员也允许）', () => {
+  it('家庭：户主改真实成员的称呼 → 200；改虚拟成员 → 200', async () => {
     const app = freshApp();
-    const a = await login(app, 'alias-family-a');
-    const family = mustOk<{ family: { id: string; inviteCode: string } }>(
-      await app.dispatch(req('POST', '/families', { token: a.token, body: { name: 'A 家' } })),
+    const { a, b, familyId } = await familyWithTwo(app, 'sep-alias-a', 'sep-alias-b');
+
+    const bRow = (await familyMembers(app, a.token, familyId)).find((m) => m.userId === b.userId)!;
+    const r1 = await app.dispatch(
+      req('PATCH', `/families/members/${bRow.id}`, {
+        token: a.token,
+        body: { displayName: '爸爸' },
+      }),
     );
-    const b = await login(app, 'alias-family-b');
-    mustOk(
-      await app.dispatch(
-        req('POST', '/families/join', {
-          token: b.token,
-          body: { inviteCode: family.family.inviteCode },
-        }),
-      ),
-    );
+    expect(r1.httpStatus).toBe(200);
+
     const virtual = mustOk<{ member: { id: string } }>(
       await app.dispatch(
-        req('POST', `/families/${family.family.id}/members`, {
+        req('POST', `/families/${familyId}/members`, {
           token: a.token,
           body: { displayName: '奶奶', isVirtual: true },
         }),
       ),
     );
-
-    const members = await familyMembers(app, a.token, family.family.id);
-    const realRow = members.find((m) => m.userId === b.userId)!;
-
-    const denied = await app.dispatch(
-      req('PATCH', `/families/members/${realRow.id}`, {
-        token: a.token,
-        body: { displayName: '老 B' },
-      }),
-    );
-    expect(denied.httpStatus).toBe(422);
-
-    const okVirtual = await app.dispatch(
+    const r2 = await app.dispatch(
       req('PATCH', `/families/members/${virtual.member.id}`, {
         token: a.token,
-        body: { displayName: '太奶奶' },
+        body: { displayName: '外婆' },
       }),
     );
-    expect(okVirtual.httpStatus).toBe(200);
-    expect(
-      (await familyMembers(app, a.token, family.family.id)).find((m) => m.userId === null)
-        ?.displayName,
-    ).toBe('太奶奶');
+    expect(r2.httpStatus).toBe(200);
+
+    const members = await familyMembers(app, a.token, familyId);
+    expect(members.find((m) => m.userId === b.userId)?.displayName).toBe('爸爸');
+    expect(members.find((m) => m.userId === null)?.displayName).toBe('外婆');
   });
 
-  it('行程：主导者改真实同行者名 → 422；改外部同行者名 → 200', async () => {
+  it('行程：主导者改真实同行者的称呼 → 200', async () => {
     const app = freshApp();
-    const a = await scaffold(app, 'alias-trip-a');
-    const b = await login(app, 'alias-trip-b');
-
-    // B 凭行程邀请码加入（真实同行者）
-    const invite = mustOk<{ trip: { inviteCode: string } }>(
+    const a = await scaffold(app, 'sep-trip-alias-a');
+    const b = await login(app, 'sep-trip-alias-b');
+    const detail = mustOk<{ trip: { inviteCode: string } }>(
       await app.dispatch(req('GET', `/trips/${a.tripId}`, { token: a.token })),
     );
     mustOk(
       await app.dispatch(
         req('POST', '/trips/join', {
           token: b.token,
-          body: { inviteCode: invite.trip.inviteCode },
+          body: { inviteCode: detail.trip.inviteCode },
         }),
       ),
     );
 
-    // 外部同行者
-    const ext = mustOk<{ member: { id: string } }>(
-      await app.dispatch(
-        req('POST', `/trips/${a.tripId}/members`, {
-          token: a.token,
-          body: { displayName: '同事小王', isVirtual: true },
-        }),
-      ),
-    );
-
-    const members = await tripMembers(app, a.token, a.tripId);
-    const realRow = members.find((m) => m.userId === b.userId)!;
-    expect(realRow).toBeDefined();
-
-    const denied = await app.dispatch(
-      req('PATCH', `/trips/members/${realRow.id}`, {
+    const bRow = (await tripMembers(app, a.token, a.tripId)).find((m) => m.userId === b.userId)!;
+    const r = await app.dispatch(
+      req('PATCH', `/trips/members/${bRow.id}`, {
         token: a.token,
-        body: { displayName: '老 B' },
+        body: { displayName: '同事小王' },
       }),
     );
-    expect(denied.httpStatus).toBe(422);
-
-    const okExt = await app.dispatch(
-      req('PATCH', `/trips/members/${ext.member.id}`, {
-        token: a.token,
-        body: { displayName: '老王' },
-      }),
-    );
-    expect(okExt.httpStatus).toBe(200);
+    expect(r.httpStatus).toBe(200);
     expect(
-      (await tripMembers(app, a.token, a.tripId)).find((m) => m.userId === null)?.displayName,
-    ).toBe('老王');
-  });
-
-  it('被邀请时指定的称呼作为初始快照生效，本人改名后对齐账号昵称', async () => {
-    const app = freshApp();
-    const a = await scaffold(app, 'alias-add-a');
-    const b = await login(app, 'alias-add-b');
-
-    // 真实家庭场景：账号叫「小红」，家里叫她「二姨」
-    await rename(app, b.token, '小红');
-    const invited = await app.dispatch(
-      req('POST', `/families/${a.familyId}/members`, {
-        token: a.token,
-        body: { userId: b.userId, isVirtual: false, displayName: '二姨' },
-      }),
-    );
-    expect(invited.httpStatus).toBe(200);
-    expect(
-      (await familyMembers(app, a.token, a.familyId)).find((m) => m.userId === b.userId)
-        ?.displayName,
-    ).toBe('二姨');
-
-    // 本人改昵称 → 初始称呼被账号昵称取代（口径 A 的既定取舍）
-    await rename(app, b.token, '红红');
-    expect(
-      (await familyMembers(app, a.token, a.familyId)).find((m) => m.userId === b.userId)
-        ?.displayName,
-    ).toBe('红红');
+      (await tripMembers(app, a.token, a.tripId)).find((m) => m.userId === b.userId)?.displayName,
+    ).toBe('同事小王');
   });
 });
 
-describe('口径 A · 留痕', () => {
-  it('每同步一行写一条 change_log UPDATE（同步游标不丢状态）', async () => {
+describe('留痕', () => {
+  it('只给真正变更的行写 change_log（保留称呼的行不写）', async () => {
     const app = freshApp();
-    const a = await scaffold(app, 'sync-log-a'); // 家庭 + 行程各 1 行成员
-    await rename(app, a.token, '新名字');
+    const { a, b, familyId } = await familyWithTwo(app, 'sep-log-a', 'sep-log-b');
+    const bRow = (await familyMembers(app, a.token, familyId)).find((m) => m.userId === b.userId)!;
+    mustOk(
+      await app.dispatch(
+        req('PATCH', `/families/members/${bRow.id}`, {
+          token: a.token,
+          body: { displayName: '二姨' },
+        }),
+      ),
+    );
 
-    const logs = dumpTable(app, 'changeLog').filter((r) => r['op'] === 'UPDATE');
-    const familyLogs = logs.filter((r) => r['entityType'] === 'family_member');
-    const tripLogs = logs.filter((r) => r['entityType'] === 'trip_member');
+    const before = dumpTable(app, 'changeLog').length;
+    await rename(app, b.token, '红红');
+    const added = dumpTable(app, 'changeLog').slice(before);
 
-    expect(familyLogs).toHaveLength(1);
-    expect(tripLogs).toHaveLength(1);
-    // 归属维度必须带上，否则按 family / trip 维度消费的同步会漏
-    expect(String(familyLogs[0]!['familyId'])).toBe(a.familyId);
-    expect(String(tripLogs[0]!['tripId'])).toBe(a.tripId);
-    expect(String(tripLogs[0]!['familyId'])).toBe(a.familyId);
+    // B 的家庭行被保留（称呼），且没有行程 → 这次改名不该产生成员类 change_log
+    expect(added.filter((r) => r['entityType'] === 'family_member')).toHaveLength(0);
+    expect(added.filter((r) => r['entityType'] === 'trip_member')).toHaveLength(0);
+  });
+
+  it('跟着改的行带完整归属维度（familyId / tripId）', async () => {
+    const app = freshApp();
+    const s = await scaffold(app, 'sep-log-owner'); // 1 家庭 + 1 行程
+    const before = dumpTable(app, 'changeLog').length;
+    await rename(app, s.token, '新名字');
+    const added = dumpTable(app, 'changeLog')
+      .slice(before)
+      .filter((r) => r['op'] === 'UPDATE');
+
+    const fam = added.filter((r) => r['entityType'] === 'family_member');
+    const trip = added.filter((r) => r['entityType'] === 'trip_member');
+    expect(fam).toHaveLength(1);
+    expect(trip).toHaveLength(1);
+    expect(String(fam[0]!['familyId'])).toBe(s.familyId);
+    expect(String(trip[0]!['tripId'])).toBe(s.tripId);
+    expect(String(trip[0]!['familyId'])).toBe(s.familyId);
   });
 });
