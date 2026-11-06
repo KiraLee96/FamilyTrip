@@ -87,6 +87,17 @@ export function createHolidayDomain(o: HolidayDomainOptions): HolidayDomain {
       },
     },
 
+    /**
+     * 家庭自定义假期导入（公司假 / 园所假）。
+     *
+     * 🔴 2026-11-06 安全修复：本路由 `idParam: '__none__'` → 链路第 5 段取不到 id，
+     *    `if (rawId !== undefined)` 整段跳过，`checkAccess` **不执行**，只剩登录校验。
+     *    原实现允许 `familyId` 缺省（= 写全国字典），实测任意登录用户可把
+     *    2027-02-05 改成「上班」，全体家庭的工作日口径被他一个人污染。
+     *
+     *    现在：schema 强制 `familyId`，service 内 `assertFamilyOwner` 复核。
+     *    **全国法定字典不再有任何 HTTP 写入口**，只能走数据库运维导入。
+     */
     {
       method: 'POST',
       path: '/holidays/import',
@@ -96,7 +107,7 @@ export function createHolidayDomain(o: HolidayDomainOptions): HolidayDomain {
       handler: async (ctx, input) => {
         const b = input as UpsertHolidayInput;
         const r = await service.upsert(ctx.userId!, {
-          familyId: b.familyId !== undefined ? BigInt(b.familyId) : undefined,
+          familyId: BigInt(b.familyId),
           country: 'CN',
           items: b.items,
         });

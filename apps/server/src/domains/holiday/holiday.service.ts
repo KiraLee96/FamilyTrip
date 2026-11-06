@@ -11,6 +11,11 @@
  *     这样单一字段即可覆盖中国的「节假日 + 调休」双轨制。
  *   · `family_id` 允许为空 = 全国通用；非空 = 家庭自定义（如公司假）。
  *     查询时两者合并，家庭自定义**优先级更高**（可覆盖国家法定）。
+ *
+ * 🔴 写路径只有一个（2026-11-06 收窄）：`upsert` 只写**家庭自定义**，且必须户主。
+ *    全国法定字典（`family_id IS NULL`）**没有任何 HTTP 写入口** —— 原来缺省
+ *    `familyId` 就能写全国字典，而该路由的权限判定被 `idParam:'__none__'` 跳过，
+ *    等于任意登录用户可改全体家庭的调休口径。全国字典请走数据库运维导入。
  */
 
 import { AppError, ErrorCode } from '../../common/errors/error-code.js';
@@ -21,7 +26,6 @@ import type { DomainContext } from '../domain-context.js';
 export interface HolidayServiceOptions {
   ctx: DomainContext;
 }
-
 
 export interface HolidayItem {
   name: string;
@@ -57,7 +61,10 @@ export class HolidayService {
 
     // 国家法定（family_id 为空）
     const national = all
-      .filter((h) => h['country'] === q.country && (h['familyId'] === null || h['familyId'] === undefined))
+      .filter(
+        (h) =>
+          h['country'] === q.country && (h['familyId'] === null || h['familyId'] === undefined),
+      )
       .filter((h) => Number(h['year'] ?? q.year) === q.year || h['year'] === undefined)
       .filter((h) => inRange(toYmd(h['date'])))
       .map((h) => toItem(h, 'NATIONAL'));
@@ -73,14 +80,24 @@ export class HolidayService {
     for (const it of national) byDate.set(it.date, it);
     for (const it of familyRows) byDate.set(it.date, it); // 家庭覆盖国家
 
-    const items = [...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    const items = [...byDate.values()].sort((a, b) =>
+      a.date < b.date ? -1 : a.date > b.date ? 1 : 0,
+    );
     return { year: q.year, country: q.country, items };
   }
 
   /** 某天是否工作日 */
-  async isWorkday(userId: bigint, q: { country: string; date: string }): Promise<{ date: string; isWorkday: boolean; name: string | null }> {
+  async isWorkday(
+    userId: bigint,
+    q: { country: string; date: string },
+  ): Promise<{ date: string; isWorkday: boolean; name: string | null }> {
     const year = Number(q.date.slice(0, 4));
-    const { items } = await this.list(userId, { country: q.country, year, from: q.date, to: q.date });
+    const { items } = await this.list(userId, {
+      country: q.country,
+      year,
+      from: q.date,
+      to: q.date,
+    });
     const hit = items.find((i) => i.date === q.date);
     if (hit) return { date: q.date, isWorkday: hit.isWorkday, name: hit.name };
 
@@ -97,8 +114,15 @@ export class HolidayService {
   async workdaysBetween(
     userId: bigint,
     q: { country: string; start: string; end: string },
-  ): Promise<{ start: string; end: string; workdays: number; holidays: number; totalDays: number }> {
-    if (q.start > q.end) throw new AppError(ErrorCode.VALIDATION_FAILED, '开始日期不能晚于结束日期');
+  ): Promise<{
+    start: string;
+    end: string;
+    workdays: number;
+    holidays: number;
+    totalDays: number;
+  }> {
+    if (q.start > q.end)
+      throw new AppError(ErrorCode.VALIDATION_FAILED, '开始日期不能晚于结束日期');
     const y1 = Number(q.start.slice(0, 4));
     const y2 = Number(q.end.slice(0, 4));
     if (y2 - y1 > 5) throw new AppError(ErrorCode.VALIDATION_FAILED, '日期跨度不能超过 5 年');
@@ -129,18 +153,34 @@ export class HolidayService {
   }
 
   /**
-   * 导入/覆盖节假日字典（内部运营接口）。
+   * 导入/覆盖**家庭自定义**假期（如公司假、园所假）。
+   *
+   * 🔴 2026-11-06 安全修复 —— 三条约束缺一不可：
+   *   1. `familyId` 必填（schema 已收紧）：拒绝任何「写全国字典」的可能性。
+   *      全国法定假日 `family_id = NULL` 的行**只能**走数据库运维导入，
+   *      HTTP 面不存在这条路径 —— 否则一个普通用户就能改掉所有人的调休口径。
+   *   2. `familyId` 必须是**自己的家庭**：不是成员 → 404（与「不存在」同形，防 ID 枚举）。
+   *   3. 必须是**户主**：家庭假期会影响全家（含代管成员）的行程天数与提醒口径，
+   *      普通成员不该单方面改写。原先这里只校验「是成员」，权限过宽。
+   *
+   * ⚠️ 为什么权限判定必须落在 service：本路由 `idParam` 为 `'__none__'`，
+   *    链路第 5 段 `if (rawId !== undefined)` 会整段跳过，`checkAccess` 不执行。
+   *    这是 family/join 这类「资源尚不存在」的写接口的既定形态（见 family.controller
+   *    头注释），代价就是**每个这类接口都必须自带 service 级复核**。
    *
    * 幂等：同 (country, year, date, familyId) 视为同一条 —— 覆盖而非新增。
    * 用软删 + 插入的方式实现「覆盖」，保留历史便于审计。
    */
   async upsert(
     userId: bigint,
-    q: { familyId?: bigint; country: string; items: Array<{ name: string; date: string; isWorkday: boolean }> },
+    q: {
+      familyId: bigint;
+      country: string;
+      items: Array<{ name: string; date: string; isWorkday: boolean }>;
+    },
   ): Promise<{ inserted: number; replaced: number }> {
-    if (q.familyId !== undefined) {
-      await this.assertFamilyMember(userId, q.familyId);
-    }
+    await this.assertFamilyOwner(userId, q.familyId);
+
     return this.o.ctx.tx(async (tx) => {
       const now = await tx.db.dbNow();
       let inserted = 0;
@@ -153,7 +193,8 @@ export class HolidayService {
             country: q.country,
             year,
             deletedAt: null,
-            familyId: q.familyId ?? null,
+            // 🔴 恒为具体 familyId，`?? null` 已删 —— 这里再漏一次就是全国字典被改写
+            familyId: q.familyId,
           },
         });
         // 同日期已有 → 软删旧的（保留历史）
@@ -169,7 +210,7 @@ export class HolidayService {
           date: new Date(`${item.date}T00:00:00.000Z`),
           isWorkday: item.isWorkday,
           year,
-          familyId: q.familyId ?? null,
+          familyId: q.familyId,
           createdAt: now,
           updatedAt: now,
           deletedAt: null,
@@ -184,15 +225,30 @@ export class HolidayService {
   // ── 内部 ────────────────────────────────────────────────
 
   private async visibleFamilyIds(userId: bigint): Promise<Set<bigint>> {
-    const mine = await this.o.ctx.read.findMany('familyMember', { where: { userId, deletedAt: null } });
+    const mine = await this.o.ctx.read.findMany('familyMember', {
+      where: { userId, deletedAt: null },
+    });
     const s = new Set<bigint>();
     for (const m of mine) s.add(m['familyId'] as bigint);
     return s;
   }
 
-  private async assertFamilyMember(userId: bigint, familyId: bigint): Promise<void> {
-    const m = await this.o.ctx.read.findUnique('familyMember', { familyId, userId, deletedAt: null });
+  /**
+   * 户主校验（写家庭自定义假期的唯一门槛）。
+   *
+   * · 不是成员 → 404（与「资源不存在」逐字节一致，防 ID 枚举）
+   * · 是成员但不是户主 → 403（能明确区分，因为对方已在家庭内、不存在枚举面）
+   */
+  private async assertFamilyOwner(userId: bigint, familyId: bigint): Promise<void> {
+    const m = await this.o.ctx.read.findUnique('familyMember', {
+      familyId,
+      userId,
+      deletedAt: null,
+    });
     if (!m) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
+    if (m['role'] !== 'OWNER') {
+      throw new AppError(ErrorCode.FORBIDDEN, '仅户主可维护家庭自定义假期');
+    }
   }
 }
 

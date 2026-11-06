@@ -39,9 +39,21 @@ export const workdaysBetweenSchema = z.object({
 
 export type WorkdaysBetweenInput = z.infer<typeof workdaysBetweenSchema>;
 
-/** 管理侧：导入/覆盖节假日（内部运营接口） */
+/**
+ * 家庭自定义假期导入（原名「内部运营接口」，2026-11-06 收窄语义）。
+ *
+ * 🔴 `familyId` 由**可选改为必填** —— 这是一次安全修复。
+ *    原先缺省时写的是 `family_id = NULL` 的**全国法定字典**，而该路由的
+ *    `idParam` 是 `'__none__'`，链路第 5 段是 `if (rawId !== undefined)` 才做归属解析，
+ *    id 取不到 → **权限判定整段被跳过，只剩登录校验**。实测任意登录用户
+ *    都能 POST 一条 `{date:'2027-02-05', isWorkday:true}` 改写全国假期，
+ *    全体家庭的工作日口径随之被污染。
+ *
+ * 现在本接口只能写「自家」的覆盖项（如公司假 / 园所假）。
+ * 全国法定字典**只能**走数据库运维导入，不再有任何 HTTP 写入口。
+ */
 export const upsertHolidaySchema = z.object({
-  familyId: idInput.optional(),
+  familyId: idInput,
   items: z
     .array(
       z.object({
