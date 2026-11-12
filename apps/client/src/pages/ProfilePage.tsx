@@ -444,6 +444,10 @@ function FamilyCard({
   // 展开后以真实成员数组为准；老后端列表不返回 memberCount 时也能显示 2 人（反馈②）。
   const memberCount =
     detail.data !== null && detail.data !== undefined ? members.length : family.memberCount;
+  // 我是不是这个家的户主 → 决定能不能改别人的称呼（与后端 updateMember 权限一致）
+  const iAmOwner = members.some(
+    (m) => m.userId !== null && m.userId === user?.id && m.role === 'OWNER',
+  );
 
   return (
     <View className="card family-card">
@@ -513,7 +517,17 @@ function FamilyCard({
 
               <Text className="family-card__label">成员（{members.length}）</Text>
               {members.map((m) => (
-                <MemberRow key={m.id} member={m} currentUser={user} onRemoved={rerun} />
+                <MemberRow
+                  key={m.id}
+                  member={m}
+                  currentUser={user}
+                  // 本人可改自己的称呼；户主可改任意成员（含虚拟成员）
+                  canEditAlias={
+                    iAmOwner ||
+                    (m.userId !== null && m.userId !== undefined && m.userId === user?.id)
+                  }
+                  onRemoved={rerun}
+                />
               ))}
 
               <AddMemberRow familyId={family.id} onAdded={rerun} />
@@ -537,13 +551,18 @@ function FamilyCard({
 function MemberRow({
   member,
   currentUser,
+  canEditAlias,
   onRemoved,
 }: {
   member: FamilyMember;
   currentUser: User | undefined;
+  /** 本人或户主可改称呼（与后端 updateMember 权限一致） */
+  canEditAlias: boolean;
   onRemoved: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
   /**
    * 双行展示（2026-11-06 口径）：主行=账号昵称，副行=家庭称呼（灰字）。
    *   主行 `nickname ?? displayName`；副行只在称呼与昵称不同时出现。
@@ -558,6 +577,30 @@ function MemberRow({
   ]
     .filter(Boolean)
     .join(' · ');
+
+  const startEdit = useCallback(() => {
+    // 预填当前称呼：没有称呼（等于昵称）时留空，让用户直接输入想要的新称呼
+    setDraft(alias ?? '');
+    setEditing(true);
+  }, [alias]);
+
+  const saveAlias = useCallback(async () => {
+    const v = draft.trim();
+    if (v === '') {
+      void Taro.showToast({ title: '请输入称呼', icon: 'none' });
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.updateFamilyMember(member.id, { displayName: v });
+      setEditing(false);
+      onRemoved();
+    } catch (e: unknown) {
+      void Taro.showToast({ title: e instanceof Error ? e.message : '保存失败', icon: 'none' });
+    } finally {
+      setBusy(false);
+    }
+  }, [draft, member.id, onRemoved]);
 
   const remove = useCallback(async () => {
     const res = await Taro.showModal({
@@ -585,7 +628,38 @@ function MemberRow({
       </View>
       <View className="member__body">
         <Text className="member__name">{name}</Text>
-        <Text className="member__sub">{subline}</Text>
+        {editing ? (
+          // 内联编辑：复用 add-row 的输入/按钮外观，不弹模态（小程序弹窗输入体验差）
+          <View className="add-row member__editor">
+            <Input
+              className="add-row__input"
+              value={draft}
+              onInput={(e) => setDraft(e.detail.value)}
+              placeholder="如：爸爸 / 二姨"
+              maxlength={32}
+            />
+            <View
+              className={`add-row__btn ${busy || draft.trim() === '' ? 'add-row__btn--off' : ''}`}
+              onClick={busy || draft.trim() === '' ? undefined : () => void saveAlias()}
+            >
+              {busy ? '…' : '保存'}
+            </View>
+            <Text className="member__edit" onClick={busy ? undefined : () => setEditing(false)}>
+              取消
+            </Text>
+          </View>
+        ) : (
+          <Text className="member__sub">
+            {subline}
+            {canEditAlias ? (
+              // 副行末尾的轻量入口：称呼改不了是最容易卡住的地方（创建者尤其）
+              <Text className="member__edit" onClick={startEdit}>
+                {' '}
+                改称呼
+              </Text>
+            ) : null}
+          </Text>
+        )}
       </View>
       {member.role !== 'OWNER' ? (
         <View
@@ -689,6 +763,12 @@ function RenameRow({ family, onRenamed }: { family: Family; onRenamed: () => voi
 function CreateFamilyForm({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
+  /**
+   * 「我的称呼」——创建者唯一的指定时机。
+   * 加入家庭的人走 `JoinFamilyPage` 的「我的称呼」输入框，创建者不经过那一页，
+   * 所以创建表单必须自己给一个（2026-11-12 反馈：创建者没有任何地方能设称呼）。
+   */
+  const [alias, setAlias] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -700,8 +780,13 @@ function CreateFamilyForm({ onCreated }: { onCreated: () => void }) {
     setBusy(true);
     setErr('');
     try {
-      await api.createFamily({ name: name.trim() });
+      await api.createFamily({
+        name: name.trim(),
+        // 留空就不传：后端回落成账号昵称，而不是写一个空称呼
+        ...(alias.trim() !== '' ? { displayName: alias.trim() } : {}),
+      });
       setName('');
+      setAlias('');
       setOpen(false);
       onCreated();
     } catch (e: unknown) {
@@ -709,7 +794,7 @@ function CreateFamilyForm({ onCreated }: { onCreated: () => void }) {
     } finally {
       setBusy(false);
     }
-  }, [name, onCreated]);
+  }, [name, alias, onCreated]);
 
   if (!open) {
     return (
@@ -735,6 +820,16 @@ function CreateFamilyForm({ onCreated }: { onCreated: () => void }) {
           value={name}
           onInput={(e) => setName(e.detail.value)}
           placeholder="如：我们一家"
+        />
+      </View>
+      <View className="field">
+        <Text className="field__label">我的称呼（可选）</Text>
+        <Input
+          className="input"
+          value={alias}
+          onInput={(e) => setAlias(e.detail.value)}
+          placeholder="家人在群里怎么称呼你，如：爸爸"
+          maxlength={32}
         />
       </View>
       {err ? <Text className="form-error">{err}</Text> : null}

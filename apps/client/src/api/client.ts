@@ -92,8 +92,12 @@ export interface ApiClient {
   listFamilies(): Promise<Family[]>;
   /** GET /families/:id（家庭 + 成员列表；family 行带 inviteCode） */
   getFamily(id: string): Promise<FamilyDetail>;
-  /** POST /families（创建者自动成为户主） */
-  createFamily(input: { name: string; timezone?: string }): Promise<Family>;
+  /**
+   * POST /families（创建者自动成为户主）
+   * `displayName` = 户主在家庭里的**称呼**（可选）；不传取账号昵称。
+   * 创建者不经过「凭邀请码加入」页面，所以这里是户主唯一能指定称呼的时机。
+   */
+  createFamily(input: { name: string; timezone?: string; displayName?: string }): Promise<Family>;
   /** PATCH /families/:id（改名/换时区，仅户主） */
   updateFamily(id: string, input: { name?: string; timezone?: string }): Promise<Family>;
   /** DELETE /families/:id（解散家庭，仅户主） */
@@ -107,6 +111,13 @@ export interface ApiClient {
   ): Promise<FamilyMember>;
   /** DELETE /families/members/:id（移除成员；本人即退出） */
   removeFamilyMember(memberId: string): Promise<void>;
+  /**
+   * PATCH /families/members/:id —— 改**家庭称呼**（displayName）。
+   *
+   * 权限（后端 2026-11-12 放宽）：本人可改自己那一行，户主可改任意成员。
+   * 角色 / 代管人不在本方法范围内（仍归户主，且另有专用接口）。
+   */
+  updateFamilyMember(memberId: string, input: { displayName: string }): Promise<FamilyMember>;
 
   // ---- trip ----
   /** GET /trips */

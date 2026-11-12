@@ -44,17 +44,17 @@ export class FamilyService {
   /** 创建家庭 —— 创建者自动成为 OWNER 成员 */
   async create(
     userId: bigint,
-    input: { name: string; timezone?: string },
+    input: { name: string; timezone?: string; displayName?: string },
   ): Promise<Record<string, unknown>> {
     return this.o.ctx.tx(async (tx) => {
       const now = await tx.db.dbNow();
 
       const inviteCode = await this.uniqueInviteCode(tx);
       const familyId = tx.write.nextId();
-      // 户主展示名取用户昵称（与 join / addMember 同源）。
+      // 户主在家里怎么被称呼：显式传了就用（创建页「我的称呼」），否则取用户昵称。
       // 🔴 不能用家庭名兜底：家庭名是「我们的小家」，成员名却是人名，
       //    混用会让成员列表 / 回忆 / 账单里出现「我们的家庭 上传了 3 张照片」。
-      const ownerDisplayName = await this.displayNameOf(tx, userId);
+      const ownerDisplayName = input.displayName ?? (await this.displayNameOf(tx, userId));
 
       await tx.db.insert('family', {
         id: familyId,
@@ -398,7 +398,15 @@ export class FamilyService {
     });
   }
 
-  /** 改成员（角色/昵称/代管人）—— 仅户主 */
+  /**
+   * 改成员（角色 / 称呼 / 代管人）。
+   *
+   * 权限（2026-11-12 放宽）：**户主可改任意成员；成员可改自己那一行**。
+   *   · 放宽的理由：称呼是自己在家里的叫法（「爸爸」「二姨」），本人应有话语权。
+   *     此前"仅户主"，导致加入时填错了就再也改不了 —— 创建者更是完全没有入口
+   *     （create 不经过 join 页那个「我的称呼」输入框）。
+   *   · 但**本人只能改 `displayName`**：角色、代管人属于家庭治理，仍归户主。
+   */
   async updateMember(
     memberId: bigint,
     actorId: bigint,
@@ -408,7 +416,16 @@ export class FamilyService {
       const member = await tx.db.findUnique('familyMember', { id: memberId, deletedAt: null });
       if (!member) throw new AppError(ErrorCode.NOT_FOUND, '资源不存在');
       const familyId = member['familyId'] as bigint;
-      await this.assertOwner(tx, familyId, actorId);
+
+      const isSelf = member['userId'] !== null && member['userId'] === actorId;
+      if (isSelf) {
+        // 自己改自己：只放行称呼
+        if (patch.role !== undefined || patch.managedBy !== undefined) {
+          throw new AppError(ErrorCode.FORBIDDEN, '只能修改自己的称呼，角色与代管请联系户主');
+        }
+      } else {
+        await this.assertOwner(tx, familyId, actorId);
+      }
 
       if (patch.role === 'OWNER') {
         throw new AppError(ErrorCode.FORBIDDEN, '转让户主请使用专用接口');

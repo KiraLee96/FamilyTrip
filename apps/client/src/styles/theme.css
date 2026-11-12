@@ -2398,6 +2398,23 @@ p {
   margin-top: 1px;
 }
 
+/* 「改称呼」入口：跟在副行后面，用品牌色点出可点，不做成按钮以免抢视觉 */
+.member__edit {
+  color: var(--accent-ink);
+  margin-left: 6px;
+}
+
+.member__edit:active {
+  opacity: 0.6;
+}
+
+/* 成员行内联编辑（改称呼时展开，复用 add-row 的输入/按钮外观） */
+.member__editor {
+  margin-top: 6px;
+  padding: 0;
+  border-bottom: none;
+}
+
 /* ---------- 可挑选成员（新建行程 · 同行成员多选） ---------- */
 
 .member--pick {

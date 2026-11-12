@@ -409,6 +409,10 @@ function toFamily(raw: Record<string, unknown>): Family {
 function toMember(raw: Record<string, unknown>): FamilyMember {
   const userId = raw['userId'];
   const managedBy = raw['managedBy'];
+  // 🔴 这里是**白名单映射**：后端多返回的字段不会自动出现在客户端对象里。
+  //    2026-11-12 踩过：后端已返回 nickname，但漏了这行 → member.nickname 恒 undefined，
+  //    「昵称主行 + 称呼副行」在真后端上一行都显示不出来（Mock 里正常，更容易误判）。
+  const nickname = raw['nickname'];
   return {
     id: asString(raw['id']),
     familyId: asString(raw['familyId']),
@@ -417,6 +421,7 @@ function toMember(raw: Record<string, unknown>): FamilyMember {
     isVirtual: asBoolean(raw['isVirtual']),
     managedBy: managedBy === null || managedBy === undefined ? null : asString(managedBy),
     displayName: asString(raw['displayName']),
+    nickname: nickname === null || nickname === undefined ? null : asString(nickname),
     joinedAt: asString(raw['joinedAt']),
   };
 }
@@ -425,6 +430,7 @@ function toMember(raw: Record<string, unknown>): FamilyMember {
 function toTripMember(raw: Record<string, unknown>): TripMember {
   const userId = raw['userId'];
   const managedBy = raw['managedBy'];
+  const nickname = raw['nickname'];
   return {
     id: asString(raw['id']),
     tripId: asString(raw['tripId']),
@@ -433,6 +439,7 @@ function toTripMember(raw: Record<string, unknown>): TripMember {
     isExternal: asBoolean(raw['isExternal']),
     accessLevel: (asString(raw['accessLevel']) || 'ACTIVE') as TripAccessLevel,
     displayName: asString(raw['displayName']),
+    nickname: nickname === null || nickname === undefined ? null : asString(nickname),
     managedBy: managedBy === null || managedBy === undefined ? null : asString(managedBy),
     joinedAt: asString(raw['joinedAt']),
   };
@@ -833,6 +840,14 @@ export function createHttpClient(): ApiClient {
     },
     removeFamilyMember: async (memberId) => {
       await requestVoid('DELETE', `/families/members/${memberId}`);
+    },
+    updateFamilyMember: async (memberId, input) => {
+      const r = await request<{ member: Record<string, unknown> }>(
+        'PATCH',
+        `/families/members/${memberId}`,
+        input,
+      );
+      return toMember(r.member);
     },
     listTrips: async (familyId) => {
       const rows = await requestList<Record<string, unknown>>(

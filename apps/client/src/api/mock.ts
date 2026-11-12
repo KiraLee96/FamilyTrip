@@ -915,7 +915,8 @@ export function createMockClient(): ApiClient {
         role: 'OWNER',
         isVirtual: false,
         managedBy: null,
-        displayName: ME.nickname,
+        // 户主在家庭里的称呼：创建时填了就用，否则取账号昵称（与后端 create 同口径）
+        displayName: input.displayName ?? ME.nickname,
         joinedAt: new Date().toISOString(),
       });
       return respond(family);
@@ -989,6 +990,14 @@ export function createMockClient(): ApiClient {
       const family = state.families.find((f) => f.id === removed!.familyId);
       if (family) family.memberCount = Math.max(1, family.memberCount - 1);
       await delay();
+    },
+    async updateFamilyMember(memberId, input) {
+      const m = state.members.find((x) => x.id === memberId);
+      if (!m) throw new ApiError(404, '成员不存在');
+      // Mock 不做权限判定（真后端：本人或户主）；只改称呼，与后端 updateMember 同口径
+      m.displayName = input.displayName;
+      await delay();
+      return respond(withNickname(m));
     },
     // ---- trip ----
     async listTrips(familyId) {

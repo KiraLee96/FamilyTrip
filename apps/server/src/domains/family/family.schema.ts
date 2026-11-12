@@ -23,6 +23,14 @@ export const createFamilySchema = z.object({
     .max(64)
     .regex(/^[A-Za-z]+\/[A-Za-z_+-]+$/)
     .optional(),
+  /**
+   * 户主在家庭里的**称呼**（可选，如「爸爸」）。
+   *
+   * 创建者不经过 join 页那个「我的称呼」输入框，如果不给这个字段，
+   * 户主的称呼只能等于账号昵称，且**没有任何地方能改**（2026-11-12 反馈）。
+   * 传了就用作初始称呼，不传仍取昵称。
+   */
+  displayName: z.string().min(1).max(32).optional(),
 });
 
 export type CreateFamilyInput = z.infer<typeof createFamilySchema>;
