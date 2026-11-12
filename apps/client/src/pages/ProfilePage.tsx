@@ -33,6 +33,7 @@ import { SectionTitle } from '../components/shared';
 import { useAsync } from '../hooks/useAsync';
 import { useSession } from '../hooks/useSession';
 import { buildJoinLink, copyText } from '../utils/clipboard';
+import { memberLabels } from '../utils/member-display';
 import { pickAndUploadAvatar, uploadAvatarImage } from '../utils/upload';
 
 /** 编译期常量：分享面板在小程序是原生能力，H5 只能给链接（不 fork 组件，只分行为） */
@@ -443,7 +444,6 @@ function FamilyCard({
   // 展开后以真实成员数组为准；老后端列表不返回 memberCount 时也能显示 2 人（反馈②）。
   const memberCount =
     detail.data !== null && detail.data !== undefined ? members.length : family.memberCount;
-  const familyName = live?.name ?? family.name;
 
   return (
     <View className="card family-card">
@@ -513,13 +513,7 @@ function FamilyCard({
 
               <Text className="family-card__label">成员（{members.length}）</Text>
               {members.map((m) => (
-                <MemberRow
-                  key={m.id}
-                  member={m}
-                  currentUser={user}
-                  familyName={familyName}
-                  onRemoved={rerun}
-                />
+                <MemberRow key={m.id} member={m} currentUser={user} onRemoved={rerun} />
               ))}
 
               <AddMemberRow familyId={family.id} onAdded={rerun} />
@@ -543,31 +537,27 @@ function FamilyCard({
 function MemberRow({
   member,
   currentUser,
-  familyName,
   onRemoved,
 }: {
   member: FamilyMember;
   currentUser: User | undefined;
-  familyName: string;
   onRemoved: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  // 后端创建家庭时曾把户主 displayName 写成家庭名（反馈①）。只在「本人成员 +
-  // 展示名恰好等于家庭名」这一明确的脏数据形态下用账号昵称兜底，不覆盖其它
-  // 成员或手动设置的别名；后端按派送单修好后该分支自然不再命中。
-  const nickname = (currentUser?.nickname ?? '').trim();
-  const mine =
-    member.userId !== null &&
-    currentUser?.id !== undefined &&
-    nickname !== '' &&
-    member.userId === currentUser.id;
-  const wrongName = member.displayName === '' || member.displayName === familyName;
-  const name =
-    mine && wrongName
-      ? nickname
-      : member.displayName.trim() !== ''
-        ? member.displayName
-        : '未命名成员';
+  /**
+   * 双行展示（2026-11-06 口径）：主行=账号昵称，副行=家庭称呼（灰字）。
+   *   主行 `nickname ?? displayName`；副行只在称呼与昵称不同时出现。
+   * 昵称来源与降级规则见 utils/member-display.ts。
+   */
+  const { primary: name, alias } = memberLabels(member, currentUser);
+  // 副行：称呼（如有）· 角色 · 代管标记。称呼放最前，紧贴昵称下方更好读。
+  const subline = [
+    alias,
+    member.role === 'OWNER' ? '管理员' : '成员',
+    member.isVirtual ? '代管' : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   const remove = useCallback(async () => {
     const res = await Taro.showModal({
@@ -595,10 +585,7 @@ function MemberRow({
       </View>
       <View className="member__body">
         <Text className="member__name">{name}</Text>
-        <Text className="member__sub">
-          {member.role === 'OWNER' ? '管理员' : '成员'}
-          {member.isVirtual ? ' · 代管' : ''}
-        </Text>
+        <Text className="member__sub">{subline}</Text>
       </View>
       {member.role !== 'OWNER' ? (
         <View

@@ -806,6 +806,20 @@ function summarizeExpenses(list: Expense[]): ExpenseSummary {
   };
 }
 
+/**
+ * 成员行的 `nickname`（账号昵称）在 Mock 里**实时**对齐当前账号 `ME`。
+ *
+ * 后端 `GET /families/:id` 直接返回 nickname（真实成员 = user.nickname，
+ * 虚拟成员 = null）；Mock 没有 user 表，若把这个值存成副本，改昵称后就永远
+ * 停在旧值 —— 所以读取时才算，与真后端「改完立刻生效」的行为一致。
+ *
+ * ⚠️ 只匹配 `userId === ME.id`：Mock 里其它"真实成员"（addFamilyMember 造的
+ * `wx_*` 占位账号）没有真实昵称，退回 displayName 展示。
+ */
+function withNickname<T extends { userId: string | null; nickname?: string | null }>(m: T): T {
+  return { ...m, nickname: m.userId === ME.id ? ME.nickname : (m.nickname ?? null) };
+}
+
 /** 可变的 Mock 状态（全域增删改 + 投票/勾选/上传均改这里，刷新后重置） */
 const state = {
   families: [{ ...FAMILY }],
@@ -880,7 +894,7 @@ export function createMockClient(): ApiClient {
       if (!family) throw new ApiError(404, '家庭不存在');
       const detail: FamilyDetail = {
         family,
-        members: state.members.filter((m) => m.familyId === id),
+        members: state.members.filter((m) => m.familyId === id).map(withNickname),
       };
       return respond(detail);
     },
@@ -990,7 +1004,7 @@ export function createMockClient(): ApiClient {
     async getTripDetail(id) {
       const t = state.trips.find((x) => x.id === id);
       if (!t) throw new ApiError(404, '出行不存在');
-      const members = state.tripMembers.filter((m) => m.tripId === id);
+      const members = state.tripMembers.filter((m) => m.tripId === id).map(withNickname);
       const mine = members.find((m) => m.userId === ME.id);
       const detail: TripDetail = {
         trip: t,
