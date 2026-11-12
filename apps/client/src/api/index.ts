@@ -2,11 +2,16 @@
  * API 入口 —— 按环境选择 adapter
  * ============================================================================
  * 规则：
- *   有 `process.env.API_BASE_URL` → 走真后端（http）
- *   否则                         → 走 Mock（原型默认）
+ *   `process.env.API_BASE_URL` 非空 → 走真后端（http）
+ *   显式为空字符串                 → 走 Mock（逃生口）
  *
- * 这也意味着：`pnpm dev:client` 打开即可看到完整界面，无需后端、无需 MySQL。
- * 切真后端只需在构建时注入 API_BASE_URL（见 config/index.ts 的 defineConstants）。
+ * 🔴 2026-11-12：`config/index.ts` 已把默认值改成线上后端，**所有构建默认走 http**，
+ *    不再有「dev:weapp 自动落 Mock」的特例。示例数据会掩盖真实链路问题
+ *    （昵称/称呼那次就是 Mock 正常、真后端白名单漏字段，排查被带偏）。
+ *
+ * 需要离线原型演示时，构建命令显式置空：`API_BASE_URL= pnpm dev:weapp`。
+ * 判定仍用 `Boolean(...)`：与 `config/api-base-url.ts` 的 `??` 配合，
+ * 空串不会被替换成默认地址，Mock 通道得以保留。
  */
 
 import { createMockClient } from './mock';

@@ -2,11 +2,11 @@
  * Taro 编译配置 —— 微信小程序首发，H5 同构预留
  * ============================================================================
  * 设计宽度 375（与现有 375 逻辑宽容器一致），px→rpx 自动换算。
- * `process.env.API_BASE_URL` 由构建时注入：为空则走 Mock（默认），
- * 填了真后端地址则走 http adapter。切换只靠环境变量，不写死源码。
+ * `process.env.API_BASE_URL` 由构建时注入，见下方 `resolveApiBaseUrl`。
  */
 
 import { defineConfig } from '@tarojs/cli';
+import { resolveApiBaseUrl } from './api-base-url';
 
 /**
  * 产物目录按平台分流。
@@ -18,18 +18,17 @@ const isH5 = process.env.TARO_ENV === 'h5';
 const outputRoot = isH5 ? 'dist-h5' : 'dist';
 
 /**
- * API 基址（构建期常量，见下方 defineConstants）
+ * API 基址（构建期常量，注入到 `defineConstants`）
  *
- * 优先级：显式 `API_BASE_URL` > 生产默认值 > 空（Mock）
- *   - `taro build`（NODE_ENV=production）→ 默认指向**线上后端**，不需要额外环境变量。
- *     🔴 这条是硬性修正：此前生产基址只能靠命令行传 env，一旦漏传就静默回落 Mock，
- *        表现为「包上传上去了但数据还是假的」（2026-10-22 实际踩过）。
- *   - `taro dev:weapp`（watch）→ 默认空 = 走 Mock，本地联调不受线上数据干扰；
- *     想让本地连线上后端，显式传 API_BASE_URL 即可。
+ * 2026-11-12 口径：**所有构建默认都连线上后端，不再有「开发态走 Mock」的特例**。
+ * 原因：开发者工具里看到的示例数据会掩盖真实链路问题 —— 排查「昵称/称呼功能没实现」
+ * 时就踩过「Mock 正常、真后端白名单映射漏拷 nickname」的坑，假数据反而误导判断。
+ *
+ * 逃生口保留：`API_BASE_URL` 显式置为空字符串仍可回到 Mock（`??` 不把 `''` 视作
+ * nullish，`Boolean('') === false` → `createMockClient`）。Mock 层仅用于离线原型
+ * 演示与既有单测，不再被默认选中。
  */
-const PROD_API_BASE_URL = 'https://api.familytripallinone.cn/api';
-const isProdBuild = process.env.NODE_ENV === 'production';
-const apiBaseUrl = process.env.API_BASE_URL ?? (isProdBuild && !isH5 ? PROD_API_BASE_URL : '');
+const apiBaseUrl = resolveApiBaseUrl(process.env.API_BASE_URL);
 
 export default defineConfig({
   projectName: 'family-trip-client',
